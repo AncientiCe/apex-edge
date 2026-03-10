@@ -1,4 +1,4 @@
-# Smoke test against a live release binary (main and tags).
+# Smoke test against a live Docker container (main and tags).
 name: Smoke (release)
 
 on:
@@ -8,30 +8,30 @@ on:
 
 jobs:
   smoke:
-    name: build and smoke
+    name: docker build and smoke
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Build Docker image
+        run: docker build -t apex-edge:ci .
 
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-
-      - name: Build release
-        run: cargo build --release
-
-      - name: Run smoke against live server
+      - name: Run smoke against live container
         run: |
-          DB="$(mktemp -u).db"
-          # For absolute paths, SQLx expects sqlite:///abs/path.db
-          export APEX_EDGE_DB="sqlite://$DB"
-          ./target/release/apex-edge &
-          PID=$!
-          trap "kill $PID 2>/dev/null || true" EXIT
-          sleep 2
+          docker run -d --name apex-edge-smoke -p 3000:3000 \
+            -e APEX_EDGE_DB="sqlite:file:smoke_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}?mode=memory&cache=shared" \
+            apex-edge:ci
+          trap "docker logs apex-edge-smoke || true; docker rm -f apex-edge-smoke >/dev/null 2>&1 || true" EXIT
+
+          # Wait for server readiness instead of fixed sleep.
+          for i in {1..30}; do
+            if curl -sf http://127.0.0.1:3000/health >/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+
           set -e
           curl -sf http://127.0.0.1:3000/health | grep -q '"status":"ok"'
           curl -sf http://127.0.0.1:3000/ready | grep -q '"status":"ready"'
