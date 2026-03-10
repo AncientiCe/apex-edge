@@ -54,28 +54,25 @@ export function SyncStatusPanel({ baseUrl, disabled }: Props) {
     );
   }
 
-  if (loading && !status) {
+  if (!status) {
     return (
       <div className="sync-status-panel">
         <p className="ios-section-header">Sync Status</p>
-        <p className="sync-status-muted">Loading…</p>
+        {error ? (
+          <>
+            <p className="sync-status-error">{error}</p>
+            <button type="button" className="btn-secondary" onClick={fetchStatus}>
+              Retry
+            </button>
+          </>
+        ) : (
+          <p className="sync-status-muted">Loading…</p>
+        )}
       </div>
     );
   }
 
-  if (error && !status) {
-    return (
-      <div className="sync-status-panel">
-        <p className="ios-section-header">Sync Status</p>
-        <p className="sync-status-error">{error}</p>
-        <button type="button" className="btn-secondary" onClick={fetchStatus}>
-          Retry
-        </button>
-      </div>
-    );
-  }
-
-  const data = status!;
+  const data = status;
   return (
     <div className="sync-status-panel">
       <p className="ios-section-header">Sync Status</p>
