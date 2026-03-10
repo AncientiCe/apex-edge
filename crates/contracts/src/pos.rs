@@ -34,6 +34,7 @@ pub enum PosCommand {
     RemovePromo(RemovePromoPayload),
     ApplyCoupon(ApplyCouponPayload),
     RemoveCoupon(RemoveCouponPayload),
+    ApplyManualDiscount(ApplyManualDiscountPayload),
     SetTendering(SetTenderingPayload),
     AddPayment(AddPaymentPayload),
     FinalizeOrder(FinalizeOrderPayload),
@@ -58,6 +59,8 @@ pub struct AddLineItemPayload {
     pub modifier_option_ids: Vec<Uuid>,
     pub quantity: u32,
     pub notes: Option<String>,
+    /// If set and > 0, overrides catalog price for this line (cents per unit).
+    pub unit_price_override_cents: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -96,6 +99,28 @@ pub struct ApplyCouponPayload {
 pub struct RemoveCouponPayload {
     pub cart_id: Uuid,
     pub coupon_id: Uuid,
+}
+
+/// Manual discount: requires a reason (mandatory). Applied after promos.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApplyManualDiscountPayload {
+    pub cart_id: Uuid,
+    /// Mandatory reason for audit.
+    pub reason: String,
+    pub kind: ManualDiscountKind,
+    /// For PercentCart/PercentItem: basis points (100 = 1%). For FixedCart/FixedItem: amount in cents.
+    pub value: u64,
+    /// Required for PercentItem and FixedItem; ignored for cart-level.
+    pub line_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ManualDiscountKind {
+    PercentCart,
+    PercentItem,
+    FixedCart,
+    FixedItem,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -148,6 +173,8 @@ pub struct CartState {
     pub lines: Vec<CartLine>,
     pub applied_promos: Vec<Uuid>,
     pub applied_coupons: Vec<AppliedCouponInfo>,
+    /// Manual discounts (reason required); included in discount_cents.
+    pub manual_discounts: Vec<ManualDiscountInfo>,
     pub subtotal_cents: u64,
     pub discount_cents: u64,
     pub tax_cents: u64,
@@ -155,6 +182,13 @@ pub struct CartState {
     pub tendered_cents: u64,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ManualDiscountInfo {
+    pub reason: String,
+    pub amount_cents: u64,
+    pub line_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

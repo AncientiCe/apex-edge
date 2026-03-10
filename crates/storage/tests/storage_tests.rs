@@ -97,3 +97,31 @@ async fn storage_roundtrip_for_core_tables() {
     assert_eq!(loaded.id, cart_id);
     assert_eq!(loaded.store_id, store_id);
 }
+
+#[tokio::test]
+async fn seed_demo_data_populates_enough_catalog_and_customers() {
+    let pool = test_pool().await;
+    let store_id = Uuid::from_u128(1);
+    let summary = seed_demo_data(&pool, store_id)
+        .await
+        .expect("seed demo data");
+    assert!(summary.categories >= 6, "expected several categories");
+    assert!(summary.products >= 120, "expected large catalog");
+    assert!(summary.customers >= 80, "expected many customers");
+
+    let product_count: (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM catalog_items WHERE store_id = ?")
+            .bind(store_id.to_string())
+            .fetch_one(&pool)
+            .await
+            .expect("product count");
+    assert!(product_count.0 >= 120);
+
+    let customer_count: (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM customers WHERE store_id = ?")
+            .bind(store_id.to_string())
+            .fetch_one(&pool)
+            .await
+            .expect("customer count");
+    assert!(customer_count.0 >= 80);
+}

@@ -14,6 +14,27 @@ pub struct CatalogItemRow {
     pub name: String,
     pub category_id: Uuid,
     pub tax_category_id: Uuid,
+    pub description: Option<String>,
+}
+
+fn map_catalog_row(
+    id: String,
+    store_id: String,
+    sku: String,
+    name: String,
+    category_id: String,
+    tax_category_id: String,
+    description: Option<String>,
+) -> CatalogItemRow {
+    CatalogItemRow {
+        id: Uuid::parse_str(&id).unwrap_or_default(),
+        store_id: Uuid::parse_str(&store_id).unwrap_or_default(),
+        sku,
+        name,
+        category_id: Uuid::parse_str(&category_id).unwrap_or_default(),
+        tax_category_id: Uuid::parse_str(&tax_category_id).unwrap_or_default(),
+        description,
+    }
 }
 
 pub async fn get_catalog_item(
@@ -21,21 +42,24 @@ pub async fn get_catalog_item(
     store_id: Uuid,
     item_id: Uuid,
 ) -> Result<Option<CatalogItemRow>, PoolError> {
-    let row = sqlx::query_as::<_, (String, String, String, String, String, String)>(
-        "SELECT id, store_id, sku, name, category_id, tax_category_id FROM catalog_items WHERE id = ? AND store_id = ?",
+    let row = sqlx::query_as::<_, (String, String, String, String, String, String, Option<String>)>(
+        "SELECT id, store_id, sku, name, category_id, tax_category_id, description FROM catalog_items WHERE id = ? AND store_id = ?",
     )
     .bind(item_id.to_string())
     .bind(store_id.to_string())
     .fetch_optional(pool)
     .await?;
     Ok(row.map(
-        |(id, store_id, sku, name, category_id, tax_category_id)| CatalogItemRow {
-            id: Uuid::parse_str(&id).unwrap_or_default(),
-            store_id: Uuid::parse_str(&store_id).unwrap_or_default(),
-            sku,
-            name,
-            category_id: Uuid::parse_str(&category_id).unwrap_or_default(),
-            tax_category_id: Uuid::parse_str(&tax_category_id).unwrap_or_default(),
+        |(id, store_id, sku, name, category_id, tax_category_id, description)| {
+            map_catalog_row(
+                id,
+                store_id,
+                sku,
+                name,
+                category_id,
+                tax_category_id,
+                description,
+            )
         },
     ))
 }
@@ -45,23 +69,191 @@ pub async fn get_catalog_item_by_sku(
     store_id: Uuid,
     sku: &str,
 ) -> Result<Option<CatalogItemRow>, PoolError> {
-    let row = sqlx::query_as::<_, (String, String, String, String, String, String)>(
-        "SELECT id, store_id, sku, name, category_id, tax_category_id FROM catalog_items WHERE store_id = ? AND sku = ?",
+    let row = sqlx::query_as::<_, (String, String, String, String, String, String, Option<String>)>(
+        "SELECT id, store_id, sku, name, category_id, tax_category_id, description FROM catalog_items WHERE store_id = ? AND sku = ?",
     )
     .bind(store_id.to_string())
     .bind(sku)
     .fetch_optional(pool)
     .await?;
     Ok(row.map(
-        |(id, store_id, sku, name, category_id, tax_category_id)| CatalogItemRow {
-            id: Uuid::parse_str(&id).unwrap_or_default(),
-            store_id: Uuid::parse_str(&store_id).unwrap_or_default(),
-            sku,
-            name,
-            category_id: Uuid::parse_str(&category_id).unwrap_or_default(),
-            tax_category_id: Uuid::parse_str(&tax_category_id).unwrap_or_default(),
+        |(id, store_id, sku, name, category_id, tax_category_id, description)| {
+            map_catalog_row(
+                id,
+                store_id,
+                sku,
+                name,
+                category_id,
+                tax_category_id,
+                description,
+            )
         },
     ))
+}
+
+pub async fn list_catalog_items(
+    pool: &SqlitePool,
+    store_id: Uuid,
+    category_id: Option<Uuid>,
+    q: Option<&str>,
+    limit: u32,
+    offset: u32,
+) -> Result<(Vec<CatalogItemRow>, u64), PoolError> {
+    let limit = limit.min(100).max(1);
+    let q_trimmed = q.map(|s| s.trim()).filter(|s| !s.is_empty());
+    let name_pattern = q_trimmed.map(|s| format!("%{s}%"));
+    let count_sql = match (category_id.is_some(), q_trimmed.is_some()) {
+        (false, false) => "SELECT COUNT(*) FROM catalog_items WHERE store_id = ?",
+        (true, false) => "SELECT COUNT(*) FROM catalog_items WHERE store_id = ? AND category_id = ?",
+        (false, true) => "SELECT COUNT(*) FROM catalog_items WHERE store_id = ? AND (sku = ? OR name LIKE ? OR description LIKE ?)",
+        (true, true) => "SELECT COUNT(*) FROM catalog_items WHERE store_id = ? AND category_id = ? AND (sku = ? OR name LIKE ? OR description LIKE ?)",
+    };
+    let total: (i64,) = match (category_id, q_trimmed, name_pattern.as_ref()) {
+        (None, None, _) => {
+            sqlx::query_as(count_sql)
+                .bind(store_id.to_string())
+                .fetch_one(pool)
+                .await?
+        }
+        (Some(cid), None, _) => {
+            sqlx::query_as(count_sql)
+                .bind(store_id.to_string())
+                .bind(cid.to_string())
+                .fetch_one(pool)
+                .await?
+        }
+        (None, Some(qs), Some(pat)) => {
+            sqlx::query_as(count_sql)
+                .bind(store_id.to_string())
+                .bind(qs)
+                .bind(pat)
+                .bind(pat)
+                .fetch_one(pool)
+                .await?
+        }
+        (Some(cid), Some(qs), Some(pat)) => {
+            sqlx::query_as(count_sql)
+                .bind(store_id.to_string())
+                .bind(cid.to_string())
+                .bind(qs)
+                .bind(pat)
+                .bind(pat)
+                .fetch_one(pool)
+                .await?
+        }
+        _ => (0,),
+    };
+    let total = total.0 as u64;
+    let list_sql = match (category_id.is_some(), q_trimmed.is_some()) {
+        (false, false) => "SELECT id, store_id, sku, name, category_id, tax_category_id, description FROM catalog_items WHERE store_id = ? ORDER BY name LIMIT ? OFFSET ?",
+        (true, false) => "SELECT id, store_id, sku, name, category_id, tax_category_id, description FROM catalog_items WHERE store_id = ? AND category_id = ? ORDER BY name LIMIT ? OFFSET ?",
+        (false, true) => "SELECT id, store_id, sku, name, category_id, tax_category_id, description FROM catalog_items WHERE store_id = ? AND (sku = ? OR name LIKE ? OR description LIKE ?) ORDER BY name LIMIT ? OFFSET ?",
+        (true, true) => "SELECT id, store_id, sku, name, category_id, tax_category_id, description FROM catalog_items WHERE store_id = ? AND category_id = ? AND (sku = ? OR name LIKE ? OR description LIKE ?) ORDER BY name LIMIT ? OFFSET ?",
+    };
+    let rows = match (category_id, q_trimmed, name_pattern.as_ref()) {
+        (None, None, _) => {
+            sqlx::query_as::<
+                _,
+                (
+                    String,
+                    String,
+                    String,
+                    String,
+                    String,
+                    String,
+                    Option<String>,
+                ),
+            >(list_sql)
+            .bind(store_id.to_string())
+            .bind(limit as i64)
+            .bind(offset as i64)
+            .fetch_all(pool)
+            .await?
+        }
+        (Some(cid), None, _) => {
+            sqlx::query_as::<
+                _,
+                (
+                    String,
+                    String,
+                    String,
+                    String,
+                    String,
+                    String,
+                    Option<String>,
+                ),
+            >(list_sql)
+            .bind(store_id.to_string())
+            .bind(cid.to_string())
+            .bind(limit as i64)
+            .bind(offset as i64)
+            .fetch_all(pool)
+            .await?
+        }
+        (None, Some(qs), Some(pat)) => {
+            sqlx::query_as::<
+                _,
+                (
+                    String,
+                    String,
+                    String,
+                    String,
+                    String,
+                    String,
+                    Option<String>,
+                ),
+            >(list_sql)
+            .bind(store_id.to_string())
+            .bind(qs)
+            .bind(pat)
+            .bind(pat)
+            .bind(limit as i64)
+            .bind(offset as i64)
+            .fetch_all(pool)
+            .await?
+        }
+        (Some(cid), Some(qs), Some(pat)) => {
+            sqlx::query_as::<
+                _,
+                (
+                    String,
+                    String,
+                    String,
+                    String,
+                    String,
+                    String,
+                    Option<String>,
+                ),
+            >(list_sql)
+            .bind(store_id.to_string())
+            .bind(cid.to_string())
+            .bind(qs)
+            .bind(pat)
+            .bind(pat)
+            .bind(limit as i64)
+            .bind(offset as i64)
+            .fetch_all(pool)
+            .await?
+        }
+        _ => vec![],
+    };
+    let items = rows
+        .into_iter()
+        .map(
+            |(id, store_id, sku, name, category_id, tax_category_id, description)| {
+                map_catalog_row(
+                    id,
+                    store_id,
+                    sku,
+                    name,
+                    category_id,
+                    tax_category_id,
+                    description,
+                )
+            },
+        )
+        .collect();
+    Ok((items, total))
 }
 
 pub async fn insert_catalog_item(
@@ -74,7 +266,7 @@ pub async fn insert_catalog_item(
     tax_category_id: Uuid,
 ) -> Result<(), PoolError> {
     sqlx::query(
-        "INSERT OR REPLACE INTO catalog_items (id, store_id, sku, name, category_id, tax_category_id) VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT OR REPLACE INTO catalog_items (id, store_id, sku, name, category_id, tax_category_id, description) VALUES (?, ?, ?, ?, ?, ?, NULL)",
     )
     .bind(id.to_string())
     .bind(store_id.to_string())

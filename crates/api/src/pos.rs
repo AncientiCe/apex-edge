@@ -21,6 +21,7 @@ fn pos_operation_label(cmd: &PosCommand) -> &'static str {
         PosCommand::RemovePromo(_) => "remove_promo",
         PosCommand::ApplyCoupon(_) => "apply_coupon",
         PosCommand::RemoveCoupon(_) => "remove_coupon",
+        PosCommand::ApplyManualDiscount(_) => "apply_manual_discount",
         PosCommand::SetTendering(_) => "set_tendering",
         PosCommand::AddPayment(_) => "add_payment",
         PosCommand::FinalizeOrder(_) => "finalize_order",

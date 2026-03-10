@@ -80,22 +80,31 @@ flowchart TB
         R1["GET /health"]
         R2["GET /ready"]
         R3["POST /pos/command"]
-        R4["GET /documents/:id"]
-        R5["GET /orders/:order_id/documents"]
-        R6["GET /metrics"]
+        R4["GET /catalog/products"]
+        R5["GET /catalog/categories"]
+        R6["GET /customers"]
+        R7["GET /documents/:id"]
+        R8["GET /orders/:order_id/documents"]
+        R9["GET /metrics"]
     end
     subgraph api [apex_edge_api]
         H[health]
         P[pos]
+        C[catalog_search]
+        CC[catalog_categories]
+        CS[customer_search]
         D[documents]
         M[metrics_handler]
     end
     R1 --> H
     R2 --> H
     R3 --> P
-    R4 --> D
-    R5 --> D
-    R6 --> M
+    R4 --> C
+    R5 --> CC
+    R6 --> CS
+    R7 --> D
+    R8 --> D
+    R9 --> M
 ```
 
 **Notes:**
@@ -242,36 +251,43 @@ flowchart TB
 
 ### 9. Local POS Simulator Frontend
 
-**Purpose:** Document the local-only POS simulator UI used to manually exercise the northbound API (health, lookup, cart, checkout, documents) without a real POS device.
+**Purpose:** Document the local-only POS simulator UI: a POS-style interface with catalog (categories, product search, pagination), customer search (name/email/code/id), cart, checkout, and documents.
 
 ```mermaid
 sequenceDiagram
-    participant Tester as Tester
+    participant User as Cashier
     participant UI as POSSimulatorUI
     participant API as ApexEdge API
     participant Storage as SQLite
-    Tester->>UI: Set API URL, run journey
+    User->>UI: Connect, New sale
     UI->>API: GET /health, GET /ready
     API-->>UI: status
-    UI->>API: GET /catalog/products?sku=, GET /customers?code=
-    API->>Storage: lookup
-    Storage-->>API: rows
-    API-->>UI: product/customer list
+    UI->>API: GET /catalog/categories
+    API->>Storage: list_categories
+    Storage-->>API: categories
+    API-->>UI: category list
+    UI->>API: GET /catalog/products?q=&category_id=&page=&per_page=
+    API->>Storage: list_catalog_items
+    Storage-->>API: items, total
+    API-->>UI: paginated products
+    UI->>API: GET /customers?q=
+    API->>Storage: search_customers
+    Storage-->>API: customers
+    API-->>UI: customer list
+    User->>UI: Add product, Set customer, Checkout
     UI->>API: POST /pos/command create_cart, add_line_item, set_customer, set_tendering, add_payment, finalize_order
-    API->>Storage: load/save cart, run pricing, persist order
-    Storage-->>API: cart/order state
-    API-->>UI: cart state or finalize result
-    UI->>API: GET /orders/:order_id/documents
-    API->>Storage: list_documents_for_order
-    Storage-->>API: document summaries
-    API-->>UI: document list
-    UI->>API: GET /documents/:id
-    API->>Storage: get_document
-    Storage-->>UI: document content
+    API->>Storage: cart/order
+    Storage-->>API: cart state or finalize result
+    API-->>UI: state
+    UI->>API: GET /orders/:order_id/documents, GET /documents/:id
+    API->>Storage: list/get documents
+    Storage-->>UI: document list/content
 ```
 
 **Notes:**
-- **Inputs:** Backend base URL (e.g. `http://localhost:3000`); user actions in the simulator (create cart, add line, set customer, tendering, payment, finalize; list/fetch documents).
-- **Outputs:** Cart state and finalize result in UI; document list and document content for the completed order; event log of requests/responses for debugging.
-- **Failure path:** Invalid SKU/customer or unsupported command returns backend errors; UI shows errors in event log and does not advance state; network/CORS issues surface as failed health/ready or request errors.
-- **Scope:** Simulator runs as a separate dev server (e.g. Vite on port 5173); CORS is enabled on the API so the browser can call the backend. For local use only, not deployed with production.
+- **Inputs:** Backend base URL; catalog filters (search q, category, page); customer search q (name, email, code, or id); cart actions and checkout.
+- **Outputs:** Categories and paginated product list; customer search results; cart state and finalize result; document list and content.
+- **API:** `GET /catalog/categories`, `GET /catalog/products?q=&category_id=&page=&per_page=`, `GET /customers?q=` (and legacy `?code=` for exact code). Products support search by SKU, name, or description; customers by code, name, email, or id.
+- **POS commands:** `create_cart`, `add_line_item` (optional `unit_price_override_cents` for positive price override), `set_customer`, `apply_manual_discount` (reason mandatory; kinds: percent_cart, percent_item, fixed_cart, fixed_item), `set_tendering`, `add_payment`, `finalize_order`. Promotions (coupons and automatic) are seeded and applied in pipeline; manual discounts applied after promos and included in order metadata to HQ.
+- **Layout:** Mobile-first, app-like UI: fixed bottom tab bar (Customers / Catalog / Cart) with safe-area insets; 44px minimum touch targets; full viewport height (`100dvh`). At 768px+ nav moves to header; at 1024px (e.g. iPad landscape) content is constrained with larger catalog grid. Event log shown from 768px only.
+- **Scope:** Simulator runs as a separate dev server (e.g. Vite on port 5173); CORS enabled. Local use only.

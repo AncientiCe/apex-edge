@@ -1,8 +1,8 @@
 //! POS command execution: load/save cart, run pricing pipeline, return payloads.
 
 use apex_edge_contracts::{
-    build_submission_envelope, CartState, ContractVersion, FinalizeResult, PosCommand, PosError,
-    PosRequestEnvelope, PosResponseEnvelope,
+    build_submission_envelope, CartState, ContractVersion, FinalizeResult, ManualDiscountInfo,
+    ManualDiscountKind, PosCommand, PosError, PosRequestEnvelope, PosResponseEnvelope,
 };
 use apex_edge_domain::{apply_promos_to_lines, base_price_cents, tax_for_line, Cart};
 use apex_edge_printing::generate_document;
@@ -127,8 +127,66 @@ pub async fn run_pricing_pipeline(
         }
     }
     cart.apply_pricing(results);
-    if applied_any {
+
+    // Apply manual discounts (stored with reason); add to line discount_cents and recalc tax.
+    apply_manual_discounts_to_lines(cart, &rules, &item_to_tax_category)?;
+    if applied_any || !cart.manual_discounts.is_empty() {
         cart.set_discounted();
+    }
+    Ok(())
+}
+
+/// Apply stored manual discounts to lines (add amount to line.discount_cents) and recalc tax.
+fn apply_manual_discounts_to_lines(
+    cart: &mut Cart,
+    rules: &[apex_edge_contracts::TaxRule],
+    item_to_tax_category: &std::collections::HashMap<Uuid, Uuid>,
+) -> Result<(), Vec<PosError>> {
+    if cart.manual_discounts.is_empty() {
+        return Ok(());
+    }
+    let category_by_item =
+        |item_id: Uuid| *item_to_tax_category.get(&item_id).unwrap_or(&Uuid::nil());
+
+    for md in &cart.manual_discounts.clone() {
+        let amount = md.amount_cents;
+        if amount == 0 {
+            continue;
+        }
+        if let Some(line_id) = md.line_id {
+            if let Some(line) = cart.lines.iter_mut().find(|l| l.line_id == line_id) {
+                let line_net = line.line_total_cents.saturating_sub(line.discount_cents);
+                let add = amount.min(line_net);
+                line.discount_cents = line.discount_cents.saturating_add(add);
+            }
+        } else {
+            let total_net: u64 = cart
+                .lines
+                .iter()
+                .map(|l| l.line_total_cents.saturating_sub(l.discount_cents))
+                .sum();
+            if total_net == 0 {
+                continue;
+            }
+            let mut remaining = amount;
+            let line_count = cart.lines.len();
+            for (i, line) in cart.lines.iter_mut().enumerate() {
+                let line_net = line.line_total_cents.saturating_sub(line.discount_cents);
+                let add = if i == line_count - 1 {
+                    remaining.min(line_net)
+                } else {
+                    (amount * line_net / total_net).min(remaining).min(line_net)
+                };
+                remaining = remaining.saturating_sub(add);
+                line.discount_cents = line.discount_cents.saturating_add(add);
+            }
+        }
+    }
+
+    for line in &mut cart.lines {
+        let tax_cat = category_by_item(line.item_id);
+        let line_net = line.line_total_cents.saturating_sub(line.discount_cents);
+        line.tax_cents = tax_for_line(line_net, tax_cat, rules, false);
     }
     Ok(())
 }
@@ -280,7 +338,15 @@ pub async fn execute_pos_command(
             };
             let base_cents =
                 base_price_cents(p.item_id, &p.modifier_option_ids, p.quantity, &entries);
-            let unit_price = if p.quantity > 0 {
+            let unit_price = if let Some(override_cents) = p.unit_price_override_cents {
+                if override_cents > 0 {
+                    override_cents
+                } else if p.quantity > 0 {
+                    base_cents / (p.quantity as u64)
+                } else {
+                    0
+                }
+            } else if p.quantity > 0 {
                 base_cents / (p.quantity as u64)
             } else {
                 0
@@ -305,6 +371,203 @@ pub async fn execute_pos_command(
                     errors,
                 };
             }
+            if let Err(errors) = save_cart_to_db(pool, &cart).await {
+                return PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors,
+                };
+            }
+            let state = cart.to_cart_state();
+            PosResponseEnvelope {
+                version: ContractVersion::V1_0_0,
+                success: true,
+                idempotency_key,
+                payload: Some(cart_state_to_payload(&state)),
+                errors: vec![],
+            }
+        }
+        PosCommand::ApplyManualDiscount(p) => {
+            let Some(mut cart) = load_cart_from_db(pool, p.cart_id).await.ok().flatten() else {
+                return PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors: vec![PosError {
+                        code: "CART_NOT_FOUND".into(),
+                        message: "Cart not found".into(),
+                        field: None,
+                    }],
+                };
+            };
+            if cart.ensure_can_edit().is_err() {
+                return PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors: vec![PosError {
+                        code: "INVALID_STATE".into(),
+                        message: "Cart cannot be edited".into(),
+                        field: None,
+                    }],
+                };
+            }
+            let reason = p.reason.trim();
+            if reason.is_empty() {
+                return PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors: vec![PosError {
+                        code: "REASON_REQUIRED".into(),
+                        message: "Manual discount requires a reason".into(),
+                        field: Some("reason".into()),
+                    }],
+                };
+            }
+            let subtotal = cart.subtotal_cents();
+            let amount_cents = match p.kind {
+                ManualDiscountKind::PercentCart => {
+                    (subtotal.saturating_mul(p.value) / 10000).min(subtotal)
+                }
+                ManualDiscountKind::FixedCart => p.value.min(subtotal),
+                ManualDiscountKind::PercentItem => {
+                    let line_id = p.line_id.ok_or_else(|| PosError {
+                        code: "LINE_ID_REQUIRED".into(),
+                        message: "Percent per item requires line_id".into(),
+                        field: Some("line_id".into()),
+                    });
+                    let line_id = match line_id {
+                        Ok(id) => id,
+                        Err(e) => {
+                            return PosResponseEnvelope {
+                                version: ContractVersion::V1_0_0,
+                                success: false,
+                                idempotency_key,
+                                payload: None,
+                                errors: vec![e],
+                            };
+                        }
+                    };
+                    let line = match cart.lines.iter().find(|l| l.line_id == line_id) {
+                        Some(l) => l,
+                        None => {
+                            return PosResponseEnvelope {
+                                version: ContractVersion::V1_0_0,
+                                success: false,
+                                idempotency_key,
+                                payload: None,
+                                errors: vec![PosError {
+                                    code: "LINE_NOT_FOUND".into(),
+                                    message: "Line not found".into(),
+                                    field: None,
+                                }],
+                            };
+                        }
+                    };
+                    let line_total = line.line_total_cents.saturating_sub(line.discount_cents);
+                    (line_total.saturating_mul(p.value) / 10000).min(line_total)
+                }
+                ManualDiscountKind::FixedItem => {
+                    let line_id = p.line_id.ok_or_else(|| PosError {
+                        code: "LINE_ID_REQUIRED".into(),
+                        message: "Fixed per item requires line_id".into(),
+                        field: Some("line_id".into()),
+                    });
+                    let line_id = match line_id {
+                        Ok(id) => id,
+                        Err(e) => {
+                            return PosResponseEnvelope {
+                                version: ContractVersion::V1_0_0,
+                                success: false,
+                                idempotency_key,
+                                payload: None,
+                                errors: vec![e],
+                            };
+                        }
+                    };
+                    let line = match cart.lines.iter().find(|l| l.line_id == line_id) {
+                        Some(l) => l,
+                        None => {
+                            return PosResponseEnvelope {
+                                version: ContractVersion::V1_0_0,
+                                success: false,
+                                idempotency_key,
+                                payload: None,
+                                errors: vec![PosError {
+                                    code: "LINE_NOT_FOUND".into(),
+                                    message: "Line not found".into(),
+                                    field: None,
+                                }],
+                            };
+                        }
+                    };
+                    let line_net = line.line_total_cents.saturating_sub(line.discount_cents);
+                    p.value.min(line_net)
+                }
+            };
+            if amount_cents == 0 {
+                return PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors: vec![PosError {
+                        code: "ZERO_DISCOUNT".into(),
+                        message: "Computed discount amount is zero".into(),
+                        field: None,
+                    }],
+                };
+            }
+            let line_id = match p.kind {
+                ManualDiscountKind::PercentItem | ManualDiscountKind::FixedItem => p.line_id,
+                _ => None,
+            };
+            cart.manual_discounts.push(ManualDiscountInfo {
+                reason: reason.to_string(),
+                amount_cents,
+                line_id,
+            });
+            let rules = match list_tax_rules(pool, store_id).await {
+                Ok(r) => r,
+                Err(e) => {
+                    return PosResponseEnvelope {
+                        version: ContractVersion::V1_0_0,
+                        success: false,
+                        idempotency_key,
+                        payload: None,
+                        errors: vec![PosError {
+                            code: "TAX_RULES".into(),
+                            message: e.to_string(),
+                            field: None,
+                        }],
+                    };
+                }
+            };
+            let mut item_to_tax_category: std::collections::HashMap<Uuid, Uuid> =
+                std::collections::HashMap::new();
+            for line in &cart.lines {
+                if let Ok(Some(item)) = get_catalog_item(pool, store_id, line.item_id).await {
+                    item_to_tax_category.insert(line.item_id, item.tax_category_id);
+                }
+            }
+            if let Err(errors) =
+                apply_manual_discounts_to_lines(&mut cart, &rules, &item_to_tax_category)
+            {
+                return PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors,
+                };
+            }
+            cart.set_discounted();
             if let Err(errors) = save_cart_to_db(pool, &cart).await {
                 return PosResponseEnvelope {
                     version: ContractVersion::V1_0_0,

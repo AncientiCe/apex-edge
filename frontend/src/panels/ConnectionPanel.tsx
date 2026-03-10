@@ -18,28 +18,24 @@ export function ConnectionPanel({
   onCheckReady,
 }: Props) {
   return (
-    <section className="panel connection">
+    <section className="panel connection connection-compact">
       <h2>Connection</h2>
-      <div className="row">
-        <label>API base URL</label>
+      <div className="connection-row">
         <input
           type="url"
           value={baseUrl}
           onChange={(e) => setBaseUrl(e.target.value)}
-          placeholder="http://localhost:3000"
-          style={{ minWidth: 280 }}
+          placeholder="API URL"
+          aria-label="API base URL"
+          className="connection-url"
         />
-      </div>
-      <div className="row">
-        <button type="button" onClick={onCheckHealth}>
+        <button type="button" onClick={onCheckHealth} aria-label="Check health">
           Health
         </button>
         <span className={`status ${healthStatus === 'ok' ? 'ok' : healthStatus?.startsWith('error') ? 'err' : ''}`}>
           {healthStatus ?? '—'}
         </span>
-      </div>
-      <div className="row">
-        <button type="button" onClick={onCheckReady}>
+        <button type="button" onClick={onCheckReady} aria-label="Check ready">
           Ready
         </button>
         <span className={`status ${readyStatus === 'ready' ? 'ok' : readyStatus?.startsWith('error') ? 'err' : ''}`}>

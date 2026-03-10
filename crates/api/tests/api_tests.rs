@@ -1,5 +1,6 @@
 use apex_edge_api::{
-    get_document, handle_pos_command, health, list_order_documents, ready, AppState,
+    create_gift_receipt_document, get_document, handle_pos_command, health, list_order_documents,
+    ready, AppState,
 };
 use apex_edge_contracts::{ContractVersion, CreateCartPayload, PosCommand, PosRequestEnvelope};
 use apex_edge_storage::{enqueue_document, mark_generated, run_migrations};
@@ -102,4 +103,45 @@ async fn get_document_returns_not_found_for_unknown_id() {
         res.expect_err("must return not found"),
         axum::http::StatusCode::NOT_FOUND
     );
+}
+
+#[tokio::test]
+async fn create_gift_receipt_generates_new_document_for_order() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("pool");
+    run_migrations(&pool).await.expect("migrations");
+    let state = AppState {
+        store_id: Uuid::nil(),
+        pool: pool.clone(),
+        metrics_handle: None,
+    };
+    let order_id = Uuid::new_v4();
+    let doc_id = Uuid::new_v4();
+    enqueue_document(
+        &pool,
+        doc_id,
+        "receipt",
+        Some(order_id),
+        None,
+        Uuid::new_v4(),
+        r#"{"order_id":"abc","total_cents":1234}"#,
+    )
+    .await
+    .expect("enqueue");
+    mark_generated(&pool, doc_id, "text/plain", "receipt")
+        .await
+        .expect("mark generated");
+
+    let created = create_gift_receipt_document(State(state.clone()), axum::extract::Path(order_id))
+        .await
+        .expect("gift receipt");
+    assert_eq!(created.0.document_type, "gift_receipt");
+
+    let listed = list_order_documents(State(state), axum::extract::Path(order_id))
+        .await
+        .expect("list docs");
+    assert_eq!(listed.0.len(), 2);
 }

@@ -35,15 +35,24 @@ pub async fn create_sqlite_pool(path: &str) -> Result<SqlitePool, PoolError> {
         && path.as_bytes()[1] == b':'
         && (path.as_bytes()[2] == b'\\' || path.as_bytes()[2] == b'/')
     {
-        // Absolute Windows path like C:\dir\file.db or C:/dir/file.db
-        format!("sqlite:{path}")
+        // Absolute Windows path: use forward slashes so the URL is valid (sqlite:///C:/path/to/file.db)
+        let path_forward = path.replace('\\', "/");
+        format!("sqlite:///{path_forward}")
     } else {
         // Relative path
         format!("sqlite:{path}")
     };
+    // For file-based DBs, allow creating the file if missing (mode=rwc). In-memory URLs are unchanged.
+    let url_with_mode = if url.contains(":memory:") {
+        url
+    } else if url.contains('?') {
+        format!("{url}&mode=rwc")
+    } else {
+        format!("{url}?mode=rwc")
+    };
     let pool = SqlitePoolOptions::new()
         .acquire_timeout(Duration::from_secs(5))
-        .connect(&url)
+        .connect(&url_with_mode)
         .await?;
     Ok(pool)
 }

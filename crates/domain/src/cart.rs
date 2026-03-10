@@ -1,6 +1,8 @@
 //! Cart aggregate and state machine: Open -> Itemized -> Discounted -> Tendering -> Paid -> Finalized.
 
-use apex_edge_contracts::{AppliedCouponInfo, CartLine, CartState, CartStateKind};
+use apex_edge_contracts::{
+    AppliedCouponInfo, CartLine, CartState, CartStateKind, ManualDiscountInfo,
+};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -19,6 +21,7 @@ pub struct Cart {
     pub lines: Vec<CartLineItem>,
     pub applied_promo_ids: Vec<Uuid>,
     pub applied_coupons: Vec<AppliedCouponRecord>,
+    pub manual_discounts: Vec<ManualDiscountInfo>,
     pub payments: Vec<PaymentRecord>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -79,6 +82,7 @@ impl Cart {
             lines: Vec::new(),
             applied_promo_ids: Vec::new(),
             applied_coupons: Vec::new(),
+            manual_discounts: Vec::new(),
             payments: Vec::new(),
             created_at: now,
             updated_at: now,
@@ -278,6 +282,7 @@ impl Cart {
                     discount_cents: c.discount_cents,
                 })
                 .collect(),
+            manual_discounts: self.manual_discounts.clone(),
             subtotal_cents: self.subtotal_cents(),
             discount_cents: self.discount_cents(),
             tax_cents: self.tax_cents(),
@@ -333,6 +338,7 @@ impl Cart {
             payments,
             applied_promo_ids: self.applied_promo_ids.clone(),
             applied_coupons: coupons,
+            manual_discounts: self.manual_discounts.clone(),
             created_at: self.updated_at,
         })
     }

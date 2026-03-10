@@ -47,6 +47,8 @@ export interface AddLineItemPayload {
   modifier_option_ids: string[];
   quantity: number;
   notes?: string | null;
+  /** Positive price override (cents per unit); if set, overrides catalog price. */
+  unit_price_override_cents?: number | null;
 }
 
 export interface SetTenderingPayload {
@@ -79,6 +81,7 @@ export interface CartState {
   lines: CartLine[];
   applied_promos: string[];
   applied_coupons: AppliedCouponInfo[];
+  manual_discounts?: ManualDiscountInfo[];
   subtotal_cents: number;
   discount_cents: number;
   tax_cents: number;
@@ -86,6 +89,12 @@ export interface CartState {
   tendered_cents: number;
   created_at: string;
   updated_at: string;
+}
+
+export interface ManualDiscountInfo {
+  reason: string;
+  amount_cents: number;
+  line_id: string | null;
 }
 
 export interface CartLine {
@@ -121,12 +130,26 @@ export interface ProductSearchResult {
   name: string;
   category_id: string;
   tax_category_id: string;
+  description?: string | null;
+}
+
+export interface ProductListResponse {
+  items: ProductSearchResult[];
+  total: number;
+  page: number;
+  per_page: number;
+}
+
+export interface CategoryResult {
+  id: string;
+  name: string;
 }
 
 export interface CustomerSearchResult {
   id: string;
   code: string;
   name: string;
+  email?: string | null;
 }
 
 export interface DocumentSummary {

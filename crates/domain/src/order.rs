@@ -1,6 +1,8 @@
 //! Finalized order (for HQ submission).
 
-use apex_edge_contracts::{HqAppliedCoupon, HqOrderLine, HqOrderPayload, HqPayment};
+use apex_edge_contracts::{
+    HqAppliedCoupon, HqOrderLine, HqOrderPayload, HqPayment, ManualDiscountInfo,
+};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -52,6 +54,7 @@ pub struct Order {
     pub payments: Vec<(Uuid, u64, Option<String>)>,
     pub applied_promo_ids: Vec<Uuid>,
     pub applied_coupons: Vec<(Uuid, String, u64)>,
+    pub manual_discounts: Vec<ManualDiscountInfo>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -85,7 +88,11 @@ impl Order {
                     discount_cents: *discount,
                 })
                 .collect(),
-            metadata: None,
+            metadata: if self.manual_discounts.is_empty() {
+                None
+            } else {
+                Some(serde_json::json!({ "manual_discounts": self.manual_discounts }))
+            },
         }
     }
 }

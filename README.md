@@ -51,10 +51,47 @@ The image stores the SQLite DB in `/data`; use `-v apex-edge-data:/data` (or any
 
 **Local (Rust):**
 
+From the repo root, run the server. The database file is created automatically if it does not exist.
+
+```bash
+cargo run -p apex-edge
+```
+
+Or build and run the release binary:
+
 ```bash
 cargo build --release
+# Linux / macOS:
 APEX_EDGE_DB=./apex_edge.db ./target/release/apex-edge
+# Windows (PowerShell):
+$env:APEX_EDGE_DB = ".\apex_edge.db"; .\target\release\apex-edge.exe
 ```
+
+Optional: set `APEX_EDGE_DB` to a path (relative or absolute). Default is `apex_edge.db` in the current working directory.
+
+### Demo data seeding (for POS frontend)
+
+To quickly populate the local DB with plenty of demo categories, products, and customers:
+
+```bash
+# Linux / macOS
+APEX_EDGE_SEED_DEMO=1 cargo run -p apex-edge
+
+# Windows PowerShell
+$env:APEX_EDGE_SEED_DEMO = "1"; cargo run -p apex-edge
+```
+
+Or pass a CLI flag:
+
+```bash
+cargo run -p apex-edge -- --seed-demo
+```
+
+Seeded data is store-scoped to `store_id = 00000000-0000-0000-0000-000000000000` and includes (at minimum):
+- 8 categories
+- 180 products with prices and descriptions
+- 120 customers with codes and emails
+- 6 promotions (coupons: SAVE10, FLAT5, VIP20; automatic: spend $20 get 5% off, Beverages 10% off, Buy 2+ Bakery get 15% off Bakery)
 
 - **Health**: `GET /health` — liveness.
 - **Ready**: `GET /ready` — readiness (checks DB).

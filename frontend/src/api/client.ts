@@ -9,7 +9,9 @@ import type {
   CartState,
   FinalizeResult,
   ProductSearchResult,
+  ProductListResponse,
   CustomerSearchResult,
+  CategoryResult,
   DocumentSummary,
   DocumentResponse,
 } from './types';
@@ -46,14 +48,44 @@ export async function getReady(baseUrl: string): Promise<{ status: string }> {
   return res.json();
 }
 
-export async function searchProducts(baseUrl: string, sku: string): Promise<ProductSearchResult[]> {
+/** Exact SKU lookup (returns array of 0 or 1). */
+export async function searchProductsBySku(baseUrl: string, sku: string): Promise<ProductSearchResult[]> {
   const res = await fetch(`${baseUrl}/catalog/products?sku=${encodeURIComponent(sku)}`);
+  if (!res.ok) throw normalizeError(res.status, await res.json().catch(() => ({})));
+  const data = await res.json();
+  return Array.isArray(data) ? data : [];
+}
+
+/** List/browse products with optional search, category filter, and pagination. */
+export async function listProducts(
+  baseUrl: string,
+  params: { q?: string; category_id?: string; page?: number; per_page?: number }
+): Promise<ProductListResponse> {
+  const sp = new URLSearchParams();
+  if (params.q?.trim()) sp.set('q', params.q.trim());
+  if (params.category_id) sp.set('category_id', params.category_id);
+  if (params.page != null) sp.set('page', String(params.page));
+  if (params.per_page != null) sp.set('per_page', String(params.per_page));
+  const res = await fetch(`${baseUrl}/catalog/products?${sp.toString()}`);
+  if (!res.ok) throw normalizeError(res.status, await res.json().catch(() => ({})));
+  const data = await res.json();
+  if (data && typeof data === 'object' && 'items' in data && Array.isArray(data.items)) {
+    return data as ProductListResponse;
+  }
+  return { items: [], total: 0, page: 1, per_page: params.per_page ?? 24 };
+}
+
+export async function listCategories(baseUrl: string): Promise<CategoryResult[]> {
+  const res = await fetch(`${baseUrl}/catalog/categories`);
   if (!res.ok) throw normalizeError(res.status, await res.json().catch(() => ({})));
   return res.json();
 }
 
-export async function searchCustomers(baseUrl: string, code: string): Promise<CustomerSearchResult[]> {
-  const res = await fetch(`${baseUrl}/customers?code=${encodeURIComponent(code)}`);
+/** Search customers by name, email, code, or id (single query param q). */
+export async function searchCustomers(baseUrl: string, q: string): Promise<CustomerSearchResult[]> {
+  const trimmed = q.trim();
+  if (!trimmed) return [];
+  const res = await fetch(`${baseUrl}/customers?q=${encodeURIComponent(trimmed)}`);
   if (!res.ok) throw normalizeError(res.status, await res.json().catch(() => ({})));
   return res.json();
 }
@@ -73,11 +105,13 @@ export async function postPosCommand(
   return data as PosResponseEnvelope<CartState | FinalizeResult | null>;
 }
 
-/** Build payload object matching backend: { action, [snake_case_variant]: payload }. */
+/** Build payload object matching backend internal-tagged enum: { action, ...payloadFields }. */
 function serializeEnvelope(envelope: PosRequestEnvelope<PosCommand>): Record<string, unknown> {
   const cmd = envelope.payload as { action: string; payload: unknown };
-  const key = cmd.action;
-  const payloadObj = key ? { [key]: cmd.payload } : {};
+  const payloadObj =
+    cmd.payload && typeof cmd.payload === 'object'
+      ? (cmd.payload as Record<string, unknown>)
+      : {};
   return {
     version: envelope.version,
     idempotency_key: envelope.idempotency_key,
@@ -95,6 +129,14 @@ export async function listOrderDocuments(baseUrl: string, orderId: string): Prom
 
 export async function getDocument(baseUrl: string, id: string): Promise<DocumentResponse> {
   const res = await fetch(`${baseUrl}/documents/${id}`);
+  if (!res.ok) throw normalizeError(res.status, await res.json().catch(() => ({})));
+  return res.json();
+}
+
+export async function createGiftReceipt(baseUrl: string, orderId: string): Promise<DocumentSummary> {
+  const res = await fetch(`${baseUrl}/orders/${orderId}/documents/gift-receipt`, {
+    method: 'POST',
+  });
   if (!res.ok) throw normalizeError(res.status, await res.json().catch(() => ({})));
   return res.json();
 }

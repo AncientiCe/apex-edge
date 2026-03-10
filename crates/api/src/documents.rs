@@ -4,6 +4,7 @@ use apex_edge_metrics::{
     DOCUMENT_OPERATIONS_TOTAL, DOCUMENT_OPERATION_DURATION_SECONDS, OP_GET_DOCUMENT,
     OP_LIST_ORDER_DOCUMENTS, OUTCOME_ERROR, OUTCOME_HIT, OUTCOME_NOT_FOUND,
 };
+use apex_edge_printing::generate_document;
 use axum::{
     extract::{Path, State},
     Json,
@@ -95,4 +96,50 @@ pub async fn list_order_documents(
     metrics::counter!(DOCUMENT_OPERATIONS_TOTAL, 1u64, "operation" => op, "outcome" => outcome);
     metrics::histogram!(DOCUMENT_OPERATION_DURATION_SECONDS, start.elapsed().as_secs_f64(), "operation" => op);
     response
+}
+
+/// Synchronously generate a gift receipt for an existing order and return the new document summary.
+pub async fn create_gift_receipt_document(
+    State(state): State<AppState>,
+    Path(order_id): Path<Uuid>,
+) -> Result<Json<DocumentSummary>, axum::http::StatusCode> {
+    let existing = apex_edge_storage::list_documents_for_order(&state.pool, order_id)
+        .await
+        .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+    let source = existing
+        .iter()
+        .find(|d| d.document_type == "receipt")
+        .or_else(|| existing.first())
+        .ok_or(axum::http::StatusCode::NOT_FOUND)?;
+
+    let payload: serde_json::Value = serde_json::from_str(&source.payload)
+        .unwrap_or_else(|_| serde_json::json!({ "order_id": order_id.to_string() }));
+    let payload_json = payload.to_string();
+    let doc_id = Uuid::new_v4();
+    generate_document(
+        &state.pool,
+        doc_id,
+        "gift_receipt",
+        Some(order_id),
+        source.cart_id,
+        Uuid::nil(),
+        "Gift Receipt\nOrder: {{order_id}}\nTotal: {{total_cents}}",
+        &payload_json,
+        "text/plain",
+    )
+    .await
+    .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let created = apex_edge_storage::get_document(&state.pool, doc_id)
+        .await
+        .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(DocumentSummary {
+        id: created.id,
+        document_type: created.document_type,
+        status: created.status,
+        mime_type: created.mime_type,
+        created_at: created.created_at,
+        completed_at: created.completed_at,
+    }))
 }
