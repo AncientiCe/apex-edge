@@ -1,0 +1,37 @@
+# Build
+/target/
+**/*.rs.bk
+*.pdb
+
+# Local DB and secrets
+*.db
+*.db-journal
+*.db-wal
+*.sqlite
+*.sqlite3
+.env
+.env.*
+!.env.example
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Debug and coverage
+*.profraw
+*.profdata
+coverage/
+*.lcov
+
+# Logs and temp
+*.log
+/tmp/
+/temp/

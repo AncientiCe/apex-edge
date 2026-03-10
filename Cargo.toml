@@ -1,0 +1,12 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/contracts",
+    "crates/domain",
+    "crates/storage",
+    "crates/sync",
+    "crates/outbox",
+    "crates/printing",
+    "crates/api",
+    "apex-edge",
+]

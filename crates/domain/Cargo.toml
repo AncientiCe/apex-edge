@@ -1,0 +1,11 @@
+[package]
+name = "apex-edge-domain"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+apex-edge-contracts = { path = "../contracts" }
+thiserror = "1.0"
+uuid = { version = "1.0", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+serde = { version = "1.0", features = ["derive"] }

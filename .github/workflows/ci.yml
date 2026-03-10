@@ -1,0 +1,42 @@
+# Production quality gate: fmt, clippy, tests, audit. Required for PR and push to main.
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: fmt, clippy, test, audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit
+
+      - name: Check format
+        run: make fmt
+
+      - name: Clippy
+        run: make clippy
+
+      - name: Tests
+        run: make test
+
+      - name: Dependency audit
+        run: make audit
