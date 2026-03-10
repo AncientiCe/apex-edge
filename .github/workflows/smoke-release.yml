@@ -21,23 +21,34 @@ jobs:
 
       - name: Run smoke against live container
         run: |
+          set -euo pipefail
           docker run -d --name apex-edge-smoke -p 3000:3000 \
             -e APEX_EDGE_DB="sqlite:file:smoke_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}?mode=memory&cache=shared" \
             apex-edge:ci
           trap "docker logs apex-edge-smoke || true; docker rm -f apex-edge-smoke >/dev/null 2>&1 || true" EXIT
 
+          echo "Smoke test 1/4: wait for container health endpoint"
           # Wait for server readiness instead of fixed sleep.
           for i in {1..30}; do
             if curl -sf http://127.0.0.1:3000/health >/dev/null; then
+              echo "Container is accepting requests"
               break
             fi
             sleep 1
           done
 
-          set -e
+          echo "Smoke test 2/4: GET /health returns status=ok"
           curl -sf http://127.0.0.1:3000/health | grep -q '"status":"ok"'
+          echo "Passed: /health"
+
+          echo "Smoke test 3/4: GET /ready returns status=ready"
           curl -sf http://127.0.0.1:3000/ready | grep -q '"status":"ready"'
+          echo "Passed: /ready"
+
+          echo "Smoke test 4/4: POST /pos/command returns success=true"
           curl -sf -X POST http://127.0.0.1:3000/pos/command \
             -H "Content-Type: application/json" \
             -d '{"version":{"major":1,"minor":0,"patch":0},"idempotency_key":"00000000-0000-0000-0000-000000000001","store_id":"00000000-0000-0000-0000-000000000000","register_id":"00000000-0000-0000-0000-000000000000","payload":{"action":"create_cart","cart_id":null}}' \
             | grep -q '"success":true'
+          echo "Passed: /pos/command"
+          echo "All smoke tests passed."

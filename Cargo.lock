@@ -99,6 +99,7 @@ version = "0.1.0"
 dependencies = [
  "apex-edge-contracts",
  "apex-edge-storage",
+ "axum",
  "chrono",
  "reqwest",
  "serde",
@@ -121,6 +122,7 @@ dependencies = [
  "serde_json",
  "sqlx",
  "thiserror 1.0.69",
+ "tokio",
  "uuid",
 ]
 

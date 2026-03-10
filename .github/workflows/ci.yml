@@ -38,5 +38,8 @@ jobs:
       - name: Tests
         run: make test
 
+      - name: Orchestrator journey test
+        run: cargo test -p apex-edge --test orchestrator_journey
+
       - name: Dependency audit
         run: make audit
