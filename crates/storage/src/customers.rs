@@ -97,13 +97,17 @@ pub async fn insert_customer(
     store_id: Uuid,
     code: &str,
     name: &str,
+    email: Option<&str>,
 ) -> Result<(), PoolError> {
-    sqlx::query("INSERT OR REPLACE INTO customers (id, store_id, code, name, email) VALUES (?, ?, ?, ?, NULL)")
-        .bind(id.to_string())
-        .bind(store_id.to_string())
-        .bind(code)
-        .bind(name)
-        .execute(pool)
-        .await?;
+    sqlx::query(
+        "INSERT OR REPLACE INTO customers (id, store_id, code, name, email) VALUES (?, ?, ?, ?, ?)",
+    )
+    .bind(id.to_string())
+    .bind(store_id.to_string())
+    .bind(code)
+    .bind(name)
+    .bind(email)
+    .execute(pool)
+    .await?;
     Ok(())
 }

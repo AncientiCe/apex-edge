@@ -2,8 +2,10 @@
 
 use apex_edge::build_router;
 use apex_edge_contracts::ContractVersion;
+use apex_edge_outbox::run_dispatcher_loop;
 use apex_edge_storage::{create_sqlite_pool, seed_demo_data};
 use apex_edge_sync::{run_sync_ndjson, SyncEntityConfig, SyncSourceConfig};
+use axum::http::HeaderValue;
 use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 
@@ -100,8 +102,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         });
     }
 
+    let hq_submit_url = std::env::var("APEX_EDGE_HQ_SUBMIT_URL").ok();
+    if let Some(ref url) = hq_submit_url {
+        let pool_dispatch = pool.clone();
+        let url_dispatch = url.clone();
+        tokio::spawn(async move {
+            run_dispatcher_loop(
+                pool_dispatch,
+                reqwest::Client::new(),
+                url_dispatch,
+                std::time::Duration::from_secs(30),
+            )
+            .await;
+        });
+        tracing::info!("Outbox dispatcher started (HQ submit URL: {})", url);
+    }
+
+    let allowed_origins: Vec<HeaderValue> = std::env::var("APEX_EDGE_ALLOWED_ORIGINS")
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .filter_map(|s| s.parse::<HeaderValue>().ok())
+        .collect();
+    if !allowed_origins.is_empty() {
+        tracing::info!("CORS restricted to {} origin(s)", allowed_origins.len());
+    } else {
+        tracing::warn!("CORS: allowing all origins (set APEX_EDGE_ALLOWED_ORIGINS for production)");
+    }
     let metrics_handle = apex_edge_metrics::install_recorder()?;
-    let app = build_router(pool, Uuid::nil(), Some(metrics_handle));
+    let app = build_router(pool, Uuid::nil(), Some(metrics_handle), allowed_origins);
 
     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], 3000));
     tracing::info!("ApexEdge listening on {}", addr);

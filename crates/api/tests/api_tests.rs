@@ -1,11 +1,13 @@
 use apex_edge_api::{
     create_gift_receipt_document, get_cart_state_handler, get_document, handle_pos_command, health,
-    list_order_documents, ready, sync_status, AppState,
+    list_order_documents, ready, serve_metrics, sync_status, AppState,
 };
 use apex_edge_contracts::{
     CartState, ContractVersion, CreateCartPayload, PosCommand, PosRequestEnvelope,
+    RemoveLineItemPayload,
 };
 use apex_edge_storage::{enqueue_document, mark_generated, run_migrations};
+use axum::response::IntoResponse;
 use axum::{extract::State, Json};
 use sqlx::sqlite::SqlitePoolOptions;
 use uuid::Uuid;
@@ -218,6 +220,91 @@ async fn get_cart_state_returns_cart_for_known_id() {
 }
 
 #[tokio::test]
+async fn remove_line_item_returns_cart_not_found_for_unknown_cart() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("pool");
+    run_migrations(&pool).await.expect("migrations");
+
+    let state = AppState {
+        store_id: Uuid::nil(),
+        pool,
+        metrics_handle: None,
+    };
+
+    let res = handle_pos_command(
+        State(state),
+        Json(PosRequestEnvelope {
+            version: ContractVersion::V1_0_0,
+            idempotency_key: Uuid::new_v4(),
+            store_id: Uuid::nil(),
+            register_id: Uuid::nil(),
+            payload: PosCommand::RemoveLineItem(RemoveLineItemPayload {
+                cart_id: Uuid::new_v4(),
+                line_id: Uuid::new_v4(),
+            }),
+        }),
+    )
+    .await;
+
+    assert!(!res.0.success);
+    assert_eq!(res.0.errors[0].code, "CART_NOT_FOUND");
+}
+
+#[tokio::test]
+async fn remove_line_item_returns_line_not_found_for_unknown_line() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("pool");
+    run_migrations(&pool).await.expect("migrations");
+
+    let state = AppState {
+        store_id: Uuid::nil(),
+        pool: pool.clone(),
+        metrics_handle: None,
+    };
+
+    // Create a cart first
+    let created = handle_pos_command(
+        State(state.clone()),
+        Json(PosRequestEnvelope {
+            version: ContractVersion::V1_0_0,
+            idempotency_key: Uuid::new_v4(),
+            store_id: Uuid::nil(),
+            register_id: Uuid::nil(),
+            payload: PosCommand::CreateCart(CreateCartPayload { cart_id: None }),
+        }),
+    )
+    .await;
+    assert!(created.0.success);
+    let cart_state: CartState =
+        serde_json::from_value(created.0.payload.unwrap()).expect("cart state");
+
+    // Attempt to remove a line that doesn't exist
+    let res = handle_pos_command(
+        State(state),
+        Json(PosRequestEnvelope {
+            version: ContractVersion::V1_0_0,
+            idempotency_key: Uuid::new_v4(),
+            store_id: Uuid::nil(),
+            register_id: Uuid::nil(),
+            payload: PosCommand::RemoveLineItem(RemoveLineItemPayload {
+                cart_id: cart_state.cart_id,
+                line_id: Uuid::new_v4(),
+            }),
+        }),
+    )
+    .await;
+
+    assert!(!res.0.success);
+    assert_eq!(res.0.errors[0].code, "LINE_NOT_FOUND");
+}
+
+#[tokio::test]
 async fn get_cart_state_returns_not_found_for_unknown_id() {
     let pool = SqlitePoolOptions::new()
         .max_connections(1)
@@ -236,5 +323,28 @@ async fn get_cart_state_returns_not_found_for_unknown_id() {
     assert_eq!(
         result.expect_err("must return not found"),
         axum::http::StatusCode::NOT_FOUND
+    );
+}
+
+#[tokio::test]
+async fn metrics_endpoint_returns_404_when_recorder_not_installed() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("pool");
+    run_migrations(&pool).await.expect("migrations");
+
+    let state = AppState {
+        store_id: Uuid::nil(),
+        pool,
+        metrics_handle: None,
+    };
+
+    let response = serve_metrics(State(state)).await.into_response();
+    assert_eq!(
+        response.status(),
+        axum::http::StatusCode::NOT_FOUND,
+        "metrics endpoint should return 404 when no handle is configured"
     );
 }

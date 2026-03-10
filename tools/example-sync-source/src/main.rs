@@ -4,7 +4,7 @@
 //! Listen port: 3030 by default (env SYNC_SOURCE_PORT).
 
 use apex_edge_contracts::{
-    CatalogItem, Category, CouponDefinition, PriceBook, PriceBookEntry, PromoAction,
+    CatalogItem, Category, CouponDefinition, Customer, PriceBook, PriceBookEntry, PromoAction,
     PromoCondition, Promotion, PromotionType, TaxRule,
 };
 use axum::{body::Body, extract::State, http::Response, routing::get, Router};
@@ -202,23 +202,14 @@ async fn ndjson_promotions(State(state): State<Arc<AppState>>) -> Response<Body>
         .unwrap()
 }
 
-#[derive(Serialize)]
-struct ExampleCustomer {
-    id: Uuid,
-    store_id: Uuid,
-    code: String,
-    name: String,
-    email: Option<String>,
-}
-
 async fn ndjson_customers(State(state): State<Arc<AppState>>) -> Response<Body> {
-    let store_id = state.store_id;
-    let customers: Vec<ExampleCustomer> = vec![ExampleCustomer {
+    let _ = state;
+    let customers: Vec<Customer> = vec![Customer {
         id: Uuid::parse_str("70000000-0000-0000-0000-000000000001").unwrap(),
-        store_id,
         code: "CUST01".into(),
         name: "Demo Customer".into(),
         email: Some("demo@example.com".into()),
+        version: 1,
     }];
     let lines: Vec<String> = customers
         .iter()

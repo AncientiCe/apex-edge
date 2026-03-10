@@ -205,6 +205,25 @@ impl Cart {
         };
     }
 
+    /// Remove a line item by `line_id`. Returns `LineNotFound` if absent or `InvalidTransition`
+    /// if the cart cannot be edited. Re-evaluates state after removal.
+    pub fn remove_line_item(&mut self, line_id: Uuid) -> Result<(), DomainError> {
+        self.ensure_can_edit()?;
+        let pos = self
+            .lines
+            .iter()
+            .position(|l| l.line_id == line_id)
+            .ok_or(DomainError::LineNotFound(line_id))?;
+        self.lines.remove(pos);
+        self.updated_at = Utc::now();
+        self.state = if self.lines.is_empty() {
+            CartStateKind::Open
+        } else {
+            CartStateKind::Itemized
+        };
+        Ok(())
+    }
+
     pub fn set_discounted(&mut self) {
         self.state = CartStateKind::Discounted;
         self.updated_at = Utc::now();
@@ -350,6 +369,83 @@ mod tests {
     use crate::errors::DomainError;
     use apex_edge_contracts::CartStateKind;
     use uuid::Uuid;
+
+    fn make_line(line_id: Uuid) -> CartLineItem {
+        CartLineItem {
+            line_id,
+            item_id: Uuid::new_v4(),
+            sku: "SKU-1".into(),
+            name: "Test Item".into(),
+            quantity: 1,
+            modifier_option_ids: vec![],
+            notes: None,
+            unit_price_cents: 500,
+            line_total_cents: 500,
+            discount_cents: 0,
+            tax_cents: 0,
+        }
+    }
+
+    #[test]
+    fn remove_line_item_removes_the_line() {
+        let mut cart = Cart::new(Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+        let line_id = Uuid::new_v4();
+        cart.lines.push(make_line(line_id));
+        cart.state = CartStateKind::Itemized;
+
+        cart.remove_line_item(line_id).expect("should remove");
+        assert!(cart.lines.is_empty());
+    }
+
+    #[test]
+    fn remove_line_item_transitions_to_open_when_last_line_removed() {
+        let mut cart = Cart::new(Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+        let line_id = Uuid::new_v4();
+        cart.lines.push(make_line(line_id));
+        cart.state = CartStateKind::Itemized;
+
+        cart.remove_line_item(line_id).expect("should remove");
+        assert_eq!(cart.state, CartStateKind::Open);
+    }
+
+    #[test]
+    fn remove_line_item_keeps_itemized_when_other_lines_remain() {
+        let mut cart = Cart::new(Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+        let line_a = Uuid::new_v4();
+        let line_b = Uuid::new_v4();
+        cart.lines.push(make_line(line_a));
+        cart.lines.push(make_line(line_b));
+        cart.state = CartStateKind::Itemized;
+
+        cart.remove_line_item(line_a).expect("should remove");
+        assert_eq!(cart.lines.len(), 1);
+        assert_eq!(cart.state, CartStateKind::Itemized);
+    }
+
+    #[test]
+    fn remove_line_item_errors_on_unknown_line_id() {
+        let mut cart = Cart::new(Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+        cart.lines.push(make_line(Uuid::new_v4()));
+        cart.state = CartStateKind::Itemized;
+
+        let err = cart
+            .remove_line_item(Uuid::new_v4())
+            .expect_err("must reject unknown line");
+        assert!(matches!(err, DomainError::LineNotFound(_)));
+    }
+
+    #[test]
+    fn remove_line_item_rejected_when_cart_not_editable() {
+        let mut cart = Cart::new(Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+        let line_id = Uuid::new_v4();
+        cart.lines.push(make_line(line_id));
+        cart.state = CartStateKind::Tendering;
+
+        let err = cart
+            .remove_line_item(line_id)
+            .expect_err("must reject in tendering state");
+        assert!(matches!(err, DomainError::InvalidTransition(_)));
+    }
 
     #[test]
     fn cannot_finalize_when_not_paid() {

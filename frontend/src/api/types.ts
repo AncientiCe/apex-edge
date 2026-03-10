@@ -51,6 +51,11 @@ export interface AddLineItemPayload {
   unit_price_override_cents?: number | null;
 }
 
+export interface RemoveLineItemPayload {
+  cart_id: string;
+  line_id: string;
+}
+
 export interface SetTenderingPayload {
   cart_id: string;
 }
@@ -70,6 +75,7 @@ export type PosCommand =
   | { action: 'create_cart'; payload: CreateCartPayload }
   | { action: 'set_customer'; payload: SetCustomerPayload }
   | { action: 'add_line_item'; payload: AddLineItemPayload }
+  | { action: 'remove_line_item'; payload: RemoveLineItemPayload }
   | { action: 'set_tendering'; payload: SetTenderingPayload }
   | { action: 'add_payment'; payload: AddPaymentPayload }
   | { action: 'finalize_order'; payload: FinalizeOrderPayload };

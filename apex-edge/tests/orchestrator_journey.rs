@@ -31,7 +31,7 @@ async fn start_app() -> (u16, sqlx::SqlitePool) {
         .expect("pool");
     run_migrations(&pool).await.expect("migrations");
 
-    let app = build_router(pool.clone(), STORE_ID, None);
+    let app = build_router(pool.clone(), STORE_ID, None, vec![]);
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let port = listener.local_addr().expect("local addr").port();
     tokio::spawn(async move {
@@ -108,7 +108,7 @@ async fn seed_full_flow_data(pool: &sqlx::SqlitePool) {
     let promo_id = Uuid::parse_str("44444444-4444-4444-4444-444444444444").unwrap();
     let promo = Promotion {
         id: promo_id,
-        code: Some("20OFF".into()),
+        code: None,
         name: "20% off 2 products".into(),
         promo_type: PromotionType::PercentageOff { percent_bps: 2000 },
         priority: 10,
@@ -124,7 +124,7 @@ async fn seed_full_flow_data(pool: &sqlx::SqlitePool) {
         .expect("insert promo");
 
     let customer_id = Uuid::parse_str("55555555-5555-5555-5555-555555555555").unwrap();
-    insert_customer(pool, customer_id, STORE_ID, "CUST01", "Test Customer")
+    insert_customer(pool, customer_id, STORE_ID, "CUST01", "Test Customer", None)
         .await
         .expect("insert customer");
 }
@@ -138,7 +138,7 @@ async fn start_app_with_seed() -> (u16, sqlx::SqlitePool) {
     run_migrations(&pool).await.expect("migrations");
     seed_full_flow_data(&pool).await;
 
-    let app = build_router(pool.clone(), STORE_ID, None);
+    let app = build_router(pool.clone(), STORE_ID, None, vec![]);
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let port = listener.local_addr().expect("local addr").port();
     tokio::spawn(async move {

@@ -237,20 +237,46 @@ async fn sync_data_progress_percent_and_ingest_with_any_progress() {
 // --- NDJSON streaming tests (require fetch_entity_ndjson_stream and streamed ingest) ---
 
 /// Helper: start a server that serves one entity as NDJSON (first line = {"total": N}, then N lines of base64 payload).
+/// Serves valid CatalogItem JSON so apply_entity_batch can parse it.
 async fn start_ndjson_sync_server() -> (u16, String) {
+    use apex_edge_contracts::CatalogItem;
     use axum::body::Body;
     use axum::http::Response;
     use axum::routing::get;
+    use uuid::Uuid;
+
+    fn make_catalog_ndjson_body() -> String {
+        let item1 = CatalogItem {
+            id: Uuid::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap(),
+            sku: "NDJSON-001".into(),
+            name: "NDJSON Item 1".into(),
+            description: None,
+            category_id: Uuid::nil(),
+            tax_category_id: Uuid::nil(),
+            modifiers: vec![],
+            is_active: true,
+            version: 1,
+        };
+        let item2 = CatalogItem {
+            id: Uuid::parse_str("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb").unwrap(),
+            sku: "NDJSON-002".into(),
+            name: "NDJSON Item 2".into(),
+            description: None,
+            category_id: Uuid::nil(),
+            tax_category_id: Uuid::nil(),
+            modifiers: vec![],
+            is_active: true,
+            version: 1,
+        };
+        let b64_1 = BASE64.encode(serde_json::to_vec(&item1).unwrap());
+        let b64_2 = BASE64.encode(serde_json::to_vec(&item2).unwrap());
+        format!("{{\"total\":2}}\n\"{b64_1}\"\n\"{b64_2}\"")
+    }
 
     async fn ndjson_catalog() -> Response<Body> {
-        let body = format!(
-            "{{\"total\":2}}\n\"{}\"\n\"{}\"",
-            BASE64.encode(b"catalog-item-1"),
-            BASE64.encode(b"catalog-item-2")
-        );
         Response::builder()
             .header("content-type", "application/x-ndjson")
-            .body(Body::from(body))
+            .body(Body::from(make_catalog_ndjson_body()))
             .unwrap()
     }
 
@@ -291,8 +317,13 @@ async fn fetch_entity_ndjson_stream_yields_payloads_incrementally() {
     .expect("fetch_entity_ndjson_stream");
 
     assert_eq!(collected.len(), 2, "should collect two payloads");
-    assert_eq!(collected[0], b"catalog-item-1");
-    assert_eq!(collected[1], b"catalog-item-2");
+    // Payloads are valid CatalogItem JSON bytes
+    let item1: apex_edge_contracts::CatalogItem =
+        serde_json::from_slice(&collected[0]).expect("first payload should be valid CatalogItem");
+    let item2: apex_edge_contracts::CatalogItem =
+        serde_json::from_slice(&collected[1]).expect("second payload should be valid CatalogItem");
+    assert_eq!(item1.sku, "NDJSON-001");
+    assert_eq!(item2.sku, "NDJSON-002");
     assert!(
         !progress_updates.is_empty(),
         "progress callback should be invoked at least once"

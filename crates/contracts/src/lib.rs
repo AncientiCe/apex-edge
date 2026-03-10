@@ -4,6 +4,7 @@
 pub mod catalog;
 pub mod config;
 pub mod coupons;
+pub mod customers;
 pub mod hq;
 pub mod pos;
 pub mod pricing;
@@ -14,6 +15,7 @@ pub mod version;
 pub use catalog::*;
 pub use config::*;
 pub use coupons::*;
+pub use customers::*;
 pub use hq::*;
 pub use pos::*;
 pub use pricing::*;

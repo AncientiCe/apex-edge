@@ -5,8 +5,8 @@ use apex_edge_api::{
     list_categories, list_order_documents, ready, search_customers, search_products, serve_metrics,
     sync_status, AppState,
 };
-use axum::{routing::get, Router};
-use tower_http::cors::{Any, CorsLayer};
+use axum::{http::HeaderValue, routing::get, Router};
+use tower_http::cors::{AllowOrigin, CorsLayer};
 use uuid::Uuid;
 
 use crate::http_metrics_layer::HttpMetricsLayer;
@@ -14,6 +14,8 @@ use crate::http_metrics_layer::HttpMetricsLayer;
 /// Builds the Axum router with all routes and shared state.
 /// Caller is responsible for DB pool creation, migrations, and binding the server.
 /// Pass `Some(handle)` from `apex_edge_metrics::install_recorder()` to expose `/metrics`.
+/// Pass a non-empty `allowed_origins` to restrict CORS to specific origins; an empty
+/// list allows all origins (wildcard — suitable for local dev only).
 ///
 /// # Examples
 ///
@@ -29,21 +31,27 @@ use crate::http_metrics_layer::HttpMetricsLayer;
 ///     .connect("sqlite::memory:")
 ///     .await
 ///     .unwrap();
-/// let _app = build_router(pool, Uuid::nil(), None);
+/// let _app = build_router(pool, Uuid::nil(), None, vec![]);
 /// # }
 /// ```
 pub fn build_router(
     pool: sqlx::SqlitePool,
     store_id: Uuid,
     metrics_handle: Option<apex_edge_metrics::PrometheusHandle>,
+    allowed_origins: Vec<HeaderValue>,
 ) -> Router {
     let app_state = AppState {
         store_id,
         pool,
         metrics_handle,
     };
+    let cors_origin = if allowed_origins.is_empty() {
+        AllowOrigin::any()
+    } else {
+        AllowOrigin::list(allowed_origins)
+    };
     let cors = CorsLayer::new()
-        .allow_origin(Any)
+        .allow_origin(cors_origin)
         .allow_methods([
             axum::http::Method::GET,
             axum::http::Method::POST,
@@ -80,7 +88,7 @@ mod tests {
     async fn router_exposes_health_and_ready_routes() {
         let pool = create_sqlite_pool("sqlite::memory:").await.expect("pool");
         run_migrations(&pool).await.expect("migrations");
-        let app = build_router(pool, Uuid::nil(), None);
+        let app = build_router(pool, Uuid::nil(), None, vec![]);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind");
@@ -111,7 +119,7 @@ mod tests {
         let handle = apex_edge_metrics::install_recorder().expect("install recorder");
         let pool = create_sqlite_pool("sqlite::memory:").await.expect("pool");
         run_migrations(&pool).await.expect("migrations");
-        let app = build_router(pool, Uuid::nil(), Some(handle));
+        let app = build_router(pool, Uuid::nil(), Some(handle), vec![]);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind");

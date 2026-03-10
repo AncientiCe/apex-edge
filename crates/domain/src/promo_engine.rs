@@ -42,6 +42,7 @@ pub fn apply_promos_to_lines(
             lines,
             &line_totals,
             &promo.actions,
+            &promo.conditions,
             &category_by_item,
         );
         allocate_discount_to_lines(
@@ -50,6 +51,7 @@ pub fn apply_promos_to_lines(
             &mut line_discounts,
             &mut line_totals,
             discount,
+            &promo.conditions,
             &category_by_item,
         );
     }
@@ -113,11 +115,67 @@ fn conditions_met(
     true
 }
 
+fn effective_max_units(
+    lines: &[CartLineItem],
+    actions: &[PromoAction],
+    conditions: &[PromoCondition],
+    category_by_item: &impl Fn(Uuid) -> Uuid,
+) -> Option<u32> {
+    let target_action = actions.iter().find_map(|action| match action {
+        PromoAction::ApplyToItem {
+            item_id,
+            max_quantity,
+        } => Some((Some(*item_id), None, *max_quantity)),
+        PromoAction::ApplyToCategory {
+            category_id,
+            max_quantity,
+        } => Some((None, Some(*category_id), *max_quantity)),
+        PromoAction::ApplyToBasket => None,
+    })?;
+    let (item_target, category_target, action_max_quantity) = target_action;
+    let condition_min_quantity = conditions.iter().find_map(|condition| match condition {
+        PromoCondition::ItemInBasket {
+            item_id,
+            min_quantity,
+        } if item_target == Some(*item_id) => Some(*min_quantity),
+        PromoCondition::CategoryInBasket {
+            category_id,
+            min_quantity,
+        } if category_target == Some(*category_id) => Some(*min_quantity),
+        _ => None,
+    });
+    let base_max_units = action_max_quantity.or(condition_min_quantity)?;
+    let repeat_groups = if let Some(trigger_units) = condition_min_quantity {
+        if trigger_units == 0 {
+            1
+        } else {
+            let matching_units: u32 = lines
+                .iter()
+                .filter(|line| {
+                    item_target
+                        .map(|item_id| line.item_id == item_id)
+                        .or_else(|| {
+                            category_target
+                                .map(|category_id| category_by_item(line.item_id) == category_id)
+                        })
+                        .unwrap_or(false)
+                })
+                .map(|line| line.quantity)
+                .sum();
+            (matching_units / trigger_units).max(1)
+        }
+    } else {
+        1
+    };
+    Some(base_max_units.saturating_mul(repeat_groups))
+}
+
 /// (line, eligible_quantity) where eligible_quantity is capped by promo max_quantity so only the first N units get the discount.
 fn applicable_lines_with_cap<'a>(
     lines: &'a [CartLineItem],
     line_totals: &std::collections::HashMap<Uuid, u64>,
     actions: &[PromoAction],
+    max_units: Option<u32>,
     category_by_item: &impl Fn(Uuid) -> Uuid,
 ) -> Vec<(&'a CartLineItem, u32)> {
     let mut applicable: Vec<_> = lines
@@ -125,11 +183,6 @@ fn applicable_lines_with_cap<'a>(
         .filter(|l| action_applies_to_line(l, actions, category_by_item))
         .collect();
     applicable.sort_by_key(|l| l.line_id);
-    let max_units = actions.iter().find_map(|a| match a {
-        PromoAction::ApplyToItem { max_quantity, .. }
-        | PromoAction::ApplyToCategory { max_quantity, .. } => *max_quantity,
-        PromoAction::ApplyToBasket => None,
-    });
     let mut remaining = max_units.unwrap_or(u32::MAX);
     let mut out = Vec::with_capacity(applicable.len());
     for line in applicable {
@@ -152,9 +205,12 @@ fn compute_promo_discount(
     lines: &[CartLineItem],
     line_totals: &std::collections::HashMap<Uuid, u64>,
     actions: &[PromoAction],
+    conditions: &[PromoCondition],
     category_by_item: &impl Fn(Uuid) -> Uuid,
 ) -> u64 {
-    let capped = applicable_lines_with_cap(lines, line_totals, actions, category_by_item);
+    let max_units = effective_max_units(lines, actions, conditions, category_by_item);
+    let capped =
+        applicable_lines_with_cap(lines, line_totals, actions, max_units, category_by_item);
     let applicable_total: u64 = capped
         .iter()
         .map(|(l, eligible_qty)| {
@@ -211,9 +267,12 @@ fn allocate_discount_to_lines(
     line_discounts: &mut std::collections::HashMap<Uuid, u64>,
     line_totals: &mut std::collections::HashMap<Uuid, u64>,
     total_discount: u64,
+    conditions: &[PromoCondition],
     category_by_item: &impl Fn(Uuid) -> Uuid,
 ) {
-    let capped = applicable_lines_with_cap(lines, line_totals, actions, category_by_item);
+    let max_units = effective_max_units(lines, actions, conditions, category_by_item);
+    let capped =
+        applicable_lines_with_cap(lines, line_totals, actions, max_units, category_by_item);
     let eligible_total_cents: u64 = capped
         .iter()
         .map(|(l, eligible_qty)| {
@@ -275,6 +334,22 @@ mod tests {
         }
     }
 
+    fn line_with_qty(item_id: Uuid, unit_price_cents: u64, quantity: u32) -> CartLineItem {
+        CartLineItem {
+            line_id: Uuid::new_v4(),
+            item_id,
+            sku: "sku".into(),
+            name: "name".into(),
+            quantity,
+            modifier_option_ids: vec![],
+            notes: None,
+            unit_price_cents,
+            line_total_cents: unit_price_cents.saturating_mul(quantity as u64),
+            discount_cents: 0,
+            tax_cents: 0,
+        }
+    }
+
     #[test]
     fn percentage_promo_allocates_discount_to_applicable_lines() {
         let item_a = Uuid::new_v4();
@@ -282,7 +357,7 @@ mod tests {
         let lines = vec![line(item_a, 1000), line(item_b, 1000)];
         let promo = Promotion {
             id: Uuid::new_v4(),
-            code: Some("P10".into()),
+            code: None,
             name: "10 off".into(),
             promo_type: PromotionType::PercentageOff { percent_bps: 1000 },
             priority: 10,
@@ -326,7 +401,7 @@ mod tests {
         let lines = vec![line1, line2, line3];
         let promo = Promotion {
             id: Uuid::new_v4(),
-            code: Some("BUY2_50".into()),
+            code: None,
             name: "Buy 2 get 50% off each".into(),
             promo_type: PromotionType::PercentageOff { percent_bps: 5000 },
             priority: 20,
@@ -351,5 +426,68 @@ mod tests {
         );
         let zero_count = priced.iter().filter(|l| l.discount_cents == 0).count();
         assert_eq!(zero_count, 1, "exactly one line should have no discount");
+    }
+
+    #[test]
+    fn item_min_quantity_caps_discount_when_action_has_no_max_quantity() {
+        let item = Uuid::new_v4();
+        let lines = vec![line(item, 100), line(item, 100), line(item, 100)];
+        let promo_without_action_cap = Promotion {
+            id: Uuid::new_v4(),
+            code: Some("BUY2_20".into()),
+            name: "Buy 2 get 20% off eligible units".into(),
+            promo_type: PromotionType::PercentageOff { percent_bps: 2000 },
+            priority: 100,
+            valid_from: Utc::now() - Duration::minutes(1),
+            valid_until: Some(Utc::now() + Duration::minutes(1)),
+            conditions: vec![PromoCondition::ItemInBasket {
+                item_id: item,
+                min_quantity: 2,
+            }],
+            actions: vec![PromoAction::ApplyToItem {
+                item_id: item,
+                max_quantity: None,
+            }],
+            version: 1,
+        };
+
+        let priced =
+            apply_promos_to_lines(&lines, |_| Uuid::nil(), &[promo_without_action_cap], 300);
+        let total_discount: u64 = priced.iter().map(|l| l.discount_cents).sum();
+        assert_eq!(
+            total_discount, 40,
+            "only 2 units should receive 20% discount"
+        );
+    }
+
+    #[test]
+    fn item_min_quantity_cap_applies_for_single_line_with_quantity_three() {
+        let item = Uuid::new_v4();
+        let lines = vec![line_with_qty(item, 100, 3)];
+        let promo_without_action_cap = Promotion {
+            id: Uuid::new_v4(),
+            code: Some("BUY2_20".into()),
+            name: "Buy 2 get 20% off eligible units".into(),
+            promo_type: PromotionType::PercentageOff { percent_bps: 2000 },
+            priority: 100,
+            valid_from: Utc::now() - Duration::minutes(1),
+            valid_until: Some(Utc::now() + Duration::minutes(1)),
+            conditions: vec![PromoCondition::ItemInBasket {
+                item_id: item,
+                min_quantity: 2,
+            }],
+            actions: vec![PromoAction::ApplyToItem {
+                item_id: item,
+                max_quantity: None,
+            }],
+            version: 1,
+        };
+
+        let priced =
+            apply_promos_to_lines(&lines, |_| Uuid::nil(), &[promo_without_action_cap], 300);
+        assert_eq!(
+            priced[0].discount_cents, 40,
+            "discount should apply to only 2 of 3 units"
+        );
     }
 }

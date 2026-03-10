@@ -279,6 +279,50 @@ pub async fn insert_catalog_item(
     Ok(())
 }
 
+/// Update the description of an existing catalog item. Used after insert when a description
+/// is available (e.g. during sync where `insert_catalog_item` does not accept a description
+/// to avoid exceeding the argument count lint threshold).
+pub async fn update_catalog_item_description(
+    pool: &SqlitePool,
+    id: Uuid,
+    description: &str,
+) -> Result<(), PoolError> {
+    sqlx::query("UPDATE catalog_items SET description = ? WHERE id = ?")
+        .bind(description)
+        .bind(id.to_string())
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Replace all price book entries for a store atomically (delete + insert in one transaction).
+/// Used during sync to apply a full snapshot of price book data.
+pub async fn replace_price_book_entries(
+    pool: &SqlitePool,
+    store_id: Uuid,
+    entries: &[(Uuid, Option<Uuid>, u64, String)],
+) -> Result<(), PoolError> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("DELETE FROM price_book_entries WHERE store_id = ?")
+        .bind(store_id.to_string())
+        .execute(&mut *tx)
+        .await?;
+    for (item_id, modifier_option_id, price_cents, currency) in entries {
+        sqlx::query(
+            "INSERT INTO price_book_entries (store_id, item_id, modifier_option_id, price_cents, currency) VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(store_id.to_string())
+        .bind(item_id.to_string())
+        .bind(modifier_option_id.map(|u| u.to_string()))
+        .bind(*price_cents as i64)
+        .bind(currency.as_str())
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
 pub async fn list_price_book_entries(
     pool: &SqlitePool,
     store_id: Uuid,

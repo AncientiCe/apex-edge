@@ -117,12 +117,7 @@ pub async fn seed_demo_data(
         let code = format!("CUST{:04}", c + 1);
         let name = format!("Customer {}", c + 1);
         let email = format!("customer{:04}@demo.local", c + 1);
-        insert_customer(pool, id, store_id, &code, &name).await?;
-        sqlx::query("UPDATE customers SET email = ? WHERE id = ?")
-            .bind(email)
-            .bind(id.to_string())
-            .execute(pool)
-            .await?;
+        insert_customer(pool, id, store_id, &code, &name, Some(&email)).await?;
         customer_count += 1;
     }
 

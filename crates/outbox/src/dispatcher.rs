@@ -2,8 +2,9 @@
 
 use apex_edge_contracts::HqOrderSubmissionResponse;
 use apex_edge_metrics::{
-    OUTBOX_DISPATCH_ATTEMPTS_TOTAL, OUTBOX_DISPATCH_DURATION_SECONDS, OUTBOX_DLQ_TOTAL,
-    OUTCOME_ACCEPTED, OUTCOME_HTTP_ERROR, OUTCOME_REJECTED, OUTCOME_TIMEOUT,
+    OUTBOX_DISPATCHER_CYCLES_TOTAL, OUTBOX_DISPATCH_ATTEMPTS_TOTAL,
+    OUTBOX_DISPATCH_DURATION_SECONDS, OUTBOX_DLQ_TOTAL, OUTCOME_ACCEPTED, OUTCOME_ERROR,
+    OUTCOME_HTTP_ERROR, OUTCOME_REJECTED, OUTCOME_TIMEOUT,
 };
 use apex_edge_storage::outbox::OutboxRow;
 use apex_edge_storage::outbox::{
@@ -122,6 +123,37 @@ async fn schedule_retry_with_backoff(
     let next = Utc::now() + Duration::seconds(delay_secs);
     schedule_retry(pool, row.id, next).await?;
     Ok(())
+}
+
+/// Run the outbox dispatcher in a continuous background loop.
+///
+/// Fires immediately on first call (first interval tick fires at t=0), then repeats every
+/// `interval`. Logs and counts errors per cycle without stopping — the loop is resilient
+/// to transient HQ failures. Intended to run as a `tokio::spawn`-ed task for the lifetime
+/// of the process.
+pub async fn run_dispatcher_loop(
+    pool: SqlitePool,
+    client: Client,
+    hq_submit_url: String,
+    interval: std::time::Duration,
+) {
+    let mut ticker = tokio::time::interval(interval);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        ticker.tick().await;
+        match run_once(&pool, &client, &hq_submit_url).await {
+            Ok(n) => {
+                if n > 0 {
+                    info!(dispatched = n, "outbox dispatch cycle completed");
+                }
+                metrics::counter!(OUTBOX_DISPATCHER_CYCLES_TOTAL, 1u64, "outcome" => "success");
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "outbox dispatch cycle error");
+                metrics::counter!(OUTBOX_DISPATCHER_CYCLES_TOTAL, 1u64, "outcome" => OUTCOME_ERROR);
+            }
+        }
+    }
 }
 
 #[cfg(test)]

@@ -6,9 +6,10 @@ interface Props {
   attachedCustomer: CustomerSearchResult | null;
   onGoPay: () => void;
   canPay: boolean;
+  onRemoveLine: (lineId: string) => void;
 }
 
-export function CartPanel({ cartState, attachedCustomer, onGoPay, canPay }: Props) {
+export function CartPanel({ cartState, attachedCustomer, onGoPay, canPay, onRemoveLine }: Props) {
   const [discountDetailsOpen, setDiscountDetailsOpen] = useState(false);
   const lines = cartState?.lines ?? [];
   const hasDiscount =
@@ -57,6 +58,14 @@ export function CartPanel({ cartState, attachedCustomer, onGoPay, canPay }: Prop
             <div className="ios-row-value">
               ${(l.line_total_cents / 100).toFixed(2)}
             </div>
+            <button
+              type="button"
+              className="cart-line-remove"
+              onClick={() => onRemoveLine(l.line_id)}
+              aria-label={`Remove ${l.name}`}
+            >
+              ×
+            </button>
           </div>
         ))}
       </div>

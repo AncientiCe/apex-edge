@@ -812,6 +812,75 @@ pub async fn execute_pos_command(
                 errors: vec![],
             }
         }
+        PosCommand::RemoveLineItem(p) => {
+            let Some(mut cart) = load_cart_from_db(pool, p.cart_id).await.ok().flatten() else {
+                return PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors: vec![PosError {
+                        code: "CART_NOT_FOUND".into(),
+                        message: "Cart not found".into(),
+                        field: None,
+                    }],
+                };
+            };
+            if cart.ensure_can_edit().is_err() {
+                return PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors: vec![PosError {
+                        code: "INVALID_STATE".into(),
+                        message: "Cart cannot be edited".into(),
+                        field: None,
+                    }],
+                };
+            }
+            if let Err(e) = cart.remove_line_item(p.line_id) {
+                return PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors: vec![PosError {
+                        code: "LINE_NOT_FOUND".into(),
+                        message: e.to_string(),
+                        field: None,
+                    }],
+                };
+            }
+            if !cart.lines.is_empty() {
+                if let Err(errors) = run_pricing_pipeline(pool, store_id, &mut cart).await {
+                    return PosResponseEnvelope {
+                        version: ContractVersion::V1_0_0,
+                        success: false,
+                        idempotency_key,
+                        payload: None,
+                        errors,
+                    };
+                }
+            }
+            if let Err(errors) = save_cart_to_db(pool, &cart).await {
+                return PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors,
+                };
+            }
+            let state = cart.to_cart_state();
+            PosResponseEnvelope {
+                version: ContractVersion::V1_0_0,
+                success: true,
+                idempotency_key,
+                payload: Some(cart_state_to_payload(&state)),
+                errors: vec![],
+            }
+        }
         _ => PosResponseEnvelope {
             version: ContractVersion::V1_0_0,
             success: false,

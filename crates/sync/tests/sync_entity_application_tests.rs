@@ -1,0 +1,330 @@
+//! Behavioral tests: sync entity application persists data to storage tables.
+//!
+//! These tests verify that after `run_sync_ndjson`, each synced entity's data
+//! actually appears in the corresponding DB table — not just that checkpoints advance.
+
+use apex_edge_contracts::{CatalogItem, Category, Customer, PriceBook, PriceBookEntry, TaxRule};
+use apex_edge_storage::{
+    list_catalog_items, list_categories, list_price_book_entries, list_tax_rules, run_migrations,
+    search_customers,
+};
+use apex_edge_sync::{run_sync_ndjson, SyncEntityConfig, SyncSourceConfig};
+use axum::body::Body;
+use axum::http::Response;
+use axum::routing::get;
+use axum::Router;
+use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine;
+use sqlx::sqlite::SqlitePoolOptions;
+use tokio::net::TcpListener;
+use uuid::Uuid;
+
+const STORE_ID: Uuid = Uuid::nil();
+
+fn encode_payload(bytes: &[u8]) -> String {
+    BASE64.encode(bytes)
+}
+
+fn ndjson_body(payloads: &[Vec<u8>]) -> String {
+    let mut lines = vec![format!("{{\"total\":{}}}", payloads.len())];
+    for p in payloads {
+        lines.push(format!("\"{}\"", encode_payload(p)));
+    }
+    lines.join("\n")
+}
+
+async fn start_entity_server(entity: &'static str, body: String) -> (u16, String) {
+    let app = Router::new().route(
+        &format!("/sync/ndjson/{entity}"),
+        get(move || {
+            let body = body.clone();
+            async move {
+                Response::builder()
+                    .header("content-type", "application/x-ndjson")
+                    .body(Body::from(body))
+                    .unwrap()
+            }
+        }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let base = format!("http://127.0.0.1:{port}");
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    tokio::time::sleep(tokio::time::Duration::from_millis(30)).await;
+    (port, base)
+}
+
+#[tokio::test]
+async fn sync_catalog_items_are_applied_to_db() {
+    let item = CatalogItem {
+        id: Uuid::parse_str("a1a1a1a1-a1a1-a1a1-a1a1-a1a1a1a1a1a1").unwrap(),
+        sku: "SYNC-CAT-001".into(),
+        name: "Synced Catalog Product".into(),
+        description: Some("A product from sync".into()),
+        category_id: Uuid::nil(),
+        tax_category_id: Uuid::nil(),
+        modifiers: vec![],
+        is_active: true,
+        version: 1,
+    };
+    let payload = serde_json::to_vec(&item).unwrap();
+    let body = ndjson_body(&[payload]);
+
+    let (_, base_url) = start_entity_server("catalog", body).await;
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("pool");
+    run_migrations(&pool).await.expect("migrations");
+
+    let config = SyncSourceConfig {
+        base_url,
+        entities: vec![SyncEntityConfig {
+            entity: "catalog".into(),
+            path: "/sync/ndjson/catalog".into(),
+        }],
+    };
+    run_sync_ndjson(
+        &reqwest::Client::new(),
+        &pool,
+        &config,
+        apex_edge_contracts::ContractVersion::V1_0_0,
+        STORE_ID,
+    )
+    .await
+    .expect("run_sync_ndjson");
+
+    let (items, total) = list_catalog_items(&pool, STORE_ID, None, None, 10, 0)
+        .await
+        .expect("list_catalog_items");
+    assert_eq!(total, 1, "one catalog item should be stored");
+    assert_eq!(items[0].sku, "SYNC-CAT-001");
+    assert_eq!(items[0].name, "Synced Catalog Product");
+}
+
+#[tokio::test]
+async fn sync_categories_are_applied_to_db() {
+    let cat = Category {
+        id: Uuid::parse_str("b2b2b2b2-b2b2-b2b2-b2b2-b2b2b2b2b2b2").unwrap(),
+        name: "Synced Category".into(),
+        parent_id: None,
+        sort_order: 1,
+        version: 1,
+    };
+    let payload = serde_json::to_vec(&cat).unwrap();
+    let body = ndjson_body(&[payload]);
+
+    let (_, base_url) = start_entity_server("categories", body).await;
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("pool");
+    run_migrations(&pool).await.expect("migrations");
+
+    let config = SyncSourceConfig {
+        base_url,
+        entities: vec![SyncEntityConfig {
+            entity: "categories".into(),
+            path: "/sync/ndjson/categories".into(),
+        }],
+    };
+    run_sync_ndjson(
+        &reqwest::Client::new(),
+        &pool,
+        &config,
+        apex_edge_contracts::ContractVersion::V1_0_0,
+        STORE_ID,
+    )
+    .await
+    .expect("run_sync_ndjson");
+
+    let cats = list_categories(&pool, STORE_ID)
+        .await
+        .expect("list_categories");
+    assert_eq!(cats.len(), 1, "one category should be stored");
+    assert_eq!(cats[0].name, "Synced Category");
+}
+
+#[tokio::test]
+async fn sync_price_book_entries_are_applied_to_db() {
+    let item_id = Uuid::parse_str("c3c3c3c3-c3c3-c3c3-c3c3-c3c3c3c3c3c3").unwrap();
+    let book = PriceBook {
+        id: Uuid::parse_str("d4d4d4d4-d4d4-d4d4-d4d4-d4d4d4d4d4d4").unwrap(),
+        name: "Default".into(),
+        effective_from: chrono::Utc::now(),
+        effective_until: None,
+        entries: vec![PriceBookEntry {
+            item_id,
+            modifier_option_id: None,
+            price_cents: 999,
+            currency: "USD".into(),
+        }],
+        version: 1,
+    };
+    let payload = serde_json::to_vec(&book).unwrap();
+    let body = ndjson_body(&[payload]);
+
+    let (_, base_url) = start_entity_server("price_book", body).await;
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("pool");
+    run_migrations(&pool).await.expect("migrations");
+
+    let config = SyncSourceConfig {
+        base_url,
+        entities: vec![SyncEntityConfig {
+            entity: "price_book".into(),
+            path: "/sync/ndjson/price_book".into(),
+        }],
+    };
+    run_sync_ndjson(
+        &reqwest::Client::new(),
+        &pool,
+        &config,
+        apex_edge_contracts::ContractVersion::V1_0_0,
+        STORE_ID,
+    )
+    .await
+    .expect("run_sync_ndjson");
+
+    let entries = list_price_book_entries(&pool, STORE_ID)
+        .await
+        .expect("list_price_book_entries");
+    assert_eq!(entries.len(), 1, "one price book entry should be stored");
+    assert_eq!(entries[0].item_id, item_id);
+    assert_eq!(entries[0].price_cents, 999);
+    assert_eq!(entries[0].currency, "USD");
+}
+
+#[tokio::test]
+async fn sync_tax_rules_are_applied_to_db() {
+    let rule = TaxRule {
+        id: Uuid::parse_str("e5e5e5e5-e5e5-e5e5-e5e5-e5e5e5e5e5e5").unwrap(),
+        tax_category_id: Uuid::nil(),
+        rate_bps: 850,
+        name: "Synced Tax".into(),
+        inclusive: false,
+        version: 1,
+    };
+    let payload = serde_json::to_vec(&rule).unwrap();
+    let body = ndjson_body(&[payload]);
+
+    let (_, base_url) = start_entity_server("tax_rules", body).await;
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("pool");
+    run_migrations(&pool).await.expect("migrations");
+
+    let config = SyncSourceConfig {
+        base_url,
+        entities: vec![SyncEntityConfig {
+            entity: "tax_rules".into(),
+            path: "/sync/ndjson/tax_rules".into(),
+        }],
+    };
+    run_sync_ndjson(
+        &reqwest::Client::new(),
+        &pool,
+        &config,
+        apex_edge_contracts::ContractVersion::V1_0_0,
+        STORE_ID,
+    )
+    .await
+    .expect("run_sync_ndjson");
+
+    let rules = list_tax_rules(&pool, STORE_ID)
+        .await
+        .expect("list_tax_rules");
+    assert_eq!(rules.len(), 1, "one tax rule should be stored");
+    assert_eq!(rules[0].rate_bps, 850);
+    assert_eq!(rules[0].name, "Synced Tax");
+}
+
+#[tokio::test]
+async fn sync_customers_are_applied_to_db() {
+    let customer = Customer {
+        id: Uuid::parse_str("f6f6f6f6-f6f6-f6f6-f6f6-f6f6f6f6f6f6").unwrap(),
+        code: "SYNCCUST01".into(),
+        name: "Synced Customer".into(),
+        email: Some("synced@test.local".into()),
+        version: 1,
+    };
+    let payload = serde_json::to_vec(&customer).unwrap();
+    let body = ndjson_body(&[payload]);
+
+    let (_, base_url) = start_entity_server("customers", body).await;
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("pool");
+    run_migrations(&pool).await.expect("migrations");
+
+    let config = SyncSourceConfig {
+        base_url,
+        entities: vec![SyncEntityConfig {
+            entity: "customers".into(),
+            path: "/sync/ndjson/customers".into(),
+        }],
+    };
+    run_sync_ndjson(
+        &reqwest::Client::new(),
+        &pool,
+        &config,
+        apex_edge_contracts::ContractVersion::V1_0_0,
+        STORE_ID,
+    )
+    .await
+    .expect("run_sync_ndjson");
+
+    let results = search_customers(&pool, STORE_ID, "SYNCCUST01")
+        .await
+        .expect("search_customers");
+    assert_eq!(results.len(), 1, "one customer should be stored");
+    assert_eq!(results[0].code, "SYNCCUST01");
+    assert_eq!(results[0].name, "Synced Customer");
+    assert_eq!(results[0].email.as_deref(), Some("synced@test.local"));
+}
+
+#[tokio::test]
+async fn sync_invalid_catalog_payload_returns_error() {
+    // Serve malformed JSON (not a valid CatalogItem)
+    let bad_payload = b"not valid json at all!".to_vec();
+    let body = ndjson_body(&[bad_payload]);
+
+    let (_, base_url) = start_entity_server("catalog", body).await;
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("pool");
+    run_migrations(&pool).await.expect("migrations");
+
+    let config = SyncSourceConfig {
+        base_url,
+        entities: vec![SyncEntityConfig {
+            entity: "catalog".into(),
+            path: "/sync/ndjson/catalog".into(),
+        }],
+    };
+    let result = run_sync_ndjson(
+        &reqwest::Client::new(),
+        &pool,
+        &config,
+        apex_edge_contracts::ContractVersion::V1_0_0,
+        STORE_ID,
+    )
+    .await;
+    assert!(
+        result.is_err(),
+        "sync with invalid payload should return an error"
+    );
+}

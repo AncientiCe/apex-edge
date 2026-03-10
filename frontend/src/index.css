@@ -691,6 +691,35 @@ button:disabled {
   flex-shrink: 0;
 }
 
+.cart-line-remove {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  margin-left: 0.5rem;
+  flex-shrink: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--destructive, #ff3b30);
+  font-size: 1.25rem;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.7;
+  transition: opacity 0.15s, background 0.15s;
+}
+
+.cart-line-remove:hover {
+  opacity: 1;
+  background: rgba(255, 59, 48, 0.1);
+}
+
+.cart-line-remove:active {
+  opacity: 1;
+  background: rgba(255, 59, 48, 0.2);
+}
+
 .cart-discount-details-toggle {
   display: flex;
   align-items: center;

@@ -265,6 +265,17 @@ export default function App() {
     }
   }, [ensureCart, selectedCustomerId, sendPosCommand, pushToast]);
 
+  const onRemoveLine = useCallback(
+    async (lineId: string) => {
+      if (!cartId) return;
+      await sendPosCommand({
+        action: 'remove_line_item',
+        payload: { cart_id: cartId, line_id: lineId },
+      });
+    },
+    [cartId, sendPosCommand]
+  );
+
   const onGoToPay = useCallback(async () => {
     if (!cartId) return;
     const res = await sendPosCommand({
@@ -481,7 +492,7 @@ export default function App() {
 
         {/* ── Cart ── */}
         {stage === 'cart' && (
-          <CartPanel cartState={cartState} attachedCustomer={attachedCustomer} onGoPay={onGoToPay} canPay={cartItemCount > 0} />
+          <CartPanel cartState={cartState} attachedCustomer={attachedCustomer} onGoPay={onGoToPay} canPay={cartItemCount > 0} onRemoveLine={onRemoveLine} />
         )}
 
         {/* ── Pay ── */}

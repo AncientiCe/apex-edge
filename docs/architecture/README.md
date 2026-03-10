@@ -46,29 +46,43 @@ flowchart LR
 
 ### 2. Runtime Bootstrap
 
-**Purpose:** Startup sequence from binary entrypoint to listening server (DB, migrations, metrics, router).
+**Purpose:** Startup sequence from binary entrypoint to listening server (DB, migrations, sync scheduling, outbox dispatcher, metrics, router).
 
 ```mermaid
 sequenceDiagram
     participant Main as apex_edge main
     participant Storage as apex_edge_storage
+    participant Sync as apex_edge_sync
+    participant Outbox as apex_edge_outbox
     participant Metrics as apex_edge_metrics
     participant App as build_router
     participant Axum as axum::serve
     Main->>Storage: create_sqlite_pool(APEX_EDGE_DB)
     Main->>Storage: run_migrations(pool)
+    opt APEX_EDGE_SEED_DEMO set
+        Main->>Storage: seed_demo_data(pool)
+    end
+    opt APEX_EDGE_SYNC_SOURCE_URL set
+        Main->>Sync: run_sync_ndjson once on startup
+        Main->>Main: tokio::spawn daily sync loop (24h interval)
+    end
+    opt APEX_EDGE_HQ_SUBMIT_URL set
+        Main->>Outbox: tokio::spawn run_dispatcher_loop (30s interval)
+    end
+    Main->>Main: parse APEX_EDGE_ALLOWED_ORIGINS → Vec<HeaderValue>
     Main->>Metrics: install_recorder()
-    Main->>App: build_router(pool, store_id, metrics_handle)
+    Main->>App: build_router(pool, store_id, metrics_handle, allowed_origins)
     App->>App: AppState { pool, store_id, metrics_handle }
-    App->>App: Router with /health, /ready, /pos/command, /documents, /orders, /metrics
+    App->>App: CorsLayer — wildcard if empty, list if set
+    App->>App: Router with /health, /ready, /pos/command, /documents, /orders, /metrics, /sync/status
     Main->>Axum: serve(TcpListener::bind(0.0.0.0:3000), app)
     Axum-->>Main: listening
 ```
 
 **Notes:**
-- **Inputs:** Env `APEX_EDGE_DB` (default `apex_edge.db`); optional metrics handle for `/metrics`.
-- **Outputs:** HTTP server on port 3000; DB migrated; routes and shared state wired.
-- **Failure path:** Pool or migration failure exits main; server bind failure propagates.
+- **Inputs:** Env `APEX_EDGE_DB` (default `apex_edge.db`); `APEX_EDGE_SYNC_SOURCE_URL` (optional, enables sync); `APEX_EDGE_HQ_SUBMIT_URL` (optional, enables outbox dispatch); `APEX_EDGE_SEED_DEMO` (optional, seeds demo catalog/customers/promotions); `APEX_EDGE_ALLOWED_ORIGINS` (optional, comma-separated; empty = wildcard CORS for local dev, non-empty = restricted).
+- **Outputs:** HTTP server on port 3000; DB migrated; optional background sync and dispatcher tasks spawned.
+- **Failure path:** Pool or migration failure exits main; server bind failure propagates. Sync and dispatcher errors are logged and retried on next cycle without stopping the process.
 
 ### 3. HTTP Surface (Routes and Owners)
 
@@ -174,45 +188,69 @@ sequenceDiagram
 
 ### 6. Outbox Dispatch Flow
 
-**Purpose:** Background cycle: poll pending outbox, POST to HQ, accepted vs retry vs dead-letter; backoff at high level.
+**Purpose:** Background loop fires every 30 seconds; each cycle polls pending outbox rows, POSTs to HQ, and marks accepted/retry/dead-letter. Wired in `main.rs` when `APEX_EDGE_HQ_SUBMIT_URL` is set.
 
 ```mermaid
 flowchart TB
-    Start([run_once]) --> Fetch[fetch_pending_outbox pool, limit 10]
+    EnvCheck{APEX_EDGE_HQ_SUBMIT_URL set?} -->|Yes| SpawnLoop[tokio::spawn run_dispatcher_loop 30s interval]
+    SpawnLoop --> Tick[tick every 30s]
+    Tick --> RunOnce[run_once pool, client, hq_url]
+    RunOnce --> Fetch[fetch_pending_outbox pool, limit 10]
     Fetch --> Loop{for each row}
     Loop --> POST[POST row.payload to HQ submit URL]
     POST --> Result{response?}
     Result -->|success + accepted| MarkDelivered[mark_delivered]
-    Result -->|success + !accepted or non-2xx or network error| CheckAttempts{attempts >= 10?}
+    Result -->|success + not_accepted or non-2xx or network error| CheckAttempts{attempts >= 10?}
     CheckAttempts -->|Yes| DLQ[mark_dead_letter]
     CheckAttempts -->|No| Retry[schedule_retry with backoff]
     MarkDelivered --> Loop
     Retry --> Loop
     DLQ --> Loop
-    Loop --> Done([return processed count])
+    Loop --> CountMetrics[emit OUTBOX_DISPATCH_ATTEMPTS_TOTAL and OUTBOX_DISPATCHER_CYCLES_TOTAL]
+    CountMetrics --> Tick
+    EnvCheck -->|No| Skip[dispatcher not started]
 ```
 
 **Notes:**
-- **Inputs:** `pool`, HTTP `client`, `hq_submit_url`; pending rows from `apex_edge_storage::outbox`.
-- **Outputs:** Rows marked delivered when HQ returns success and `accepted`; retry scheduled with exponential backoff (capped); DLQ when `MAX_ATTEMPTS` (10) reached.
-- **Failure path:** Network or non-success response increments attempts; after 10 attempts row is marked dead-letter; otherwise `schedule_retry` with backoff.
+- **Inputs:** `pool`, HTTP `client`, `APEX_EDGE_HQ_SUBMIT_URL` (env); pending rows from `apex_edge_storage::outbox`. Background loop started once at startup.
+- **Outputs:** Rows marked delivered when HQ returns `accepted`; retry scheduled with exponential backoff (base 5s, capped at 320s); DLQ when `MAX_ATTEMPTS` (10) reached.
+- **Metrics:** `apex_edge_outbox_dispatch_attempts_total{outcome}`, `apex_edge_outbox_dispatch_duration_seconds`, `apex_edge_outbox_dlq_total`, `apex_edge_outbox_dispatcher_cycles_total{outcome}`.
+- **Failure path:** Cycle-level errors (storage, network) are logged and counted; loop continues on next tick without stopping the process.
 
-### 7. Sync Ingest Flow
+### 7. Sync Ingest and Entity Application Flow
 
-**Purpose:** Batch ingest with per-entity checkpoint and conflict-policy placeholder.
+**Purpose:** Full sync pipeline: fetch NDJSON from HQ, apply each entity to its storage table, then advance the per-entity checkpoint. All entities supported: catalog, categories, price_book, tax_rules, customers, promotions. Unknown entities advance checkpoint without storage (forward-compatibility).
 
 ```mermaid
-flowchart LR
-    Ingest[ingest_batch] --> GetCP[get_sync_checkpoint entity]
-    GetCP --> NextSeq[next_seq = current + payloads.len]
-    NextSeq --> SetCP[set_sync_checkpoint entity next_seq]
-    SetCP --> Return([Ok next_seq])
+flowchart TB
+    RunSync[run_sync_ndjson] --> ForEntity{for each entity in config}
+    ForEntity --> Fetch[fetch_entity_ndjson_stream from HQ URL]
+    Fetch --> Apply[apply_entity_batch pool, entity, payloads, store_id]
+    Apply --> EntitySwitch{entity?}
+    EntitySwitch -->|catalog| InsertCatalogItems[insert_catalog_item + update_catalog_item_description per item]
+    EntitySwitch -->|categories| InsertCategory[insert_category per item]
+    EntitySwitch -->|price_book| ReplacePriceBook[replace_price_book_entries atomically]
+    EntitySwitch -->|tax_rules| InsertTaxRule[insert_tax_rule per item]
+    EntitySwitch -->|customers| InsertCustomer[insert_customer per item]
+    EntitySwitch -->|promotions| InsertPromotion[insert_promotion per item]
+    EntitySwitch -->|unknown| SkipLog[log debug skip]
+    InsertCatalogItems --> Ingest[ingest_batch advance checkpoint]
+    InsertCategory --> Ingest
+    ReplacePriceBook --> Ingest
+    InsertTaxRule --> Ingest
+    InsertCustomer --> Ingest
+    InsertPromotion --> Ingest
+    SkipLog --> Ingest
+    Ingest --> ForEntity
+    ForEntity --> UpdateStatus[upsert_latest_sync_run success]
 ```
 
 **Notes:**
-- **Inputs:** `pool`, `entity` (e.g. catalog), `ContractVersion`, `payloads` (batch), `ConflictPolicy` (e.g. HqWins). Checkpoint read/write via `apex_edge_storage`.
-- **Outputs:** New checkpoint value (sequence) returned; checkpoint advanced atomically per batch.
-- **Failure path:** Storage or invalid payload returns `IngestError`; conflict policy is accepted but not yet applied in current ingest (placeholder for future behavior).
+- **Inputs:** `pool`, `SyncSourceConfig` (base URL + entity paths), `ContractVersion`, `store_id`. Contract types: `CatalogItem`, `Category`, `PriceBook`, `TaxRule`, `Customer`, `Promotion`.
+- **Outputs:** Each entity's data persisted to its storage table; checkpoint advanced per entity; sync run status updated.
+- **Metrics:** `apex_edge_sync_ingest_batches_total{entity, outcome}`, `apex_edge_sync_ingest_duration_seconds{entity}`.
+- **Failure path:** Invalid JSON payload fails the entity's batch with `IngestError::InvalidPayload`; the whole sync run is marked `failed`; checkpoint does not advance for failed entities; next run retries.
+- **price_book:** Synced with delete-and-replace semantics (atomically replaces all price book entries for the store in a transaction).
 
 ### 8. Observability and Behavior Ownership
 
@@ -277,8 +315,8 @@ sequenceDiagram
     API->>Storage: search_customers
     Storage-->>API: customers
     API-->>UI: customer list
-    User->>UI: Add product, Set customer, Checkout
-    UI->>API: POST /pos/command create_cart, add_line_item, set_customer, set_tendering, add_payment, finalize_order
+    User->>UI: Add product, Remove line, Set customer, Checkout
+    UI->>API: POST /pos/command create_cart, add_line_item, remove_line_item, set_customer, set_tendering, add_payment, finalize_order
     API->>Storage: cart/order
     Storage-->>API: cart state or finalize result
     API-->>UI: state
@@ -291,7 +329,7 @@ sequenceDiagram
 - **Inputs:** Backend base URL; catalog filters (search q, category, page); customer search q (name, email, code, or id); cart actions and checkout.
 - **Outputs:** Categories and paginated product list; customer search results; cart state and finalize result; document list and content.
 - **API:** `GET /catalog/categories`, `GET /catalog/products?q=&category_id=&page=&per_page=`, `GET /customers?q=` (and legacy `?code=` for exact code). Products support search by SKU, name, or description; customers by code, name, email, or id.
-- **POS commands:** `create_cart`, `add_line_item` (optional `unit_price_override_cents` for positive price override), `set_customer`, `apply_manual_discount` (reason mandatory; kinds: percent_cart, percent_item, fixed_cart, fixed_item), `set_tendering`, `add_payment`, `finalize_order`. Promotions (coupons and automatic) are seeded and applied in pipeline; manual discounts applied after promos and included in order metadata to HQ.
+- **POS commands:** `create_cart`, `add_line_item` (optional `unit_price_override_cents` for positive price override), `remove_line_item` (removes a line by `line_id`; re-runs pricing pipeline on remaining lines; transitions cart back to Open when last line is removed), `set_customer`, `apply_manual_discount` (reason mandatory; kinds: percent_cart, percent_item, fixed_cart, fixed_item), `set_tendering`, `add_payment`, `finalize_order`. Promotions (coupons and automatic) are seeded and applied in pipeline; manual discounts applied after promos and included in order metadata to HQ.
 - **Customer on cart:** When `set_customer` succeeds, the API handler looks up the customer record and populates `customer_name` and `customer_code` in `CartState`. Every subsequent command that returns `CartState` also enriches these fields. The cart panel shows a banner with the customer name and code whenever a customer is attached.
 - **Layout:** Mobile-first, app-like UI: fixed bottom tab bar (Customers / Catalog / Sync / Cart) with safe-area insets; 44px minimum touch targets; full viewport height (`100dvh`). At 768px+ nav moves to header; at 1024px (e.g. iPad landscape) content is constrained with larger catalog grid. Event log shown from 768px only.
 - **Scope:** Simulator runs as a separate dev server (e.g. Vite on port 5173); CORS enabled. Local use only.
@@ -326,3 +364,25 @@ flowchart LR
 - **ApexEdge sync:** When `APEX_EDGE_SYNC_SOURCE_URL` is set, main runs sync once on startup then spawns a 24h periodic task. `run_sync_ndjson` streams each entity (line-by-line), collects payloads per entity, ingests in batch, advances checkpoints, and updates latest sync run + per-entity status in storage.
 - **Sync status:** Stored in `sync_run` (single row) and `entity_sync_status`; exposed at `GET /sync/status`. Frontend Sync tab shows last sync time, run state (idle/syncing), and per-entity progress (current, total, percent, status).
 - **Failure path:** Sync errors are logged; latest run is marked `failed` with error message; next scheduled run proceeds after 24h.
+
+### 11. Internal Security Baseline (CORS)
+
+**Purpose:** Document the configurable CORS posture introduced for the v0.1.0 internal-alpha security baseline. By default the hub allows all origins (suitable for local dev); a comma-separated env var locks CORS to an explicit allowlist in controlled deployments.
+
+```mermaid
+flowchart TD
+    Start([build_router called]) --> CheckOrigins{APEX_EDGE_ALLOWED_ORIGINS set?}
+    CheckOrigins -->|Empty / unset| Wildcard["CorsLayer: allow_origin(Any)\n⚠ local dev only"]
+    CheckOrigins -->|Non-empty list| Restricted["CorsLayer: AllowOrigin::list(origins)\nonly listed origins receive CORS headers"]
+    Wildcard --> Router[Axum Router]
+    Restricted --> Router
+    Router --> Browser[Browser preflight / request]
+    Browser -->|Origin in list or wildcard| ACAO["access-control-allow-origin: <origin>"]
+    Browser -->|Origin not in list| NoHeader["No access-control-allow-origin\nbrowser blocks request"]
+```
+
+**Notes:**
+- **Inputs:** Env `APEX_EDGE_ALLOWED_ORIGINS` — comma-separated list of allowed origins (e.g. `http://localhost:5173,https://pos.example.internal`). Unset or empty = wildcard (logs a warning).
+- **Outputs:** `access-control-allow-origin` header on preflight and actual responses; restricted list means unknown origins receive no matching header and browsers enforce the block.
+- **Failure path:** Malformed origin strings (not valid `HeaderValue`) are silently skipped; if all entries are invalid the fallback is wildcard with a warning.
+- **Tests:** `cors_restricted_trusted_origin_is_allowed` and `cors_restricted_unknown_origin_is_rejected` in `apex-edge/tests/cors_http.rs` verify both branches.

@@ -14,9 +14,16 @@ pub fn route_label(path: &str) -> &'static str {
         "/health" => "health",
         "/ready" => "ready",
         "/pos/command" => "pos_command",
+        "/pos/cart/:cart_id" | "/pos/cart/{cart_id}" => "pos_cart",
+        "/catalog/products" => "catalog_products",
+        "/catalog/categories" => "catalog_categories",
+        "/customers" => "customers",
         "/documents/:id" | "/documents/{id}" => "documents_id",
         "/orders/:order_id/documents" | "/orders/{order_id}/documents" => "orders_documents",
+        "/orders/:order_id/documents/gift-receipt"
+        | "/orders/{order_id}/documents/gift-receipt" => "orders_gift_receipt",
         "/metrics" => "metrics",
+        "/sync/status" => "sync_status",
         _ => "unknown",
     }
 }
@@ -35,8 +42,26 @@ pub fn request_path_to_route(path: &str) -> &'static str {
     if path == "/metrics" {
         return "metrics";
     }
+    if path == "/catalog/products" {
+        return "catalog_products";
+    }
+    if path == "/catalog/categories" {
+        return "catalog_categories";
+    }
+    if path == "/customers" {
+        return "customers";
+    }
+    if path == "/sync/status" {
+        return "sync_status";
+    }
+    if path.starts_with("/pos/cart/") && path.len() > 10 {
+        return "pos_cart";
+    }
     if path.starts_with("/documents/") && path.len() > 10 {
         return "documents_id";
+    }
+    if path.starts_with("/orders/") && path.ends_with("/documents/gift-receipt") {
+        return "orders_gift_receipt";
     }
     if path.starts_with("/orders/") && path.ends_with("/documents") {
         return "orders_documents";
@@ -90,6 +115,8 @@ pub const OUTBOX_DISPATCH_ATTEMPTS_TOTAL: &str = "apex_edge_outbox_dispatch_atte
 pub const OUTBOX_DISPATCH_DURATION_SECONDS: &str = "apex_edge_outbox_dispatch_duration_seconds";
 /// Counter: messages moved to DLQ.
 pub const OUTBOX_DLQ_TOTAL: &str = "apex_edge_outbox_dlq_total";
+/// Counter: background dispatcher loop cycles. Labels: outcome (success, error).
+pub const OUTBOX_DISPATCHER_CYCLES_TOTAL: &str = "apex_edge_outbox_dispatcher_cycles_total";
 
 /// outcome: accepted, rejected, http_error, timeout, dlq.
 pub const OUTCOME_ACCEPTED: &str = "accepted";

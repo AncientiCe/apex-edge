@@ -102,24 +102,128 @@ async fn run_sync_ndjson_inner(
     Ok(())
 }
 
-/// Apply a batch of payloads to the database for the given entity (e.g. insert into promotions table).
+/// Apply a batch of payloads to the database for the given entity.
+///
+/// Each entity type is deserialized from its contract type and persisted to the
+/// corresponding storage table. Unknown entities are silently skipped — they advance
+/// checkpoints but are not stored, which is safe for forward-compatibility.
 async fn apply_entity_batch(
     pool: &sqlx::SqlitePool,
     entity: &str,
     batch: &[Vec<u8>],
     store_id: uuid::Uuid,
 ) -> Result<(), RunSyncError> {
-    if entity == "promotions" {
-        use apex_edge_contracts::Promotion;
-        for payload in batch {
-            let promo: Promotion = serde_json::from_slice(payload)
-                .map_err(|_| crate::ingest::IngestError::InvalidPayload)?;
-            let json = serde_json::to_string(&promo)
-                .map_err(|_| crate::ingest::IngestError::InvalidPayload)?;
-            apex_edge_storage::insert_promotion(pool, promo.id, store_id, &json)
+    match entity {
+        "promotions" => {
+            use apex_edge_contracts::Promotion;
+            for payload in batch {
+                let promo: Promotion = serde_json::from_slice(payload)
+                    .map_err(|_| crate::ingest::IngestError::InvalidPayload)?;
+                let json = serde_json::to_string(&promo)
+                    .map_err(|_| crate::ingest::IngestError::InvalidPayload)?;
+                apex_edge_storage::insert_promotion(pool, promo.id, store_id, &json)
+                    .await
+                    .map_err(crate::ingest::IngestError::Storage)
+                    .map_err(RunSyncError::Ingest)?;
+            }
+        }
+        "catalog" => {
+            use apex_edge_contracts::CatalogItem;
+            for payload in batch {
+                let item: CatalogItem = serde_json::from_slice(payload)
+                    .map_err(|_| crate::ingest::IngestError::InvalidPayload)?;
+                apex_edge_storage::insert_catalog_item(
+                    pool,
+                    item.id,
+                    store_id,
+                    &item.sku,
+                    &item.name,
+                    item.category_id,
+                    item.tax_category_id,
+                )
                 .await
                 .map_err(crate::ingest::IngestError::Storage)
                 .map_err(RunSyncError::Ingest)?;
+                if let Some(desc) = &item.description {
+                    apex_edge_storage::update_catalog_item_description(pool, item.id, desc)
+                        .await
+                        .map_err(crate::ingest::IngestError::Storage)
+                        .map_err(RunSyncError::Ingest)?;
+                }
+            }
+        }
+        "categories" => {
+            use apex_edge_contracts::Category;
+            for payload in batch {
+                let cat: Category = serde_json::from_slice(payload)
+                    .map_err(|_| crate::ingest::IngestError::InvalidPayload)?;
+                apex_edge_storage::insert_category(pool, cat.id, store_id, &cat.name)
+                    .await
+                    .map_err(crate::ingest::IngestError::Storage)
+                    .map_err(RunSyncError::Ingest)?;
+            }
+        }
+        "price_book" => {
+            use apex_edge_contracts::PriceBook;
+            let mut all_entries: Vec<(uuid::Uuid, Option<uuid::Uuid>, u64, String)> = Vec::new();
+            for payload in batch {
+                let book: PriceBook = serde_json::from_slice(payload)
+                    .map_err(|_| crate::ingest::IngestError::InvalidPayload)?;
+                for entry in book.entries {
+                    all_entries.push((
+                        entry.item_id,
+                        entry.modifier_option_id,
+                        entry.price_cents,
+                        entry.currency,
+                    ));
+                }
+            }
+            apex_edge_storage::replace_price_book_entries(pool, store_id, &all_entries)
+                .await
+                .map_err(crate::ingest::IngestError::Storage)
+                .map_err(RunSyncError::Ingest)?;
+        }
+        "tax_rules" => {
+            use apex_edge_contracts::TaxRule;
+            for payload in batch {
+                let rule: TaxRule = serde_json::from_slice(payload)
+                    .map_err(|_| crate::ingest::IngestError::InvalidPayload)?;
+                apex_edge_storage::insert_tax_rule(
+                    pool,
+                    rule.id,
+                    store_id,
+                    rule.tax_category_id,
+                    rule.rate_bps,
+                    &rule.name,
+                    rule.inclusive,
+                )
+                .await
+                .map_err(crate::ingest::IngestError::Storage)
+                .map_err(RunSyncError::Ingest)?;
+            }
+        }
+        "customers" => {
+            use apex_edge_contracts::Customer;
+            for payload in batch {
+                let customer: Customer = serde_json::from_slice(payload)
+                    .map_err(|_| crate::ingest::IngestError::InvalidPayload)?;
+                apex_edge_storage::insert_customer(
+                    pool,
+                    customer.id,
+                    store_id,
+                    &customer.code,
+                    &customer.name,
+                    customer.email.as_deref(),
+                )
+                .await
+                .map_err(crate::ingest::IngestError::Storage)
+                .map_err(RunSyncError::Ingest)?;
+            }
+        }
+        _ => {
+            // Unknown entity: checkpoint advances but no data is stored.
+            // This is intentional for forward-compatibility with future HQ entity types.
+            tracing::debug!(entity, "skipping unknown sync entity (no storage handler)");
         }
     }
     Ok(())
@@ -128,8 +232,6 @@ async fn apply_entity_batch(
 /// Errors from run_sync_ndjson.
 #[derive(Debug, thiserror::Error)]
 pub enum RunSyncError {
-    #[error("not implemented")]
-    NotImplemented,
     #[error("fetch: {0}")]
     Fetch(#[from] FetchError),
     #[error("ingest: {0}")]
