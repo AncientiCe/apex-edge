@@ -12,7 +12,7 @@ env:
 
 jobs:
   check:
-    name: fmt, clippy, test, audit
+    name: fmt, clippy, test, doc-test, audit
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -37,6 +37,9 @@ jobs:
 
       - name: Tests
         run: make test
+
+      - name: Doc tests
+        run: make doc-test
 
       - name: Orchestrator journey test
         run: cargo test -p apex-edge --test orchestrator_journey
