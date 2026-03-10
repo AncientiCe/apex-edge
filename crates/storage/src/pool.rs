@@ -19,7 +19,10 @@ pub async fn create_sqlite_pool(path: &str) -> Result<SqlitePool, PoolError> {
     } else if path.starts_with('/') {
         // Absolute POSIX path
         format!("sqlite://{path}")
-    } else if path.len() >= 3 && path.as_bytes()[1] == b':' && (path.as_bytes()[2] == b'\\' || path.as_bytes()[2] == b'/') {
+    } else if path.len() >= 3
+        && path.as_bytes()[1] == b':'
+        && (path.as_bytes()[2] == b'\\' || path.as_bytes()[2] == b'/')
+    {
         // Absolute Windows path like C:\dir\file.db or C:/dir/file.db
         format!("sqlite:{path}")
     } else {
