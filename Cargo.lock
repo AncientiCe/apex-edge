@@ -54,6 +54,7 @@ dependencies = [
  "apex-edge-outbox",
  "apex-edge-storage",
  "axum",
+ "chrono",
  "metrics 0.21.1",
  "reqwest",
  "serde_json",

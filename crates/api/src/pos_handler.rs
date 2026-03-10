@@ -1,0 +1,558 @@
+//! POS command execution: load/save cart, run pricing pipeline, return payloads.
+
+use apex_edge_contracts::{
+    build_submission_envelope, CartState, ContractVersion, FinalizeResult, PosCommand, PosError,
+    PosRequestEnvelope, PosResponseEnvelope,
+};
+use apex_edge_domain::{apply_promos_to_lines, base_price_cents, tax_for_line, Cart};
+use apex_edge_storage::{
+    get_catalog_item, get_customer, insert_outbox, list_price_book_entries, list_promotions,
+    list_tax_rules, load_cart, save_cart,
+};
+use apex_edge_printing::generate_document;
+use sqlx::SqlitePool;
+use uuid::Uuid;
+
+use crate::pos::AppState;
+
+fn cart_state_to_payload(state: &CartState) -> serde_json::Value {
+    serde_json::to_value(state).unwrap_or(serde_json::Value::Null)
+}
+
+fn finalize_result_to_payload(result: &FinalizeResult) -> serde_json::Value {
+    serde_json::to_value(result).unwrap_or(serde_json::Value::Null)
+}
+
+pub async fn load_cart_from_db(
+    pool: &SqlitePool,
+    cart_id: Uuid,
+) -> Result<Option<Cart>, Vec<PosError>> {
+    let row = load_cart(pool, cart_id).await.map_err(|e| {
+        vec![PosError {
+            code: "LOAD_CART_FAILED".into(),
+            message: e.to_string(),
+            field: None,
+        }]
+    })?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let cart: Cart = serde_json::from_value(row.data.clone()).map_err(|e| {
+        vec![PosError {
+            code: "CART_DESERIALIZE".into(),
+            message: e.to_string(),
+            field: None,
+        }]
+    })?;
+    Ok(Some(cart))
+}
+
+pub async fn save_cart_to_db(
+    pool: &SqlitePool,
+    cart: &Cart,
+) -> Result<(), Vec<PosError>> {
+    let data = serde_json::to_value(cart).map_err(|e| {
+        vec![PosError {
+            code: "CART_SERIALIZE".into(),
+            message: e.to_string(),
+            field: None,
+        }]
+    })?;
+    save_cart(
+        pool,
+        cart.id,
+        cart.store_id,
+        cart.register_id,
+        &cart.state,
+        &data,
+    )
+    .await
+    .map_err(|e| {
+        vec![PosError {
+            code: "SAVE_CART_FAILED".into(),
+            message: e.to_string(),
+            field: None,
+        }]
+    })?;
+    Ok(())
+}
+
+/// Run pricing pipeline (promos + tax) and apply results to cart.
+pub async fn run_pricing_pipeline(
+    pool: &SqlitePool,
+    store_id: Uuid,
+    cart: &mut Cart,
+) -> Result<(), Vec<PosError>> {
+    let rules = list_tax_rules(pool, store_id).await.map_err(|e| {
+        vec![PosError {
+            code: "TAX_RULES".into(),
+            message: e.to_string(),
+            field: None,
+        }]
+    })?;
+    let promos = list_promotions(pool, store_id).await.map_err(|e| {
+        vec![PosError {
+            code: "PROMOTIONS".into(),
+            message: e.to_string(),
+            field: None,
+        }]
+    })?;
+
+    let mut item_to_tax_category: std::collections::HashMap<Uuid, Uuid> =
+        std::collections::HashMap::new();
+    for line in &cart.lines {
+        if let Ok(Some(item)) = get_catalog_item(pool, store_id, line.item_id).await {
+            item_to_tax_category.insert(line.item_id, item.tax_category_id);
+        }
+    }
+
+    let category_by_item = |item_id: Uuid| *item_to_tax_category.get(&item_id).unwrap_or(&Uuid::nil());
+    let subtotal = cart.subtotal_cents();
+    let mut results = apply_promos_to_lines(
+        &cart.lines,
+        category_by_item,
+        &promos,
+        subtotal,
+    );
+
+    for res in &mut results {
+        let line = cart.lines.iter().find(|l| l.line_id == res.line_id).unwrap();
+        let tax_cat = category_by_item(line.item_id);
+        let line_net = res.line_total_cents.saturating_sub(res.discount_cents);
+        res.tax_cents = tax_for_line(line_net, tax_cat, &rules, false);
+    }
+
+    let mut applied_any = false;
+    for res in &results {
+        if res.discount_cents > 0 {
+            applied_any = true;
+            break;
+        }
+    }
+    cart.apply_pricing(results);
+    if applied_any {
+        cart.set_discounted();
+    }
+    Ok(())
+}
+
+pub async fn execute_pos_command(
+    app: &AppState,
+    envelope: PosRequestEnvelope<PosCommand>,
+) -> PosResponseEnvelope<serde_json::Value> {
+    let idempotency_key = envelope.idempotency_key;
+    let store_id = envelope.store_id;
+    let register_id = envelope.register_id;
+    let pool = &app.pool;
+
+    let result = match &envelope.payload {
+        PosCommand::CreateCart(p) => {
+            let cart_id = p.cart_id.unwrap_or_else(Uuid::new_v4);
+            let cart = Cart::new(cart_id, store_id, register_id);
+            if let Err(errors) = save_cart_to_db(pool, &cart).await {
+                return PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors,
+                };
+            }
+            let state = cart.to_cart_state();
+            PosResponseEnvelope {
+                version: ContractVersion::V1_0_0,
+                success: true,
+                idempotency_key,
+                payload: Some(cart_state_to_payload(&state)),
+                errors: vec![],
+            }
+        }
+        PosCommand::SetCustomer(p) => {
+            let Some(mut cart) = load_cart_from_db(pool, p.cart_id).await.ok().flatten() else {
+                return PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors: vec![PosError {
+                        code: "CART_NOT_FOUND".into(),
+                        message: "Cart not found".into(),
+                        field: None,
+                    }],
+                };
+            };
+            if get_customer(pool, store_id, p.customer_id).await.ok().flatten().is_none() {
+                return PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors: vec![PosError {
+                        code: "CUSTOMER_NOT_FOUND".into(),
+                        message: "Customer not found".into(),
+                        field: None,
+                    }],
+                };
+            }
+            cart.set_customer(p.customer_id);
+            if let Err(errors) = save_cart_to_db(pool, &cart).await {
+                return PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors,
+                };
+            }
+            let state = cart.to_cart_state();
+            PosResponseEnvelope {
+                version: ContractVersion::V1_0_0,
+                success: true,
+                idempotency_key,
+                payload: Some(cart_state_to_payload(&state)),
+                errors: vec![],
+            }
+        }
+        PosCommand::AddLineItem(p) => {
+            let Some(mut cart) = load_cart_from_db(pool, p.cart_id).await.ok().flatten() else {
+                return PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors: vec![PosError {
+                        code: "CART_NOT_FOUND".into(),
+                        message: "Cart not found".into(),
+                        field: None,
+                    }],
+                };
+            };
+            if let Err(_) = cart.ensure_can_edit() {
+                return PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors: vec![PosError {
+                        code: "INVALID_STATE".into(),
+                        message: "Cart cannot be edited".into(),
+                        field: None,
+                    }],
+                };
+            }
+            let Some(item) = get_catalog_item(pool, store_id, p.item_id).await.ok().flatten() else {
+                return PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors: vec![PosError {
+                        code: "ITEM_NOT_FOUND".into(),
+                        message: "Catalog item not found".into(),
+                        field: None,
+                    }],
+                };
+            };
+            let entries = list_price_book_entries(pool, store_id).await.map_err(|e| {
+                vec![PosError {
+                    code: "PRICE_BOOK".into(),
+                    message: e.to_string(),
+                    field: None,
+                }]
+            });
+            let entries: Vec<_> = match entries {
+                Ok(e) => e,
+                Err(errors) => {
+                    return PosResponseEnvelope {
+                        version: ContractVersion::V1_0_0,
+                        success: false,
+                        idempotency_key,
+                        payload: None,
+                        errors,
+                    };
+                }
+            };
+            let base_cents = base_price_cents(
+                p.item_id,
+                &p.modifier_option_ids,
+                p.quantity,
+                &entries,
+            );
+            let unit_price = if p.quantity > 0 {
+                base_cents / (p.quantity as u64)
+            } else {
+                0
+            };
+            let line_id = Uuid::new_v4();
+            cart.add_line_item(
+                line_id,
+                p.item_id,
+                item.sku.clone(),
+                item.name.clone(),
+                p.quantity,
+                unit_price,
+                p.modifier_option_ids.clone(),
+                p.notes.clone(),
+            );
+            if let Err(errors) = run_pricing_pipeline(pool, store_id, &mut cart).await {
+                return PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors,
+                };
+            }
+            if let Err(errors) = save_cart_to_db(pool, &cart).await {
+                return PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors,
+                };
+            }
+            let state = cart.to_cart_state();
+            PosResponseEnvelope {
+                version: ContractVersion::V1_0_0,
+                success: true,
+                idempotency_key,
+                payload: Some(cart_state_to_payload(&state)),
+                errors: vec![],
+            }
+        }
+        PosCommand::SetTendering(p) => {
+            let Some(mut cart) = load_cart_from_db(pool, p.cart_id).await.ok().flatten() else {
+                return PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors: vec![PosError {
+                        code: "CART_NOT_FOUND".into(),
+                        message: "Cart not found".into(),
+                        field: None,
+                    }],
+                };
+            };
+            if let Err(_) = cart.ensure_can_tender() {
+                return PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors: vec![PosError {
+                        code: "INVALID_STATE".into(),
+                        message: "Cart cannot enter tendering".into(),
+                        field: None,
+                    }],
+                };
+            }
+            cart.set_tendering();
+            if let Err(errors) = save_cart_to_db(pool, &cart).await {
+                return PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors,
+                };
+            }
+            let state = cart.to_cart_state();
+            PosResponseEnvelope {
+                version: ContractVersion::V1_0_0,
+                success: true,
+                idempotency_key,
+                payload: Some(cart_state_to_payload(&state)),
+                errors: vec![],
+            }
+        }
+        PosCommand::AddPayment(p) => {
+            let Some(mut cart) = load_cart_from_db(pool, p.cart_id).await.ok().flatten() else {
+                return PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors: vec![PosError {
+                        code: "CART_NOT_FOUND".into(),
+                        message: "Cart not found".into(),
+                        field: None,
+                    }],
+                };
+            };
+            if let Err(_) = cart.add_payment(
+                p.tender_id,
+                p.amount_cents,
+                p.external_reference.clone(),
+            ) {
+                return PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors: vec![PosError {
+                        code: "INVALID_PAYMENT".into(),
+                        message: "Cannot add payment in current state".into(),
+                        field: None,
+                    }],
+                };
+            }
+            if let Err(errors) = save_cart_to_db(pool, &cart).await {
+                return PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors,
+                };
+            }
+            let state = cart.to_cart_state();
+            PosResponseEnvelope {
+                version: ContractVersion::V1_0_0,
+                success: true,
+                idempotency_key,
+                payload: Some(cart_state_to_payload(&state)),
+                errors: vec![],
+            }
+        }
+        PosCommand::FinalizeOrder(p) => {
+            let Some(mut cart) = load_cart_from_db(pool, p.cart_id).await.ok().flatten() else {
+                return PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors: vec![PosError {
+                        code: "CART_NOT_FOUND".into(),
+                        message: "Cart not found".into(),
+                        field: None,
+                    }],
+                };
+            };
+            let order_id = Uuid::new_v4();
+            let order = match cart.to_order(order_id) {
+                Ok(o) => o,
+                Err(_) => {
+                    return PosResponseEnvelope {
+                        version: ContractVersion::V1_0_0,
+                        success: false,
+                        idempotency_key,
+                        payload: None,
+                        errors: vec![PosError {
+                            code: "FINALIZE_FAILED".into(),
+                            message: "Cart must be paid and tendered >= total".into(),
+                            field: None,
+                        }],
+                    };
+                }
+            };
+            let hq_payload = order.to_hq_payload();
+            let submission_id = Uuid::new_v4();
+            let sequence_number = 1u64;
+            let envelope_hq = build_submission_envelope(
+                submission_id,
+                store_id,
+                register_id,
+                sequence_number,
+                hq_payload.clone(),
+            );
+            let envelope_json = serde_json::to_string(&envelope_hq).unwrap_or_default();
+            if let Err(e) = insert_outbox(pool, submission_id, &envelope_json).await {
+                return PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors: vec![PosError {
+                        code: "OUTBOX_FAILED".into(),
+                        message: e.to_string(),
+                        field: None,
+                    }],
+                };
+            }
+            let doc_id = Uuid::new_v4();
+            let template_id = Uuid::nil();
+            let receipt_payload = serde_json::json!({
+                "order_id": order_id.to_string(),
+                "cart_id": cart.id.to_string(),
+                "total_cents": order.total_cents,
+                "subtotal_cents": order.subtotal_cents,
+                "discount_cents": order.discount_cents,
+                "tax_cents": order.tax_cents,
+                "lines": order.lines.iter().map(|l| serde_json::json!({
+                    "sku": l.sku,
+                    "name": l.name,
+                    "quantity": l.quantity,
+                    "line_total_cents": l.line_total_cents,
+                    "discount_cents": l.discount_cents,
+                })).collect::<Vec<_>>(),
+                "payments": order.payments.iter().map(|(tender_id, amount, _)| serde_json::json!({
+                    "tender_id": tender_id.to_string(),
+                    "amount_cents": amount
+                })).collect::<Vec<_>>(),
+            });
+            let receipt_payload_str = receipt_payload.to_string();
+            if let Err(e) = generate_document(
+                pool,
+                doc_id,
+                "receipt",
+                Some(order_id),
+                Some(cart.id),
+                template_id,
+                "{{order_id}} Total: {{total_cents}}",
+                &receipt_payload_str,
+                "text/plain",
+            )
+            .await
+            {
+                return PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors: vec![PosError {
+                        code: "DOCUMENT_FAILED".into(),
+                        message: e.to_string(),
+                        field: None,
+                    }],
+                };
+            }
+            cart.set_finalized();
+            if let Err(errors) = save_cart_to_db(pool, &cart).await {
+                return PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors,
+                };
+            }
+            let result = FinalizeResult {
+                order_id,
+                cart_id: cart.id,
+                total_cents: order.total_cents,
+                print_job_ids: vec![doc_id],
+            };
+            PosResponseEnvelope {
+                version: ContractVersion::V1_0_0,
+                success: true,
+                idempotency_key,
+                payload: Some(finalize_result_to_payload(&result)),
+                errors: vec![],
+            }
+        }
+        _ => PosResponseEnvelope {
+            version: ContractVersion::V1_0_0,
+            success: false,
+            idempotency_key,
+            payload: None,
+            errors: vec![PosError {
+                code: "UNSUPPORTED_COMMAND".into(),
+                message: "Command not yet implemented".into(),
+                field: None,
+            }],
+        },
+    };
+    result
+}

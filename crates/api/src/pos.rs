@@ -13,6 +13,7 @@ use uuid::Uuid;
 fn pos_operation_label(cmd: &PosCommand) -> &'static str {
     match cmd {
         PosCommand::CreateCart(_) => "create_cart",
+        PosCommand::SetCustomer(_) => "set_customer",
         PosCommand::AddLineItem(_) => "add_line_item",
         PosCommand::UpdateLineItem(_) => "update_line_item",
         PosCommand::RemoveLineItem(_) => "remove_line_item",
@@ -60,19 +61,14 @@ pub async fn handle_pos_command(
             }],
         })
     } else {
+        let response = crate::pos_handler::execute_pos_command(&_app, envelope).await;
         metrics::counter!(
             POS_COMMANDS_TOTAL,
             1u64,
             "operation" => operation,
-            "outcome" => OUTCOME_SUCCESS
+            "outcome" => if response.success { OUTCOME_SUCCESS } else { "error" }
         );
-        Json(PosResponseEnvelope {
-            version: ContractVersion::V1_0_0,
-            success: true,
-            idempotency_key: envelope.idempotency_key,
-            payload: None,
-            errors: vec![],
-        })
+        Json(response)
     };
 
     metrics::histogram!(

@@ -72,16 +72,18 @@ This runs (in order): `cargo fmt --all -- --check`, `cargo clippy --workspace --
 
 - `make fmt` — check formatting (use `make fmt-fix` to fix).
 - `make clippy` — lint.
-- `make test` — unit and integration (including in-process smoke) tests.
+- `make test` — unit, integration, smoke, and full order-flow journey tests.
+- `make test-journey` — run only the orchestrator journey tests (create cart → products, customer, promo, payment → finalize → document + HQ payload).
 - `make audit` — dependency advisories.
 
 Install `cargo-audit` if missing: `cargo install cargo-audit` (or `make setup`).
 
 ## Testing
 
-- **Unit / integration**: `cargo test --workspace --all-features`
-- **Smoke tests**: In-process server tests in `apex-edge/tests/smoke_http.rs` hit `/health`, `/ready`, and a minimal POS `create_cart` flow; they start the app on a random port and use an in-memory SQLite DB. They run as part of `cargo test`.
-- **Release smoke**: The `.github/workflows/smoke-release.yml` job builds the release binary, starts it with a temp DB, and asserts health, ready, and POS with `curl`.
+- **Unit / integration**: `cargo test --workspace --all-features` (or `make test`). Covers all crates plus the apex-edge binary tests.
+- **Smoke tests**: In-process server tests in `apex-edge/tests/smoke_http.rs` hit `/health`, `/ready`, and a minimal POS `create_cart` flow; they start the app on a random port and use an in-memory SQLite DB.
+- **Full order flow (journey)**: `apex-edge/tests/orchestrator_journey.rs` runs create cart → search/add product → search/add customer → add second product → assert 20% automatic promotion → receive payment → place order → generate document → assert document content and full HQ outbox payload. Run with `make test-journey` or as part of `make test`.
+- **Release smoke**: The `.github/workflows/smoke-release.yml` job builds the Docker image, runs the container, and asserts `/health`, `/ready`, and `POST /pos/command` (create_cart) with `curl`.
 
 ## Contracts
 

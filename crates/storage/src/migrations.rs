@@ -4,6 +4,7 @@ use sqlx::SqlitePool;
 use thiserror::Error;
 
 const MIGRATION_001: &str = include_str!("../migrations/001_init.sql");
+const MIGRATION_002: &str = include_str!("../migrations/002_catalog_pricing.sql");
 
 fn strip_sql_comment_lines(sql: &str) -> String {
     sql.lines()
@@ -19,16 +20,15 @@ pub enum MigrationError {
 }
 
 pub async fn run_migrations(pool: &SqlitePool) -> Result<(), MigrationError> {
-    // Strip SQL comment-only lines first so comment headers don't hide real
-    // statements when splitting by ';' (e.g. "-- Carts\nCREATE TABLE ...;").
-    let sql_no_comments = strip_sql_comment_lines(MIGRATION_001);
-
-    for stmt in sql_no_comments.split(';').filter(|s| !s.trim().is_empty()) {
-        let stmt = stmt.trim();
-        if stmt.is_empty() {
-            continue;
+    for sql in &[MIGRATION_001, MIGRATION_002] {
+        let sql_no_comments = strip_sql_comment_lines(sql);
+        for stmt in sql_no_comments.split(';').filter(|s| !s.trim().is_empty()) {
+            let stmt = stmt.trim();
+            if stmt.is_empty() {
+                continue;
+            }
+            sqlx::query(stmt).execute(pool).await?;
         }
-        sqlx::query(stmt).execute(pool).await?;
     }
     Ok(())
 }

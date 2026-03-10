@@ -14,6 +14,7 @@ pub struct Cart {
     pub id: Uuid,
     pub store_id: Uuid,
     pub register_id: Uuid,
+    pub customer_id: Option<Uuid>,
     pub state: CartStateKind,
     pub lines: Vec<CartLineItem>,
     pub applied_promo_ids: Vec<Uuid>,
@@ -60,6 +61,7 @@ impl Cart {
             id,
             store_id,
             register_id,
+            customer_id: None,
             state: CartStateKind::Open,
             lines: Vec::new(),
             applied_promo_ids: Vec::new(),
@@ -68,6 +70,45 @@ impl Cart {
             created_at: now,
             updated_at: now,
         }
+    }
+
+    pub fn set_customer(&mut self, customer_id: Uuid) {
+        self.customer_id = Some(customer_id);
+        self.updated_at = Utc::now();
+    }
+
+    /// Add a line item (caller must run pricing pipeline and apply_pricing afterward).
+    pub fn add_line_item(
+        &mut self,
+        line_id: Uuid,
+        item_id: Uuid,
+        sku: String,
+        name: String,
+        quantity: u32,
+        unit_price_cents: u64,
+        modifier_option_ids: Vec<Uuid>,
+        notes: Option<String>,
+    ) {
+        let line_total_cents = unit_price_cents.saturating_mul(quantity as u64);
+        self.lines.push(CartLineItem {
+            line_id,
+            item_id,
+            sku,
+            name,
+            quantity,
+            modifier_option_ids,
+            notes,
+            unit_price_cents,
+            line_total_cents,
+            discount_cents: 0,
+            tax_cents: 0,
+        });
+        self.updated_at = Utc::now();
+        self.state = if self.lines.is_empty() {
+            CartStateKind::Open
+        } else {
+            CartStateKind::Itemized
+        };
     }
 
     pub fn ensure_can_edit(&self) -> Result<(), DomainError> {
@@ -205,6 +246,7 @@ impl Cart {
     pub fn to_cart_state(&self) -> CartState {
         CartState {
             cart_id: self.id,
+            customer_id: self.customer_id,
             state: self.state.clone(),
             lines: self
                 .lines

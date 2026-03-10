@@ -26,6 +26,7 @@ impl<T> PosRequestEnvelope<T> {
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum PosCommand {
     CreateCart(CreateCartPayload),
+    SetCustomer(SetCustomerPayload),
     AddLineItem(AddLineItemPayload),
     UpdateLineItem(UpdateLineItemPayload),
     RemoveLineItem(RemoveLineItemPayload),
@@ -42,6 +43,12 @@ pub enum PosCommand {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateCartPayload {
     pub cart_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SetCustomerPayload {
+    pub cart_id: Uuid,
+    pub customer_id: Uuid,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -136,6 +143,7 @@ pub struct PosError {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CartState {
     pub cart_id: Uuid,
+    pub customer_id: Option<Uuid>,
     pub state: CartStateKind,
     pub lines: Vec<CartLine>,
     pub applied_promos: Vec<Uuid>,
