@@ -171,7 +171,7 @@ pub struct CartState {
     pub customer_id: Option<Uuid>,
     pub state: CartStateKind,
     pub lines: Vec<CartLine>,
-    pub applied_promos: Vec<Uuid>,
+    pub applied_promos: Vec<AppliedPromoInfo>,
     pub applied_coupons: Vec<AppliedCouponInfo>,
     /// Manual discounts (reason required); included in discount_cents.
     pub manual_discounts: Vec<ManualDiscountInfo>,
@@ -182,6 +182,13 @@ pub struct CartState {
     pub tendered_cents: u64,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppliedPromoInfo {
+    pub promo_id: Uuid,
+    pub name: String,
+    pub code: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

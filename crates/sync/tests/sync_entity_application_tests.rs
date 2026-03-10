@@ -5,8 +5,8 @@
 
 use apex_edge_contracts::{CatalogItem, Category, Customer, PriceBook, PriceBookEntry, TaxRule};
 use apex_edge_storage::{
-    list_catalog_items, list_categories, list_price_book_entries, list_tax_rules, run_migrations,
-    search_customers,
+    insert_catalog_item, list_catalog_items, list_categories, list_price_book_entries,
+    list_tax_rules, run_migrations, search_customers,
 };
 use apex_edge_sync::{run_sync_ndjson, SyncEntityConfig, SyncSourceConfig};
 use axum::body::Body;
@@ -103,6 +103,71 @@ async fn sync_catalog_items_are_applied_to_db() {
     assert_eq!(total, 1, "one catalog item should be stored");
     assert_eq!(items[0].sku, "SYNC-CAT-001");
     assert_eq!(items[0].name, "Synced Catalog Product");
+}
+
+#[tokio::test]
+async fn sync_catalog_replaces_stale_items_for_store() {
+    let stale_id = Uuid::parse_str("aaaaaaaa-0000-0000-0000-000000000000").unwrap();
+    let synced_id = Uuid::parse_str("aaaaaaaa-1111-1111-1111-111111111111").unwrap();
+    let synced = CatalogItem {
+        id: synced_id,
+        sku: "SYNC-CAT-NEW".into(),
+        name: "Synced New Product".into(),
+        description: Some("fresh snapshot row".into()),
+        category_id: Uuid::nil(),
+        tax_category_id: Uuid::nil(),
+        modifiers: vec![],
+        is_active: true,
+        version: 1,
+    };
+    let body = ndjson_body(&[serde_json::to_vec(&synced).unwrap()]);
+    let (_, base_url) = start_entity_server("catalog", body).await;
+
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("pool");
+    run_migrations(&pool).await.expect("migrations");
+
+    insert_catalog_item(
+        &pool,
+        stale_id,
+        STORE_ID,
+        "STALE-001",
+        "Stale Product",
+        Uuid::nil(),
+        Uuid::nil(),
+    )
+    .await
+    .expect("insert stale catalog row");
+
+    let config = SyncSourceConfig {
+        base_url,
+        entities: vec![SyncEntityConfig {
+            entity: "catalog".into(),
+            path: "/sync/ndjson/catalog".into(),
+        }],
+    };
+    run_sync_ndjson(
+        &reqwest::Client::new(),
+        &pool,
+        &config,
+        apex_edge_contracts::ContractVersion::V1_0_0,
+        STORE_ID,
+    )
+    .await
+    .expect("run_sync_ndjson");
+
+    let (items, total) = list_catalog_items(&pool, STORE_ID, None, None, 50, 0)
+        .await
+        .expect("list_catalog_items");
+    assert_eq!(
+        total, 1,
+        "stale catalog rows should be replaced by sync snapshot"
+    );
+    assert_eq!(items[0].id, synced_id);
+    assert_eq!(items[0].sku, "SYNC-CAT-NEW");
 }
 
 #[tokio::test]

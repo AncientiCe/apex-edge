@@ -1,6 +1,6 @@
 //! Catalog and reference data (ingested by sync or seeded for tests).
 
-use apex_edge_contracts::PriceBookEntry;
+use apex_edge_contracts::{CatalogItem, PriceBookEntry};
 use sqlx::SqlitePool;
 use uuid::Uuid;
 
@@ -276,6 +276,36 @@ pub async fn insert_catalog_item(
     .bind(tax_category_id.to_string())
     .execute(pool)
     .await?;
+    Ok(())
+}
+
+/// Replace all catalog items for a store atomically (delete + insert in one transaction).
+/// Used during sync to apply a full snapshot of catalog data.
+pub async fn replace_catalog_items(
+    pool: &SqlitePool,
+    store_id: Uuid,
+    items: &[CatalogItem],
+) -> Result<(), PoolError> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("DELETE FROM catalog_items WHERE store_id = ?")
+        .bind(store_id.to_string())
+        .execute(&mut *tx)
+        .await?;
+    for item in items {
+        sqlx::query(
+            "INSERT INTO catalog_items (id, store_id, sku, name, category_id, tax_category_id, description) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(item.id.to_string())
+        .bind(store_id.to_string())
+        .bind(item.sku.as_str())
+        .bind(item.name.as_str())
+        .bind(item.category_id.to_string())
+        .bind(item.tax_category_id.to_string())
+        .bind(item.description.as_deref())
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
     Ok(())
 }
 

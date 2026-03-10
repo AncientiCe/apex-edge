@@ -1,10 +1,11 @@
 //! POS command execution: load/save cart, run pricing pipeline, return payloads.
 
 use apex_edge_contracts::{
-    build_submission_envelope, CartState, ContractVersion, FinalizeResult, ManualDiscountInfo,
-    ManualDiscountKind, PosCommand, PosError, PosRequestEnvelope, PosResponseEnvelope,
+    build_submission_envelope, AppliedPromoInfo, CartState, ContractVersion, FinalizeResult,
+    ManualDiscountInfo, ManualDiscountKind, PosCommand, PosError, PosRequestEnvelope,
+    PosResponseEnvelope,
 };
-use apex_edge_domain::{apply_promos_to_lines, base_price_cents, tax_for_line, Cart};
+use apex_edge_domain::{apply_promos_with_attribution, base_price_cents, tax_for_line, Cart};
 use apex_edge_printing::generate_document;
 use apex_edge_storage::{
     get_catalog_item, get_customer, insert_outbox, list_price_book_entries, list_promotions,
@@ -22,7 +23,35 @@ fn cart_state_to_payload(state: &CartState) -> serde_json::Value {
 /// Build a `CartState` from a `Cart`.
 pub async fn build_cart_state(pool: &SqlitePool, store_id: Uuid, cart: &Cart) -> CartState {
     tracing::debug!(store_id = %store_id, pool_size = std::mem::size_of_val(pool), "building cart state");
-    cart.to_cart_state()
+    let mut state = cart.to_cart_state();
+    if !cart.applied_promo_ids.is_empty() {
+        let promo_lookup = list_promotions(pool, store_id)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|promo| (promo.id, promo))
+            .collect::<std::collections::HashMap<_, _>>();
+        state.applied_promos = cart
+            .applied_promo_ids
+            .iter()
+            .map(|promo_id| {
+                if let Some(promo) = promo_lookup.get(promo_id) {
+                    AppliedPromoInfo {
+                        promo_id: *promo_id,
+                        name: promo.name.clone(),
+                        code: promo.code.clone(),
+                    }
+                } else {
+                    AppliedPromoInfo {
+                        promo_id: *promo_id,
+                        name: promo_id.to_string(),
+                        code: None,
+                    }
+                }
+            })
+            .collect();
+    }
+    state
 }
 
 fn finalize_result_to_payload(result: &FinalizeResult) -> serde_json::Value {
@@ -112,7 +141,8 @@ pub async fn run_pricing_pipeline(
     let category_by_item =
         |item_id: Uuid| *item_to_tax_category.get(&item_id).unwrap_or(&Uuid::nil());
     let subtotal = cart.subtotal_cents();
-    let mut results = apply_promos_to_lines(&cart.lines, category_by_item, &promos, subtotal);
+    let (mut results, applied_promo_ids) =
+        apply_promos_with_attribution(&cart.lines, category_by_item, &promos, subtotal);
 
     for res in &mut results {
         let line = cart
@@ -132,6 +162,7 @@ pub async fn run_pricing_pipeline(
             break;
         }
     }
+    cart.applied_promo_ids = applied_promo_ids;
     cart.apply_pricing(results);
 
     // Apply manual discounts (stored with reason); add to line discount_cents and recalc tax.
@@ -219,7 +250,7 @@ pub async fn execute_pos_command(
                     errors,
                 };
             }
-            let state = cart.to_cart_state();
+            let state = build_cart_state(pool, store_id, &cart).await;
             PosResponseEnvelope {
                 version: ContractVersion::V1_0_0,
                 success: true,
@@ -270,7 +301,7 @@ pub async fn execute_pos_command(
                     errors,
                 };
             }
-            let state = cart.to_cart_state();
+            let state = build_cart_state(pool, store_id, &cart).await;
             PosResponseEnvelope {
                 version: ContractVersion::V1_0_0,
                 success: true,
@@ -386,7 +417,7 @@ pub async fn execute_pos_command(
                     errors,
                 };
             }
-            let state = cart.to_cart_state();
+            let state = build_cart_state(pool, store_id, &cart).await;
             PosResponseEnvelope {
                 version: ContractVersion::V1_0_0,
                 success: true,
@@ -583,7 +614,7 @@ pub async fn execute_pos_command(
                     errors,
                 };
             }
-            let state = cart.to_cart_state();
+            let state = build_cart_state(pool, store_id, &cart).await;
             PosResponseEnvelope {
                 version: ContractVersion::V1_0_0,
                 success: true,
@@ -629,7 +660,7 @@ pub async fn execute_pos_command(
                     errors,
                 };
             }
-            let state = cart.to_cart_state();
+            let state = build_cart_state(pool, store_id, &cart).await;
             PosResponseEnvelope {
                 version: ContractVersion::V1_0_0,
                 success: true,
@@ -677,7 +708,7 @@ pub async fn execute_pos_command(
                     errors,
                 };
             }
-            let state = cart.to_cart_state();
+            let state = build_cart_state(pool, store_id, &cart).await;
             PosResponseEnvelope {
                 version: ContractVersion::V1_0_0,
                 success: true,
@@ -872,7 +903,7 @@ pub async fn execute_pos_command(
                     errors,
                 };
             }
-            let state = cart.to_cart_state();
+            let state = build_cart_state(pool, store_id, &cart).await;
             PosResponseEnvelope {
                 version: ContractVersion::V1_0_0,
                 success: true,

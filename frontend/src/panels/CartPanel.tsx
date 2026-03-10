@@ -7,15 +7,25 @@ interface Props {
   onGoPay: () => void;
   canPay: boolean;
   onRemoveLine: (lineId: string) => void;
+  onApplyCoupon: (code: string) => void;
 }
 
-export function CartPanel({ cartState, attachedCustomer, onGoPay, canPay, onRemoveLine }: Props) {
+export function CartPanel({
+  cartState,
+  attachedCustomer,
+  onGoPay,
+  canPay,
+  onRemoveLine,
+  onApplyCoupon,
+}: Props) {
   const [discountDetailsOpen, setDiscountDetailsOpen] = useState(false);
+  const [couponCode, setCouponCode] = useState('');
   const lines = cartState?.lines ?? [];
   const hasDiscount =
     (cartState?.discount_cents ?? 0) > 0 ||
     (cartState?.applied_promos?.length ?? 0) > 0 ||
     (cartState?.applied_coupons?.length ?? 0) > 0;
+  const couponCodeTrimmed = couponCode.trim();
 
   const customerBanner = attachedCustomer && (
     <div className="cart-customer-banner">
@@ -112,6 +122,37 @@ export function CartPanel({ cartState, attachedCustomer, onGoPay, canPay, onRemo
         </div>
       </div>
 
+      <p className="ios-section-header">Coupon</p>
+      <div className="ios-card">
+        <div className="coupon-input-row">
+          <input
+            type="text"
+            value={couponCode}
+            onChange={(e) => setCouponCode(e.target.value)}
+            placeholder="Enter coupon code"
+            className="ios-input"
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && couponCodeTrimmed) {
+                onApplyCoupon(couponCodeTrimmed);
+                setCouponCode('');
+              }
+            }}
+          />
+          <button
+            type="button"
+            className="btn-sm"
+            onClick={() => {
+              if (!couponCodeTrimmed) return;
+              onApplyCoupon(couponCodeTrimmed);
+              setCouponCode('');
+            }}
+            disabled={!couponCodeTrimmed}
+          >
+            Apply Coupon
+          </button>
+        </div>
+      </div>
+
       <div style={{ marginTop: '1.5rem' }}>
         <button type="button" className="btn-primary" onClick={onGoPay} disabled={!canPay}>
           Pay ${(cartState.total_cents / 100).toFixed(2)}
@@ -128,8 +169,15 @@ function DiscountBreakdown({
   lines: CartLine[];
   cartState: CartState;
 }) {
-  const promoCount = cartState.applied_promos?.length ?? 0;
+  const promos = cartState.applied_promos ?? [];
   const coupons = cartState.applied_coupons ?? [];
+  const manualDiscounts = cartState.manual_discounts ?? [];
+  const lineDiscountCents = lines.reduce((sum, line) => sum + line.discount_cents, 0);
+  const couponDiscountCents = coupons.reduce((sum, coupon) => sum + coupon.discount_cents, 0);
+  const manualDiscountCents = manualDiscounts.reduce((sum, discount) => sum + discount.amount_cents, 0);
+  const hasSourceDetails = promos.length > 0 || coupons.length > 0 || manualDiscounts.length > 0;
+  const hasAnyDiscount = cartState.discount_cents > 0 || lineDiscountCents > 0 || couponDiscountCents > 0 || manualDiscountCents > 0;
+  const orderValueCents = cartState.subtotal_cents + cartState.tax_cents;
   return (
     <div className="cart-discount-breakdown">
       <p className="cart-discount-breakdown-title">Per item</p>
@@ -143,30 +191,91 @@ function DiscountBreakdown({
               {l.name} × {l.quantity}
             </div>
             <div className="cart-discount-line-amounts">
-              <span>${(listCents / 100).toFixed(2)}</span>
+              <span className="cart-discount-list">${(listCents / 100).toFixed(2)}</span>
               {discountCents > 0 && (
                 <>
                   <span className="cart-discount-minus">−${(discountCents / 100).toFixed(2)}</span>
                   <span className="cart-discount-eq">= ${(netCents / 100).toFixed(2)}</span>
                 </>
               )}
+              {discountCents === 0 && (
+                <span className="cart-discount-eq">= ${(netCents / 100).toFixed(2)}</span>
+              )}
             </div>
           </div>
         );
       })}
-      {(promoCount > 0 || coupons.length > 0) && (
-        <p className="cart-discount-breakdown-source">
-          {promoCount > 0 && (
-            <span>{promoCount} automatic promotion{promoCount !== 1 ? 's' : ''} applied.</span>
+      {hasAnyDiscount && (
+        <div className="cart-discount-breakdown-source">
+          <p className="cart-discount-breakdown-title">Manage discounts</p>
+          <div className="cart-discount-source-row">
+            <span className="cart-discount-source-label">Order value</span>
+            <span className="cart-discount-source-value">${(orderValueCents / 100).toFixed(2)}</span>
+          </div>
+          <div className="cart-discount-source-row">
+            <span className="cart-discount-source-label">Total discount</span>
+            <span className="cart-discount-source-value">−${(cartState.discount_cents / 100).toFixed(2)}</span>
+          </div>
+
+          <p className="cart-discount-breakdown-title">Discount totals</p>
+          <div className="cart-discount-source-row">
+            <span className="cart-discount-source-label">Line-level discounts</span>
+            <span className="cart-discount-source-value">${(lineDiscountCents / 100).toFixed(2)}</span>
+          </div>
+          <div className="cart-discount-source-row">
+            <span className="cart-discount-source-label">Coupon discounts</span>
+            <span className="cart-discount-source-value">${(couponDiscountCents / 100).toFixed(2)}</span>
+          </div>
+          <div className="cart-discount-source-row">
+            <span className="cart-discount-source-label">Manual discounts</span>
+            <span className="cart-discount-source-value">${(manualDiscountCents / 100).toFixed(2)}</span>
+          </div>
+          <div className="cart-discount-source-row">
+            <span className="cart-discount-source-label">Total discounts</span>
+            <span className="cart-discount-source-value">${(cartState.discount_cents / 100).toFixed(2)}</span>
+          </div>
+          {hasSourceDetails && (
+            <>
+              <p className="cart-discount-breakdown-title">Automatic discounts</p>
+              {promos.length > 0 && (
+                <div className="cart-discount-source-row">
+                  <span className="cart-discount-source-label">Promotions</span>
+                  <span className="cart-discount-source-value">
+                    {promos.map((promo) => (
+                      <code key={promo.promo_id}>{promo.name}</code>
+                    ))}
+                  </span>
+                </div>
+              )}
+              {coupons.length > 0 && (
+                <>
+                  <p className="cart-discount-breakdown-title">Coupons</p>
+                  {coupons.map((coupon) => (
+                    <div key={coupon.coupon_id} className="cart-discount-source-row">
+                      <span className="cart-discount-source-label">{coupon.code}</span>
+                      <span className="cart-discount-source-value">
+                        −${(coupon.discount_cents / 100).toFixed(2)}
+                      </span>
+                    </div>
+                  ))}
+                </>
+              )}
+              {manualDiscounts.length > 0 && (
+                <>
+                  <p className="cart-discount-breakdown-title">Manual discounts</p>
+                  {manualDiscounts.map((manual, idx) => (
+                    <div key={`${manual.reason}-${idx}`} className="cart-discount-source-row">
+                      <span className="cart-discount-source-label">{manual.reason}</span>
+                      <span className="cart-discount-source-value">
+                        −${(manual.amount_cents / 100).toFixed(2)}
+                      </span>
+                    </div>
+                  ))}
+                </>
+              )}
+            </>
           )}
-          {coupons.length > 0 && (
-            <span>
-              {' '}
-              Coupon{coupons.length !== 1 ? 's' : ''}:{' '}
-              {coupons.map((c) => `${c.code} (−$${(c.discount_cents / 100).toFixed(2)})`).join(', ')}
-            </span>
-          )}
-        </p>
+        </div>
       )}
     </div>
   );

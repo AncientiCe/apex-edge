@@ -18,6 +18,28 @@ fn default_store_id() -> Uuid {
     Uuid::nil()
 }
 
+#[cfg(test)]
+mod tests {
+    use super::{demo_catalog_items, demo_price_book_for_catalog};
+
+    #[test]
+    fn price_book_covers_every_catalog_item() {
+        let items = demo_catalog_items();
+        let book = demo_price_book_for_catalog(&items);
+
+        assert_eq!(book.entries.len(), items.len());
+        for item in &items {
+            assert!(
+                book.entries
+                    .iter()
+                    .any(|entry| entry.item_id == item.id && entry.modifier_option_id.is_none()),
+                "missing price entry for item {}",
+                item.id
+            );
+        }
+    }
+}
+
 /// Shared state for handlers (store_id for scoping example data).
 struct AppState {
     store_id: Uuid,
@@ -44,35 +66,47 @@ fn b64(s: &[u8]) -> String {
     serde_json::to_string(&base64::engine::general_purpose::STANDARD.encode(s)).unwrap()
 }
 
+fn demo_catalog_items() -> Vec<CatalogItem> {
+    let category_id = Uuid::parse_str("10000000-0000-0000-0000-000000000001").unwrap();
+    let tax_id = Uuid::parse_str("20000000-0000-0000-0000-000000000002").unwrap();
+    (1..=180)
+        .map(|n| CatalogItem {
+            id: Uuid::from_u128(0x30000000000000000000000000000000u128 + n as u128),
+            sku: format!("DEMO-{n:03}"),
+            name: format!("Example Product {n}"),
+            description: Some(format!("Description {n}")),
+            category_id,
+            tax_category_id: tax_id,
+            modifiers: vec![],
+            is_active: true,
+            version: 1,
+        })
+        .collect()
+}
+
+fn demo_price_book_for_catalog(items: &[CatalogItem]) -> PriceBook {
+    PriceBook {
+        id: Uuid::parse_str("40000000-0000-0000-0000-000000000001").unwrap(),
+        name: "Default".into(),
+        effective_from: Utc::now(),
+        effective_until: None,
+        entries: items
+            .iter()
+            .enumerate()
+            .map(|(idx, item)| PriceBookEntry {
+                item_id: item.id,
+                modifier_option_id: None,
+                price_cents: 199 + ((idx as u64 % 17) * 37),
+                currency: "USD".into(),
+            })
+            .collect(),
+        version: 1,
+    }
+}
+
 async fn ndjson_catalog(State(state): State<Arc<AppState>>) -> Response<Body> {
     eprintln!("catalog request store_id={}", state.store_id);
-    let cat_id = Uuid::parse_str("10000000-0000-0000-0000-000000000001").unwrap();
-    let tax_id = Uuid::parse_str("20000000-0000-0000-0000-000000000002").unwrap();
-
-    let items: Vec<CatalogItem> = vec![
-        CatalogItem {
-            id: Uuid::parse_str("30000000-0000-0000-0000-000000000001").unwrap(),
-            sku: "DEMO-001".into(),
-            name: "Example Product One".into(),
-            description: Some("Description one".into()),
-            category_id: cat_id,
-            tax_category_id: tax_id,
-            modifiers: vec![],
-            is_active: true,
-            version: 1,
-        },
-        CatalogItem {
-            id: Uuid::parse_str("30000000-0000-0000-0000-000000000002").unwrap(),
-            sku: "DEMO-002".into(),
-            name: "Example Product Two".into(),
-            description: None,
-            category_id: cat_id,
-            tax_category_id: tax_id,
-            modifiers: vec![],
-            is_active: true,
-            version: 1,
-        },
-    ];
+    let items = demo_catalog_items();
 
     let lines: Vec<String> = items
         .iter()
@@ -106,29 +140,8 @@ async fn ndjson_categories(State(state): State<Arc<AppState>>) -> Response<Body>
 
 async fn ndjson_price_book(State(state): State<Arc<AppState>>) -> Response<Body> {
     let _ = state;
-    let item1 = Uuid::parse_str("30000000-0000-0000-0000-000000000001").unwrap();
-    let item2 = Uuid::parse_str("30000000-0000-0000-0000-000000000002").unwrap();
-    let book = PriceBook {
-        id: Uuid::parse_str("40000000-0000-0000-0000-000000000001").unwrap(),
-        name: "Default".into(),
-        effective_from: Utc::now(),
-        effective_until: None,
-        entries: vec![
-            PriceBookEntry {
-                item_id: item1,
-                modifier_option_id: None,
-                price_cents: 1000,
-                currency: "USD".into(),
-            },
-            PriceBookEntry {
-                item_id: item2,
-                modifier_option_id: None,
-                price_cents: 500,
-                currency: "USD".into(),
-            },
-        ],
-        version: 1,
-    };
+    let items = demo_catalog_items();
+    let book = demo_price_book_for_catalog(&items);
     let lines = vec![b64(&serde_json::to_vec(&book).unwrap())];
     Response::builder()
         .header("content-type", "application/x-ndjson")

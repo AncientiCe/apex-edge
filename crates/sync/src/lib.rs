@@ -129,28 +129,16 @@ async fn apply_entity_batch(
         }
         "catalog" => {
             use apex_edge_contracts::CatalogItem;
+            let mut items: Vec<CatalogItem> = Vec::with_capacity(batch.len());
             for payload in batch {
                 let item: CatalogItem = serde_json::from_slice(payload)
                     .map_err(|_| crate::ingest::IngestError::InvalidPayload)?;
-                apex_edge_storage::insert_catalog_item(
-                    pool,
-                    item.id,
-                    store_id,
-                    &item.sku,
-                    &item.name,
-                    item.category_id,
-                    item.tax_category_id,
-                )
+                items.push(item);
+            }
+            apex_edge_storage::replace_catalog_items(pool, store_id, &items)
                 .await
                 .map_err(crate::ingest::IngestError::Storage)
                 .map_err(RunSyncError::Ingest)?;
-                if let Some(desc) = &item.description {
-                    apex_edge_storage::update_catalog_item_description(pool, item.id, desc)
-                        .await
-                        .map_err(crate::ingest::IngestError::Storage)
-                        .map_err(RunSyncError::Ingest)?;
-                }
-            }
         }
         "categories" => {
             use apex_edge_contracts::Category;

@@ -3,12 +3,16 @@ use apex_edge_api::{
     list_order_documents, ready, serve_metrics, sync_status, AppState,
 };
 use apex_edge_contracts::{
-    CartState, ContractVersion, CreateCartPayload, PosCommand, PosRequestEnvelope,
-    RemoveLineItemPayload,
+    AddLineItemPayload, CartState, ContractVersion, CreateCartPayload, PosCommand,
+    PosRequestEnvelope, PromoAction, Promotion, PromotionType, RemoveLineItemPayload,
 };
-use apex_edge_storage::{enqueue_document, mark_generated, run_migrations};
+use apex_edge_storage::{
+    enqueue_document, insert_catalog_item, insert_price_book_entry, insert_promotion,
+    mark_generated, run_migrations,
+};
 use axum::response::IntoResponse;
 use axum::{extract::State, Json};
+use chrono::{Duration, Utc};
 use sqlx::sqlite::SqlitePoolOptions;
 use uuid::Uuid;
 
@@ -346,5 +350,99 @@ async fn metrics_endpoint_returns_404_when_recorder_not_installed() {
         response.status(),
         axum::http::StatusCode::NOT_FOUND,
         "metrics endpoint should return 404 when no handle is configured"
+    );
+}
+
+#[tokio::test]
+async fn add_line_item_response_includes_applied_promo_name() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("pool");
+    run_migrations(&pool).await.expect("migrations");
+
+    let store_id = Uuid::nil();
+    let state = AppState {
+        store_id,
+        pool: pool.clone(),
+        metrics_handle: None,
+    };
+    let item_id = Uuid::new_v4();
+    insert_catalog_item(
+        &pool,
+        item_id,
+        store_id,
+        "PROMO-001",
+        "Promo Test Item",
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+    )
+    .await
+    .expect("insert_catalog_item");
+    insert_price_book_entry(&pool, store_id, item_id, None, 1000, "USD")
+        .await
+        .expect("insert_price_book_entry");
+    let promo = Promotion {
+        id: Uuid::new_v4(),
+        code: Some("AUTO100".into()),
+        name: "Donna Dress 2 for 1".into(),
+        promo_type: PromotionType::PercentageOff { percent_bps: 10000 },
+        priority: 100,
+        valid_from: Utc::now() - Duration::minutes(5),
+        valid_until: Some(Utc::now() + Duration::minutes(5)),
+        conditions: vec![],
+        actions: vec![PromoAction::ApplyToBasket],
+        version: 1,
+    };
+    insert_promotion(
+        &pool,
+        promo.id,
+        store_id,
+        &serde_json::to_string(&promo).expect("promo json"),
+    )
+    .await
+    .expect("insert_promotion");
+
+    let created = handle_pos_command(
+        State(state.clone()),
+        Json(PosRequestEnvelope {
+            version: ContractVersion::V1_0_0,
+            idempotency_key: Uuid::new_v4(),
+            store_id,
+            register_id: Uuid::nil(),
+            payload: PosCommand::CreateCart(CreateCartPayload { cart_id: None }),
+        }),
+    )
+    .await;
+    let created_state: CartState =
+        serde_json::from_value(created.0.payload.expect("cart payload")).expect("cart state");
+
+    let add = handle_pos_command(
+        State(state),
+        Json(PosRequestEnvelope {
+            version: ContractVersion::V1_0_0,
+            idempotency_key: Uuid::new_v4(),
+            store_id,
+            register_id: Uuid::nil(),
+            payload: PosCommand::AddLineItem(AddLineItemPayload {
+                cart_id: created_state.cart_id,
+                item_id,
+                modifier_option_ids: vec![],
+                quantity: 1,
+                notes: None,
+                unit_price_override_cents: None,
+            }),
+        }),
+    )
+    .await;
+
+    assert!(add.0.success, "add line item should succeed");
+    let state_after_add: CartState =
+        serde_json::from_value(add.0.payload.expect("add payload")).expect("cart state");
+    assert_eq!(state_after_add.applied_promos.len(), 1);
+    assert_eq!(
+        state_after_add.applied_promos[0].name,
+        "Donna Dress 2 for 1"
     );
 }

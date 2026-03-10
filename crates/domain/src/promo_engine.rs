@@ -14,12 +14,23 @@ pub fn apply_promos_to_lines(
     promos: &[Promotion],
     subtotal_cents: u64,
 ) -> Vec<LinePriceResult> {
+    apply_promos_with_attribution(lines, category_by_item, promos, subtotal_cents).0
+}
+
+/// Compute line discounts and the set of promotions that contributed non-zero discount.
+pub fn apply_promos_with_attribution(
+    lines: &[CartLineItem],
+    category_by_item: impl Fn(Uuid) -> Uuid,
+    promos: &[Promotion],
+    subtotal_cents: u64,
+) -> (Vec<LinePriceResult>, Vec<Uuid>) {
     let mut line_discounts: std::collections::HashMap<Uuid, u64> =
         lines.iter().map(|l| (l.line_id, 0u64)).collect();
     let mut line_totals: std::collections::HashMap<Uuid, u64> = lines
         .iter()
         .map(|l| (l.line_id, l.line_total_cents))
         .collect();
+    let mut applied_promo_ids: Vec<Uuid> = Vec::new();
 
     let mut sorted_promos: Vec<_> = promos.iter().collect();
     sorted_promos.sort_by_key(|p| std::cmp::Reverse(p.priority));
@@ -45,6 +56,9 @@ pub fn apply_promos_to_lines(
             &promo.conditions,
             &category_by_item,
         );
+        if discount > 0 {
+            applied_promo_ids.push(promo.id);
+        }
         allocate_discount_to_lines(
             &promo.actions,
             lines,
@@ -56,7 +70,7 @@ pub fn apply_promos_to_lines(
         );
     }
 
-    lines
+    let line_results = lines
         .iter()
         .map(|l| {
             let discount = *line_discounts.get(&l.line_id).unwrap_or(&0);
@@ -68,7 +82,8 @@ pub fn apply_promos_to_lines(
                 tax_cents: l.tax_cents,
             }
         })
-        .collect()
+        .collect();
+    (line_results, applied_promo_ids)
 }
 
 fn conditions_met(

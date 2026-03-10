@@ -56,6 +56,11 @@ export interface RemoveLineItemPayload {
   line_id: string;
 }
 
+export interface ApplyCouponPayload {
+  cart_id: string;
+  coupon_code: string;
+}
+
 export interface SetTenderingPayload {
   cart_id: string;
 }
@@ -76,6 +81,7 @@ export type PosCommand =
   | { action: 'set_customer'; payload: SetCustomerPayload }
   | { action: 'add_line_item'; payload: AddLineItemPayload }
   | { action: 'remove_line_item'; payload: RemoveLineItemPayload }
+  | { action: 'apply_coupon'; payload: ApplyCouponPayload }
   | { action: 'set_tendering'; payload: SetTenderingPayload }
   | { action: 'add_payment'; payload: AddPaymentPayload }
   | { action: 'finalize_order'; payload: FinalizeOrderPayload };
@@ -85,7 +91,7 @@ export interface CartState {
   customer_id: string | null;
   state: string;
   lines: CartLine[];
-  applied_promos: string[];
+  applied_promos: AppliedPromoInfo[];
   applied_coupons: AppliedCouponInfo[];
   manual_discounts?: ManualDiscountInfo[];
   subtotal_cents: number;
@@ -95,6 +101,12 @@ export interface CartState {
   tendered_cents: number;
   created_at: string;
   updated_at: string;
+}
+
+export interface AppliedPromoInfo {
+  promo_id: string;
+  name: string;
+  code?: string | null;
 }
 
 export interface ManualDiscountInfo {

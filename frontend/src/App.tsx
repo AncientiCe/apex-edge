@@ -287,6 +287,20 @@ export default function App() {
     }
   }, [cartId, sendPosCommand]);
 
+  const onApplyCoupon = useCallback(async (couponCode: string) => {
+    const code = couponCode.trim();
+    if (!code) return;
+    const cid = await ensureCart();
+    if (!cid) return;
+    const res = await sendPosCommand({
+      action: 'apply_coupon',
+      payload: { cart_id: cid, coupon_code: code },
+    });
+    if (res?.success) {
+      pushToast(`Coupon applied: ${code}`);
+    }
+  }, [ensureCart, pushToast, sendPosCommand]);
+
   const onAddCashPayment = useCallback(async () => {
     if (!cartId) return;
     const amountCents = Math.round((parseFloat(cashAmount) || 0) * 100);
@@ -492,7 +506,14 @@ export default function App() {
 
         {/* ── Cart ── */}
         {stage === 'cart' && (
-          <CartPanel cartState={cartState} attachedCustomer={attachedCustomer} onGoPay={onGoToPay} canPay={cartItemCount > 0} onRemoveLine={onRemoveLine} />
+          <CartPanel
+            cartState={cartState}
+            attachedCustomer={attachedCustomer}
+            onGoPay={onGoToPay}
+            canPay={cartItemCount > 0}
+            onRemoveLine={onRemoveLine}
+            onApplyCoupon={onApplyCoupon}
+          />
         )}
 
         {/* ── Pay ── */}

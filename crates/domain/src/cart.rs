@@ -1,7 +1,7 @@
 //! Cart aggregate and state machine: Open -> Itemized -> Discounted -> Tendering -> Paid -> Finalized.
 
 use apex_edge_contracts::{
-    AppliedCouponInfo, CartLine, CartState, CartStateKind, ManualDiscountInfo,
+    AppliedCouponInfo, AppliedPromoInfo, CartLine, CartState, CartStateKind, ManualDiscountInfo,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -291,7 +291,15 @@ impl Cart {
                     notes: l.notes.clone(),
                 })
                 .collect(),
-            applied_promos: self.applied_promo_ids.clone(),
+            applied_promos: self
+                .applied_promo_ids
+                .iter()
+                .map(|promo_id| AppliedPromoInfo {
+                    promo_id: *promo_id,
+                    name: promo_id.to_string(),
+                    code: None,
+                })
+                .collect(),
             applied_coupons: self
                 .applied_coupons
                 .iter()
