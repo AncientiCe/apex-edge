@@ -12,9 +12,16 @@ pub enum PoolError {
 }
 
 pub async fn create_sqlite_pool(path: &str) -> Result<SqlitePool, PoolError> {
+    // SQLx expects a SQLite URL (e.g. `sqlite:apex_edge.db`, `sqlite::memory:`).
+    // For ergonomics and OS-agnostic config, accept plain file paths and prefix them.
+    let url = if path.starts_with("sqlite:") {
+        path.to_string()
+    } else {
+        format!("sqlite:{path}")
+    };
     let pool = SqlitePoolOptions::new()
         .acquire_timeout(Duration::from_secs(5))
-        .connect(path)
+        .connect(&url)
         .await?;
     Ok(pool)
 }
