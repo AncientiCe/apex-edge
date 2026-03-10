@@ -8,6 +8,7 @@ pub mod health;
 pub mod metrics_handler;
 pub mod pos;
 pub mod pos_handler;
+pub mod sync_status;
 
 pub use catalog_categories::*;
 pub use catalog_search::*;
@@ -16,3 +17,4 @@ pub use documents::*;
 pub use health::*;
 pub use metrics_handler::serve_metrics;
 pub use pos::*;
+pub use sync_status::*;

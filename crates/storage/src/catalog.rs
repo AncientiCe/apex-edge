@@ -99,7 +99,7 @@ pub async fn list_catalog_items(
     limit: u32,
     offset: u32,
 ) -> Result<(Vec<CatalogItemRow>, u64), PoolError> {
-    let limit = limit.min(100).max(1);
+    let limit = limit.clamp(1, 100);
     let q_trimmed = q.map(|s| s.trim()).filter(|s| !s.is_empty());
     let name_pattern = q_trimmed.map(|s| format!("%{s}%"));
     let count_sql = match (category_id.is_some(), q_trimmed.is_some()) {

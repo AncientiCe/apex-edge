@@ -2,7 +2,8 @@
 
 use apex_edge_api::{
     create_gift_receipt_document, get_document, handle_pos_command, health, list_categories,
-    list_order_documents, ready, search_customers, search_products, serve_metrics, AppState,
+    list_order_documents, ready, search_customers, search_products, serve_metrics, sync_status,
+    AppState,
 };
 use axum::{routing::get, Router};
 use tower_http::cors::{Any, CorsLayer};
@@ -63,6 +64,7 @@ pub fn build_router(
             axum::routing::post(create_gift_receipt_document),
         )
         .route("/metrics", get(serve_metrics))
+        .route("/sync/status", get(sync_status))
         .with_state(app_state);
     routes.layer(cors).layer(HttpMetricsLayer)
 }

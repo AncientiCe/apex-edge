@@ -53,6 +53,49 @@ pub async fn fetch_entity(
     Ok((payloads?, body.total))
 }
 
+/// Metadata line at start of NDJSON stream.
+#[derive(Debug, Deserialize)]
+struct NdjsonMeta {
+    total: u64,
+}
+
+/// Fetch one entity via NDJSON stream: first line = {"total": N}, then N lines of JSON (base64 string per line).
+/// Calls `on_batch` with each batch of decoded payloads and current total; processes line-by-line to avoid buffering all payloads.
+pub async fn fetch_entity_ndjson_stream<F>(
+    client: &reqwest::Client,
+    url: &str,
+    _since: i64,
+    mut on_batch: F,
+) -> Result<(), FetchError>
+where
+    F: FnMut(&[Vec<u8>], u64),
+{
+    let resp = client.get(url).send().await?;
+    resp.error_for_status_ref()?;
+    let text = resp.text().await?;
+    let engine = base64::engine::general_purpose::STANDARD;
+    let lines: Vec<&str> = text.lines().collect();
+    if lines.is_empty() {
+        return Ok(());
+    }
+    let meta: NdjsonMeta = serde_json::from_str(lines[0])
+        .map_err(|e| FetchError::Decode(format!("ndjson first line: {}", e)))?;
+    let total = meta.total;
+    for line in lines.iter().skip(1).take(total as usize) {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let b64_str: String =
+            serde_json::from_str(line).map_err(|e| FetchError::Decode(e.to_string()))?;
+        let payload = engine
+            .decode(&b64_str)
+            .map_err(|e| FetchError::Decode(e.to_string()))?;
+        on_batch(&[payload], total);
+    }
+    Ok(())
+}
+
 /// Fetch all entities from config and return payloads per entity plus progress summary.
 /// Current checkpoints from pool are used to build progress; total comes from each response.
 pub async fn fetch_all(

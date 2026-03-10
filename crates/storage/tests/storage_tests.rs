@@ -1,4 +1,5 @@
 use apex_edge_storage::*;
+use chrono::Utc;
 use sqlx::sqlite::SqlitePoolOptions;
 use uuid::Uuid;
 
@@ -124,4 +125,56 @@ async fn seed_demo_data_populates_enough_catalog_and_customers() {
             .await
             .expect("customer count");
     assert!(customer_count.0 >= 80);
+}
+
+// --- Latest-only sync status persistence ---
+
+#[tokio::test]
+async fn sync_status_upsert_and_read_latest_run() {
+    let pool = test_pool().await;
+    let started = Utc::now();
+
+    upsert_latest_sync_run(&pool, "running", Some(started), None, None)
+        .await
+        .expect("upsert run");
+
+    let run = get_latest_sync_run(&pool).await.expect("get latest run");
+    let run = run.expect("one row");
+    assert_eq!(run.state, "running");
+    assert!(run.started_at.is_some());
+    assert_eq!(run.finished_at, None);
+    assert_eq!(run.last_error, None);
+
+    upsert_latest_sync_run(&pool, "success", Some(started), Some(Utc::now()), None)
+        .await
+        .expect("upsert run success");
+    let run2 = get_latest_sync_run(&pool)
+        .await
+        .expect("get latest run")
+        .unwrap();
+    assert_eq!(run2.state, "success");
+    assert!(run2.finished_at.is_some());
+}
+
+#[tokio::test]
+async fn sync_status_upsert_and_read_entity_statuses() {
+    let pool = test_pool().await;
+    let now = Utc::now();
+
+    upsert_entity_sync_status(&pool, "catalog", 100, Some(500), Some(20.0), now, "syncing")
+        .await
+        .expect("upsert entity");
+    upsert_entity_sync_status(&pool, "price_book", 50, Some(50), Some(100.0), now, "done")
+        .await
+        .expect("upsert entity 2");
+
+    let entities = get_entity_sync_statuses(&pool)
+        .await
+        .expect("get entity statuses");
+    assert_eq!(entities.len(), 2);
+    let catalog = entities.iter().find(|e| e.entity == "catalog").unwrap();
+    assert_eq!(catalog.current, 100);
+    assert_eq!(catalog.total, Some(500));
+    assert_eq!(catalog.percent, Some(20.0));
+    assert_eq!(catalog.status, "syncing");
 }

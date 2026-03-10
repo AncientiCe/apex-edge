@@ -210,3 +210,109 @@ async fn sync_data_progress_percent_and_ingest_with_any_progress() {
     assert!(!summary2.is_complete());
     assert!(summary2.overall_percent.unwrap() < 100.0);
 }
+
+// --- NDJSON streaming tests (require fetch_entity_ndjson_stream and streamed ingest) ---
+
+/// Helper: start a server that serves one entity as NDJSON (first line = {"total": N}, then N lines of base64 payload).
+async fn start_ndjson_sync_server() -> (u16, String) {
+    use axum::body::Body;
+    use axum::http::Response;
+    use axum::routing::get;
+
+    async fn ndjson_catalog() -> Response<Body> {
+        let body = format!(
+            "{{\"total\":2}}\n\"{}\"\n\"{}\"",
+            BASE64.encode(b"catalog-item-1"),
+            BASE64.encode(b"catalog-item-2")
+        );
+        Response::builder()
+            .header("content-type", "application/x-ndjson")
+            .body(Body::from(body))
+            .unwrap()
+    }
+
+    let app = Router::new().route("/sync/ndjson/catalog", get(ndjson_catalog));
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let base = format!("http://127.0.0.1:{}", port);
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+    (port, base)
+}
+
+#[tokio::test]
+async fn fetch_entity_ndjson_stream_yields_payloads_incrementally() {
+    let (_port, base_url) = start_ndjson_sync_server().await;
+    let client = reqwest::Client::new();
+    let url = format!("{}/sync/ndjson/catalog", base_url.trim_end_matches('/'));
+
+    let mut collected: Vec<Vec<u8>> = Vec::new();
+    let mut progress_updates: Vec<u64> = Vec::new();
+
+    apex_edge_sync::fetch_entity_ndjson_stream(
+        &client,
+        &url,
+        0,
+        |payloads: &[Vec<u8>], total: u64| {
+            collected.extend(payloads.iter().cloned());
+            progress_updates.push(total);
+        },
+    )
+    .await
+    .expect("fetch_entity_ndjson_stream");
+
+    assert_eq!(collected.len(), 2, "should collect two payloads");
+    assert_eq!(collected[0], b"catalog-item-1");
+    assert_eq!(collected[1], b"catalog-item-2");
+    assert!(
+        !progress_updates.is_empty(),
+        "progress callback should be invoked at least once"
+    );
+    assert_eq!(
+        *progress_updates.last().unwrap(),
+        2,
+        "final progress total should be 2"
+    );
+}
+
+#[tokio::test]
+async fn streamed_ingest_advances_checkpoint_per_batch() {
+    let (_port, base_url) = start_ndjson_sync_server().await;
+    let client = reqwest::Client::new();
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("pool");
+    apex_edge_storage::run_migrations(&pool)
+        .await
+        .expect("migrations");
+
+    let config = apex_edge_sync::SyncSourceConfig {
+        base_url: base_url.clone(),
+        entities: vec![apex_edge_sync::SyncEntityConfig {
+            entity: "catalog".into(),
+            path: "/sync/ndjson/catalog".into(),
+        }],
+    };
+
+    apex_edge_sync::run_sync_ndjson(
+        &client,
+        &pool,
+        &config,
+        apex_edge_contracts::ContractVersion::V1_0_0,
+    )
+    .await
+    .expect("run_sync_ndjson");
+
+    let seq = apex_edge_storage::get_sync_checkpoint(&pool, "catalog")
+        .await
+        .expect("get checkpoint")
+        .unwrap();
+    assert_eq!(
+        seq, 2,
+        "checkpoint should advance to 2 after ingesting 2 items"
+    );
+}

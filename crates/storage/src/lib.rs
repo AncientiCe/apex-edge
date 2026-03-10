@@ -13,6 +13,7 @@ pub mod outbox;
 pub mod pool;
 pub mod promotions;
 pub mod seeds;
+pub mod sync_status;
 pub mod tax_rules;
 
 pub use audit::*;
@@ -28,4 +29,5 @@ pub use outbox::*;
 pub use pool::*;
 pub use promotions::*;
 pub use seeds::*;
+pub use sync_status::*;
 pub use tax_rules::*;

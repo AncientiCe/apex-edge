@@ -22,40 +22,65 @@ export function CustomerPanel({
     onSearch(q);
   }, [q, onSearch]);
 
+  const selected = customers.find((c) => c.id === selectedCustomerId);
+
   return (
-    <section className="panel customer-panel">
-      <h2>Customer</h2>
-      <div className="row">
+    <div>
+      <p className="ios-section-header">Find Customer</p>
+      <div className="ios-card" style={{ padding: '0.6rem 1rem', marginBottom: '0.75rem' }}>
         <input
           type="text"
           placeholder="Name, email, code, or ID"
           value={q}
           onChange={(e) => setQ(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+          onKeyDown={(e) => e.key === 'Enter' && !disabled && handleSearch()}
           aria-label="Search customer"
-          className="customer-search"
+          className="ios-search"
+          style={{ width: '100%' }}
+          disabled={disabled}
         />
-        <button type="button" onClick={handleSearch} disabled={disabled}>
-          Search
-        </button>
       </div>
-      <ul className="customer-list">
-        {customers.length === 0 && q.trim() && (
-          <li className="customer-list-empty">No customers found.</li>
-        )}
-        {customers.map((c) => (
-          <li key={c.id}>
-            <button
-              type="button"
-              className={`customer-item ${selectedCustomerId === c.id ? 'selected' : ''}`}
-              onClick={() => onSelectCustomer(c.id)}
-            >
-              <span className="customer-name">{c.name}</span>
-              <span className="customer-meta">{c.code}{c.email ? ` · ${c.email}` : ''}</span>
-            </button>
-          </li>
-        ))}
-      </ul>
-    </section>
+
+      {selected && (
+        <div className="customer-selected-banner">
+          <span>✓</span>
+          <span>{selected.name} selected</span>
+        </div>
+      )}
+
+      {customers.length > 0 && (
+        <>
+          <p className="ios-section-header">Results</p>
+          <div className="ios-card">
+            {customers.map((c) => (
+              <button
+                key={c.id}
+                type="button"
+                className="ios-row"
+                style={{ width: '100%', background: 'none', border: 'none', textAlign: 'left', cursor: 'pointer' }}
+                onClick={() => onSelectCustomer(c.id)}
+                aria-pressed={selectedCustomerId === c.id}
+              >
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div className="customer-name-text">{c.name}</div>
+                  <div className="customer-meta-text">
+                    {c.code}{c.email ? ` · ${c.email}` : ''}
+                  </div>
+                </div>
+                {selectedCustomerId === c.id && (
+                  <span className="customer-checkmark">✓</span>
+                )}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+
+      {customers.length === 0 && q.trim() && (
+        <div className="ios-card">
+          <div className="customer-empty">No customers found.</div>
+        </div>
+      )}
+    </div>
   );
 }

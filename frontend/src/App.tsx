@@ -28,12 +28,13 @@ import { CatalogPanel } from './panels/CatalogPanel';
 import { CustomerPanel } from './panels/CustomerPanel';
 import { CartPanel } from './panels/CartPanel';
 import { EventLogPanel } from './panels/EventLogPanel';
+import { SyncStatusPanel } from './panels/SyncStatusPanel';
 
 const STORE_ID = '00000000-0000-0000-0000-000000000000';
 const REGISTER_ID = '00000000-0000-0000-0000-000000000000';
 
 export type LogEntry = { ts: string; kind: 'req' | 'res' | 'err'; text: string };
-type Stage = 'customers' | 'catalog' | 'cart' | 'pay' | 'summary';
+type Stage = 'customers' | 'catalog' | 'cart' | 'pay' | 'summary' | 'sync';
 type Toast = { id: number; message: string };
 type SaleSummary = {
   finalize: FinalizeResult;
@@ -290,7 +291,7 @@ export default function App() {
       !('order_id' in payRes.payload) &&
       (payRes.payload as CartState).state === 'paid'
     ) {
-      pushToast('Payment complete. Placing order...');
+      pushToast('Payment complete. Placing order…');
       await sendPosCommand({
         action: 'finalize_order',
         payload: { cart_id: cartId },
@@ -355,7 +356,6 @@ export default function App() {
     pushToast('Sale completed');
   }, [pushToast]);
 
-  // Keep an active cart at all times for the POS flow.
   useEffect(() => {
     if (!baseUrl || cartId || stage === 'summary') {
       return;
@@ -363,8 +363,10 @@ export default function App() {
     void ensureCart();
   }, [baseUrl, cartId, ensureCart, stage]);
 
+  const isCartTab = stage === 'cart' || stage === 'pay' || stage === 'summary';
+
   return (
-    <div className="app pos-app">
+    <div className="pos-app">
       <header className="pos-header">
         <ConnectionPanel
           baseUrl={baseUrl}
@@ -374,40 +376,12 @@ export default function App() {
           onCheckHealth={checkHealth}
           onCheckReady={checkReady}
         />
-        <nav className="pos-nav" aria-label="Main">
-          <button
-            type="button"
-            className={stage === 'customers' ? 'active' : ''}
-            onClick={() => setStage('customers')}
-            aria-current={stage === 'customers' ? 'page' : undefined}
-          >
-            Customers
-          </button>
-          <button
-            type="button"
-            className={stage === 'catalog' ? 'active' : ''}
-            onClick={() => setStage('catalog')}
-            aria-current={stage === 'catalog' ? 'page' : undefined}
-          >
-            Catalog
-          </button>
-          <button
-            type="button"
-            className={stage === 'cart' || stage === 'pay' || stage === 'summary' ? 'active' : ''}
-            onClick={() => {
-              if (stage === 'summary') return;
-              setStage('cart');
-            }}
-            aria-current={stage === 'cart' || stage === 'pay' || stage === 'summary' ? 'page' : undefined}
-          >
-            Cart
-            {cartItemCount > 0 && <span className="cart-badge">{cartItemCount}</span>}
-          </button>
-        </nav>
       </header>
+
       <div className="pos-main">
+        {/* ── Customers ── */}
         {stage === 'customers' && (
-          <section className="panel">
+          <>
             <CustomerPanel
               onSearch={onSearchCustomers}
               customers={customers}
@@ -415,16 +389,32 @@ export default function App() {
               selectedCustomerId={selectedCustomerId}
               disabled={!baseUrl}
             />
-            <div className="row">
-              <button type="button" onClick={onSetCustomer} disabled={!selectedCustomerId}>
-                Apply selected customer
+            <div className="btn-stack">
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={onSetCustomer}
+                disabled={!selectedCustomerId}
+              >
+                Apply Customer to Cart
               </button>
-              <button type="button" onClick={() => setStage('catalog')}>
-                Go to catalog
+              <button
+                type="button"
+                className="btn-primary"
+                onClick={() => setStage('catalog')}
+              >
+                Go to Catalog →
               </button>
             </div>
-          </section>
+          </>
         )}
+
+        {/* ── Sync Status ── */}
+        {stage === 'sync' && (
+          <SyncStatusPanel baseUrl={baseUrl} disabled={!baseUrl} />
+        )}
+
+        {/* ── Catalog ── */}
         {stage === 'catalog' && (
           <CatalogPanel
             baseUrl={baseUrl}
@@ -435,58 +425,113 @@ export default function App() {
             onAddProduct={onAddProduct}
           />
         )}
+
+        {/* ── Cart ── */}
         {stage === 'cart' && (
-          <section className="panel">
-            <CartPanel cartState={cartState} onGoPay={onGoToPay} canPay={cartItemCount > 0} />
-          </section>
+          <CartPanel cartState={cartState} onGoPay={onGoToPay} canPay={cartItemCount > 0} />
         )}
+
+        {/* ── Pay ── */}
         {stage === 'pay' && (
-          <section className="panel">
-            <h2>Pay (Cash)</h2>
-            <div className="row">
-              <span className="status">
-                Due: {((cartState?.total_cents ?? 0) / 100).toFixed(2)}
-              </span>
-              <span className="status">
-                Tendered: {((cartState?.tendered_cents ?? 0) / 100).toFixed(2)}
-              </span>
+          <div>
+            <p className="ios-section-header">Cash Payment</p>
+            <div className="ios-card">
+              <div className="pay-amount-block">
+                <div className="pay-amount-label">Amount Due</div>
+                <div className="pay-amount-value">
+                  ${((cartState?.total_cents ?? 0) / 100).toFixed(2)}
+                </div>
+                <div className="pay-tendered-row">
+                  <span>Tendered: <strong>${((cartState?.tendered_cents ?? 0) / 100).toFixed(2)}</strong></span>
+                  <span>
+                    Remaining:{' '}
+                    <strong>
+                      ${(Math.max(0, (cartState?.total_cents ?? 0) - (cartState?.tendered_cents ?? 0)) / 100).toFixed(2)}
+                    </strong>
+                  </span>
+                </div>
+              </div>
+              <div className="pay-input-row">
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={cashAmount}
+                  onChange={(e) => setCashAmount(e.target.value)}
+                  placeholder="Enter cash amount"
+                  className="ios-input"
+                  onKeyDown={(e) => e.key === 'Enter' && onAddCashPayment()}
+                />
+              </div>
+              <div style={{ padding: '0 1rem 1rem' }}>
+                <button
+                  type="button"
+                  className="btn-primary"
+                  onClick={onAddCashPayment}
+                  disabled={!cashAmount || parseFloat(cashAmount) <= 0}
+                >
+                  Add Payment
+                </button>
+              </div>
+              <div className="pay-hint">
+                Order is placed automatically when tendered ≥ total.
+              </div>
             </div>
-            <div className="row">
-              <input
-                type="number"
-                min="0"
-                step="0.01"
-                value={cashAmount}
-                onChange={(e) => setCashAmount(e.target.value)}
-                placeholder="Cash amount"
-              />
-              <button type="button" className="primary" onClick={onAddCashPayment}>
-                Add cash payment
+          </div>
+        )}
+
+        {/* ── Summary ── */}
+        {stage === 'summary' && saleSummary && (
+          <div>
+            <p className="ios-section-header">Sale Complete</p>
+            <div className="ios-card">
+              <div className="summary-total-block">
+                <div className="summary-total-label">Total Charged</div>
+                <div className="summary-total-value">
+                  ${(saleSummary.finalize.total_cents / 100).toFixed(2)}
+                </div>
+              </div>
+              <div className="ios-row">
+                <span className="ios-row-title">Order ID</span>
+                <span className="ios-row-value" style={{ fontSize: '0.75rem', fontFamily: 'ui-monospace,monospace' }}>
+                  {saleSummary.finalize.order_id.slice(0, 8)}…
+                </span>
+              </div>
+              <div className="ios-row">
+                <span className="ios-row-title">Subtotal</span>
+                <span className="ios-row-value">
+                  ${((saleSummary.cartSnapshot?.subtotal_cents ?? 0) / 100).toFixed(2)}
+                </span>
+              </div>
+              <div className="ios-row">
+                <span className="ios-row-title">Discounts</span>
+                <span className="ios-row-value" style={{ color: 'var(--green)' }}>
+                  −${((saleSummary.cartSnapshot?.discount_cents ?? 0) / 100).toFixed(2)}
+                </span>
+              </div>
+              <div className="ios-row">
+                <span className="ios-row-title">Taxes</span>
+                <span className="ios-row-value">
+                  ${((saleSummary.cartSnapshot?.tax_cents ?? 0) / 100).toFixed(2)}
+                </span>
+              </div>
+            </div>
+            <div className="btn-stack">
+              <button type="button" className="btn-secondary" onClick={onPrint}>
+                Print Receipt
+              </button>
+              <button type="button" className="btn-secondary" onClick={onGiftReceipt}>
+                Gift Receipt
+              </button>
+              <button type="button" className="btn-primary btn-green" onClick={onAcceptSummary}>
+                Done
               </button>
             </div>
-            <div className="status">
-              When tendered reaches total, order is placed automatically.
-            </div>
-          </section>
-        )}
-        {stage === 'summary' && saleSummary && (
-          <section className="panel">
-            <h2>Sale Summary</h2>
-            <div className="summary-grid">
-              <div><strong>Order ID</strong><div className="status">{saleSummary.finalize.order_id}</div></div>
-              <div><strong>Total</strong><div className="status">{(saleSummary.finalize.total_cents / 100).toFixed(2)}</div></div>
-              <div><strong>Subtotal</strong><div className="status">{((saleSummary.cartSnapshot?.subtotal_cents ?? 0) / 100).toFixed(2)}</div></div>
-              <div><strong>Discounts</strong><div className="status">{((saleSummary.cartSnapshot?.discount_cents ?? 0) / 100).toFixed(2)}</div></div>
-              <div><strong>Taxes</strong><div className="status">{((saleSummary.cartSnapshot?.tax_cents ?? 0) / 100).toFixed(2)}</div></div>
-            </div>
-            <div className="row">
-              <button type="button" onClick={onPrint}>Print</button>
-              <button type="button" onClick={onGiftReceipt}>Gift receipt</button>
-              <button type="button" className="primary" onClick={onAcceptSummary}>Accept</button>
-            </div>
-          </section>
+          </div>
         )}
       </div>
+
+      {/* ── Footer (event log, tablet+) ── */}
       <footer className="pos-footer">
         <button
           type="button"
@@ -497,6 +542,56 @@ export default function App() {
         </button>
         {eventLogOpen && <EventLogPanel entries={eventLog} />}
       </footer>
+
+      {/* ── Bottom Tab Bar ── */}
+      <nav className="pos-nav" aria-label="Main">
+        <button
+          type="button"
+          className={stage === 'customers' ? 'active' : ''}
+          onClick={() => setStage('customers')}
+          aria-current={stage === 'customers' ? 'page' : undefined}
+        >
+          <span className="nav-icon">👤</span>
+          <span className="nav-label">Customers</span>
+        </button>
+        <button
+          type="button"
+          className={stage === 'catalog' ? 'active' : ''}
+          onClick={() => setStage('catalog')}
+          aria-current={stage === 'catalog' ? 'page' : undefined}
+        >
+          <span className="nav-icon">⊞</span>
+          <span className="nav-label">Catalog</span>
+        </button>
+        <button
+          type="button"
+          className={stage === 'sync' ? 'active' : ''}
+          onClick={() => setStage('sync')}
+          aria-current={stage === 'sync' ? 'page' : undefined}
+        >
+          <span className="nav-icon">↻</span>
+          <span className="nav-label">Sync</span>
+        </button>
+        <button
+          type="button"
+          className={isCartTab ? 'active' : ''}
+          onClick={() => {
+            if (stage === 'summary') return;
+            setStage('cart');
+          }}
+          aria-current={isCartTab ? 'page' : undefined}
+        >
+          <span className="nav-icon">
+            🛒
+            {cartItemCount > 0 && (
+              <span className="cart-badge">{cartItemCount}</span>
+            )}
+          </span>
+          <span className="nav-label">Cart</span>
+        </button>
+      </nav>
+
+      {/* ── Toasts ── */}
       <div className="toast-stack">
         {toasts.map((toast) => (
           <div key={toast.id} className="toast">

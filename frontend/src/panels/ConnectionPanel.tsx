@@ -9,6 +9,13 @@ interface Props {
   onCheckReady: () => void;
 }
 
+function dotClass(status: string | null, okValue: string): string {
+  if (!status) return 'pending';
+  if (status === okValue) return 'ok';
+  if (status.startsWith('error')) return 'err';
+  return 'pending';
+}
+
 export function ConnectionPanel({
   baseUrl,
   setBaseUrl,
@@ -18,30 +25,33 @@ export function ConnectionPanel({
   onCheckReady,
 }: Props) {
   return (
-    <section className="panel connection connection-compact">
-      <h2>Connection</h2>
-      <div className="connection-row">
-        <input
-          type="url"
-          value={baseUrl}
-          onChange={(e) => setBaseUrl(e.target.value)}
-          placeholder="API URL"
-          aria-label="API base URL"
-          className="connection-url"
-        />
-        <button type="button" onClick={onCheckHealth} aria-label="Check health">
-          Health
-        </button>
-        <span className={`status ${healthStatus === 'ok' ? 'ok' : healthStatus?.startsWith('error') ? 'err' : ''}`}>
-          {healthStatus ?? '—'}
-        </span>
-        <button type="button" onClick={onCheckReady} aria-label="Check ready">
-          Ready
-        </button>
-        <span className={`status ${readyStatus === 'ready' ? 'ok' : readyStatus?.startsWith('error') ? 'err' : ''}`}>
-          {readyStatus ?? '—'}
-        </span>
-      </div>
-    </section>
+    <div className="connection-row connection-compact">
+      <input
+        type="url"
+        value={baseUrl}
+        onChange={(e) => setBaseUrl(e.target.value)}
+        placeholder="API URL"
+        aria-label="API base URL"
+        className="connection-url"
+      />
+      <button
+        type="button"
+        className="connection-status-pill"
+        onClick={onCheckHealth}
+        aria-label="Check health"
+      >
+        <span className={`dot ${dotClass(healthStatus, 'ok')}`} />
+        Health{healthStatus && healthStatus !== 'ok' && healthStatus !== '—' ? `: ${healthStatus}` : ''}
+      </button>
+      <button
+        type="button"
+        className="connection-status-pill"
+        onClick={onCheckReady}
+        aria-label="Check ready"
+      >
+        <span className={`dot ${dotClass(readyStatus, 'ready')}`} />
+        Ready{readyStatus && readyStatus !== 'ready' && readyStatus !== '—' ? `: ${readyStatus}` : ''}
+      </button>
+    </div>
   );
 }

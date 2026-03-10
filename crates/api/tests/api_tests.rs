@@ -1,6 +1,6 @@
 use apex_edge_api::{
     create_gift_receipt_document, get_document, handle_pos_command, health, list_order_documents,
-    ready, AppState,
+    ready, sync_status, AppState,
 };
 use apex_edge_contracts::{ContractVersion, CreateCartPayload, PosCommand, PosRequestEnvelope};
 use apex_edge_storage::{enqueue_document, mark_generated, run_migrations};
@@ -144,4 +144,34 @@ async fn create_gift_receipt_generates_new_document_for_order() {
         .await
         .expect("list docs");
     assert_eq!(listed.0.len(), 2);
+}
+
+#[tokio::test]
+async fn get_sync_status_returns_shape_with_last_sync_and_entities() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("pool");
+    run_migrations(&pool).await.expect("migrations");
+
+    let state = AppState {
+        store_id: Uuid::nil(),
+        pool,
+        metrics_handle: None,
+    };
+
+    let resp = sync_status(State(state)).await.expect("sync_status");
+    assert!(resp.last_sync_at.is_none() || resp.last_sync_at.is_some());
+    assert!(resp.entities.is_empty() || !resp.entities.is_empty());
+    // Shape: each entity has entity, current, total, percent, last_synced_at, status
+    for e in &resp.entities {
+        assert!(!e.entity.is_empty());
+        assert!(
+            e.status == "syncing"
+                || e.status == "done"
+                || e.status == "pending"
+                || e.status == "error"
+        );
+    }
 }

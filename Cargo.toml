@@ -10,4 +10,5 @@ members = [
     "crates/metrics",
     "crates/api",
     "apex-edge",
+    "tools/example-sync-source",
 ]

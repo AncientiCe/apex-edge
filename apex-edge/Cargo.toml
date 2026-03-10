@@ -15,7 +15,10 @@ path = "src/main.rs"
 apex-edge-api = { path = "../crates/api" }
 apex-edge-metrics = { path = "../crates/metrics" }
 apex-edge-storage = { path = "../crates/storage" }
+apex-edge-sync = { path = "../crates/sync" }
 apex-edge-outbox = { path = "../crates/outbox" }
+apex-edge-contracts = { path = "../crates/contracts" }
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
 axum = { version = "0.7", features = ["json"] }
 metrics = "0.21"
 tower = "0.4"

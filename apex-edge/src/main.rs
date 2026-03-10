@@ -1,9 +1,54 @@
 //! ApexEdge: store hub orchestrator. POS <-> ApexEdge <-> HQ.
 
 use apex_edge::build_router;
+use apex_edge_contracts::ContractVersion;
 use apex_edge_storage::{create_sqlite_pool, seed_demo_data};
+use apex_edge_sync::{run_sync_ndjson, SyncEntityConfig, SyncSourceConfig};
 use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
+
+/// Default NDJSON entity paths (matches example-sync-source tool).
+fn default_sync_entities() -> Vec<SyncEntityConfig> {
+    vec![
+        SyncEntityConfig {
+            entity: "catalog".into(),
+            path: "/sync/ndjson/catalog".into(),
+        },
+        SyncEntityConfig {
+            entity: "categories".into(),
+            path: "/sync/ndjson/categories".into(),
+        },
+        SyncEntityConfig {
+            entity: "price_book".into(),
+            path: "/sync/ndjson/price_book".into(),
+        },
+        SyncEntityConfig {
+            entity: "tax_rules".into(),
+            path: "/sync/ndjson/tax_rules".into(),
+        },
+        SyncEntityConfig {
+            entity: "promotions".into(),
+            path: "/sync/ndjson/promotions".into(),
+        },
+        SyncEntityConfig {
+            entity: "customers".into(),
+            path: "/sync/ndjson/customers".into(),
+        },
+        SyncEntityConfig {
+            entity: "coupons".into(),
+            path: "/sync/ndjson/coupons".into(),
+        },
+    ]
+}
+
+/// Run one sync cycle; log outcome. Caller ensures config is some.
+async fn run_sync_once(pool: &sqlx::SqlitePool, config: &SyncSourceConfig) {
+    let client = reqwest::Client::new();
+    match run_sync_ndjson(&client, pool, config, ContractVersion::V1_0_0).await {
+        Ok(()) => tracing::info!("Sync completed successfully"),
+        Err(e) => tracing::warn!("Sync failed: {}", e),
+    }
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -32,6 +77,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             summary.customers,
             summary.promotions
         );
+    }
+
+    let sync_source_url = std::env::var("APEX_EDGE_SYNC_SOURCE_URL").ok();
+    if let Some(ref base_url) = sync_source_url {
+        let config = SyncSourceConfig {
+            base_url: base_url.trim_end_matches('/').to_string(),
+            entities: default_sync_entities(),
+        };
+        tracing::info!("Running sync on startup from {}", base_url);
+        run_sync_once(&pool, &config).await;
+        let pool_daily = pool.clone();
+        let config_daily = config.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(24 * 3600));
+            interval.tick().await;
+            loop {
+                interval.tick().await;
+                tracing::info!("Running scheduled daily sync");
+                run_sync_once(&pool_daily, &config_daily).await;
+            }
+        });
     }
 
     let metrics_handle = apex_edge_metrics::install_recorder()?;

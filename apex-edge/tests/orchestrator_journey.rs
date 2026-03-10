@@ -346,6 +346,7 @@ async fn full_order_flow_journey() {
             modifier_option_ids: vec![],
             quantity: 1,
             notes: None,
+            unit_price_override_cents: None,
         }),
     };
     let add1_res = client
@@ -426,6 +427,7 @@ async fn full_order_flow_journey() {
             modifier_option_ids: vec![],
             quantity: 1,
             notes: None,
+            unit_price_override_cents: None,
         }),
     };
     let add2_res = client

@@ -53,6 +53,7 @@ dependencies = [
  "apex-edge-metrics",
  "apex-edge-outbox",
  "apex-edge-storage",
+ "apex-edge-sync",
  "axum",
  "chrono",
  "metrics 0.21.1",
@@ -78,6 +79,7 @@ dependencies = [
  "apex-edge-printing",
  "apex-edge-storage",
  "axum",
+ "chrono",
  "metrics 0.21.1",
  "serde",
  "serde_json",
@@ -181,6 +183,7 @@ dependencies = [
  "apex-edge-storage",
  "axum",
  "base64 0.22.1",
+ "chrono",
  "metrics 0.21.1",
  "reqwest",
  "serde",
@@ -510,6 +513,20 @@ dependencies = [
  "concurrent-queue",
  "parking",
  "pin-project-lite",
+]
+
+[[package]]
+name = "example-sync-source"
+version = "0.1.0"
+dependencies = [
+ "apex-edge-contracts",
+ "axum",
+ "base64 0.22.1",
+ "chrono",
+ "serde",
+ "serde_json",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]

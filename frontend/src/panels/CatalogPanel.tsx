@@ -22,7 +22,6 @@ export function CatalogPanel({
   const [submittedQ, setSubmittedQ] = useState('');
   const [categoryId, setCategoryId] = useState<string>('');
   const [page, setPage] = useState(1);
-  const [quantity, setQuantity] = useState(1);
 
   useEffect(() => {
     if (!baseUrl) return;
@@ -48,85 +47,89 @@ export function CatalogPanel({
   }, [q]);
 
   return (
-    <section className="panel catalog-panel">
-      <h2>Catalog</h2>
-      <div className="catalog-filters">
+    <div>
+      {/* Search bar */}
+      <div className="ios-card" style={{ padding: '0.6rem 1rem', marginBottom: '0.75rem' }}>
         <input
           type="text"
-          placeholder="Search by SKU, name, or description…"
+          placeholder="Search products…"
           value={q}
           onChange={(e) => setQ(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
-          className="catalog-search"
+          className="ios-search"
+          style={{ width: '100%' }}
           aria-label="Search products"
         />
-        <button type="button" onClick={handleSearch}>
-          Search
-        </button>
-        <select
-          value={categoryId}
-          onChange={(e) => { setCategoryId(e.target.value); setPage(1); }}
-          aria-label="Category"
-        >
-          <option value="">All categories</option>
-          {categories.map((c) => (
-            <option key={c.id} value={c.id}>
-              {c.name}
-            </option>
-          ))}
-        </select>
       </div>
+
+      {/* Category chips */}
+      <div className="chip-row">
+        <button
+          type="button"
+          className={`chip${categoryId === '' ? ' active' : ''}`}
+          onClick={() => { setCategoryId(''); setPage(1); }}
+        >
+          All
+        </button>
+        {categories.map((c) => (
+          <button
+            key={c.id}
+            type="button"
+            className={`chip${categoryId === c.id ? ' active' : ''}`}
+            onClick={() => { setCategoryId(c.id); setPage(1); }}
+          >
+            {c.name}
+          </button>
+        ))}
+      </div>
+
+      {/* Product grid */}
       <div className="catalog-grid">
         {(productList?.items ?? []).map((p) => (
           <div key={p.id} className="catalog-card">
-            <div className="catalog-card-body">
-              <div className="catalog-card-sku">{p.sku}</div>
-              <div className="catalog-card-name">{p.name}</div>
-              {p.description && (
-                <div className="catalog-card-desc">{p.description}</div>
-              )}
-            </div>
-            <div className="catalog-card-actions">
-              <input
-                type="number"
-                min={1}
-                value={quantity}
-                onChange={(e) => setQuantity(Math.max(1, parseInt(e.target.value, 10) || 1))}
-                onClick={(e) => e.stopPropagation()}
-                aria-label={`Quantity for ${p.name}`}
-              />
+            <div className="catalog-card-sku">{p.sku}</div>
+            <div className="catalog-card-name">{p.name}</div>
+            {p.description && (
+              <div className="catalog-card-desc">{p.description}</div>
+            )}
+            <div className="catalog-card-footer">
               <button
                 type="button"
-                onClick={() => onAddProduct(p, quantity)}
                 className="btn-add"
+                onClick={() => onAddProduct(p, 1)}
+                aria-label={`Add ${p.name} to cart`}
               >
-                Add to cart
+                + Add
               </button>
             </div>
           </div>
         ))}
       </div>
+
+      {/* Pagination */}
       {productList && productList.total > 0 && (
         <div className="catalog-pagination">
           <button
             type="button"
+            className="btn-sm"
             disabled={page <= 1}
             onClick={() => setPage((p) => Math.max(1, p - 1))}
           >
-            Previous
+            ← Prev
           </button>
           <span className="catalog-page-info">
-            Page {page} of {totalPages} ({productList.total} total)
+            {page} / {totalPages}
           </span>
           <button
             type="button"
+            className="btn-sm"
             disabled={page >= totalPages}
             onClick={() => setPage((p) => p + 1)}
           >
-            Next
+            Next →
           </button>
         </div>
       )}
-    </section>
+    </div>
   );
 }

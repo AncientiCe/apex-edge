@@ -6,44 +6,64 @@ interface Props {
   canPay: boolean;
 }
 
-export function CartPanel({
-  cartState,
-  onGoPay,
-  canPay,
-}: Props) {
+export function CartPanel({ cartState, onGoPay, canPay }: Props) {
   const lines = cartState?.lines ?? [];
 
-  return (
-    <section className="panel cart-panel">
-      <h2>Cart</h2>
-      {!cartState && <div className="status">Cart is empty.</div>}
-      {cartState && (
-        <div className="cart-detail">
-          <ul className="cart-lines">
-            {lines.map((l) => (
-              <li key={l.line_id} className="cart-line">
-                <div className="cart-line-main">
-                  <span>{l.name}</span>
-                  <span>x{l.quantity}</span>
-                </div>
-                <div className="cart-line-sub">
-                  <span>{l.sku}</span>
-                  <span>{(l.line_total_cents / 100).toFixed(2)}</span>
-                </div>
-              </li>
-            ))}
-          </ul>
-          <div className="cart-totals">
-            <div><span>Subtotal</span><span>{(cartState.subtotal_cents / 100).toFixed(2)}</span></div>
-            <div><span>Discounts</span><span>-{(cartState.discount_cents / 100).toFixed(2)}</span></div>
-            <div><span>Taxes</span><span>{(cartState.tax_cents / 100).toFixed(2)}</span></div>
-            <div className="cart-total"><span>Total</span><span>{(cartState.total_cents / 100).toFixed(2)}</span></div>
-          </div>
-          <button type="button" className="primary" onClick={onGoPay} disabled={!canPay}>
-            Pay
-          </button>
+  if (!cartState || lines.length === 0) {
+    return (
+      <div>
+        <p className="ios-section-header">Your Cart</p>
+        <div className="ios-card">
+          <div className="cart-empty">Your cart is empty.</div>
         </div>
-      )}
-    </section>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <p className="ios-section-header">Items</p>
+      <div className="ios-card">
+        {lines.map((l) => (
+          <div key={l.line_id} className="ios-row">
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div className="cart-line-name">{l.name}</div>
+              <div className="cart-line-meta">{l.sku} · qty {l.quantity}</div>
+            </div>
+            <div className="ios-row-value">
+              ${(l.line_total_cents / 100).toFixed(2)}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <p className="ios-section-header">Summary</p>
+      <div className="ios-card">
+        <div className="ios-row">
+          <span className="ios-row-title">Subtotal</span>
+          <span className="ios-row-value">${(cartState.subtotal_cents / 100).toFixed(2)}</span>
+        </div>
+        <div className="ios-row">
+          <span className="ios-row-title">Discounts</span>
+          <span className="ios-row-value" style={{ color: 'var(--green)' }}>
+            −${(cartState.discount_cents / 100).toFixed(2)}
+          </span>
+        </div>
+        <div className="ios-row">
+          <span className="ios-row-title">Taxes</span>
+          <span className="ios-row-value">${(cartState.tax_cents / 100).toFixed(2)}</span>
+        </div>
+        <div className="ios-row">
+          <span className="ios-row-title" style={{ fontWeight: 700 }}>Total</span>
+          <span className="ios-row-value bold">${(cartState.total_cents / 100).toFixed(2)}</span>
+        </div>
+      </div>
+
+      <div style={{ marginTop: '1.5rem' }}>
+        <button type="button" className="btn-primary" onClick={onGoPay} disabled={!canPay}>
+          Pay ${(cartState.total_cents / 100).toFixed(2)}
+        </button>
+      </div>
+    </div>
   );
 }

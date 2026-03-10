@@ -169,3 +169,18 @@ export interface DocumentResponse {
   content: string | null;
   error_message: string | null;
 }
+
+export interface EntitySyncStatusDto {
+  entity: string;
+  current: number;
+  total: number | null;
+  percent: number | null;
+  last_synced_at: string | null;
+  status: string;
+}
+
+export interface SyncStatusResponse {
+  last_sync_at: string | null;
+  is_syncing: boolean;
+  entities: EntitySyncStatusDto[];
+}

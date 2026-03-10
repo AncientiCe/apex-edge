@@ -14,6 +14,7 @@ import type {
   CategoryResult,
   DocumentSummary,
   DocumentResponse,
+  SyncStatusResponse,
 } from './types';
 
 const VERSION = { major: 1, minor: 0, patch: 0 };
@@ -44,6 +45,12 @@ export async function getHealth(baseUrl: string): Promise<{ status: string }> {
 
 export async function getReady(baseUrl: string): Promise<{ status: string }> {
   const res = await fetch(`${baseUrl}/ready`);
+  if (!res.ok) throw normalizeError(res.status, await res.json().catch(() => ({})));
+  return res.json();
+}
+
+export async function getSyncStatus(baseUrl: string): Promise<SyncStatusResponse> {
+  const res = await fetch(`${baseUrl}/sync/status`);
   if (!res.ok) throw normalizeError(res.status, await res.json().catch(() => ({})));
   return res.json();
 }

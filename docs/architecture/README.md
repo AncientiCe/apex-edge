@@ -86,6 +86,7 @@ flowchart TB
         R7["GET /documents/:id"]
         R8["GET /orders/:order_id/documents"]
         R9["GET /metrics"]
+        R10["GET /sync/status"]
     end
     subgraph api [apex_edge_api]
         H[health]
@@ -95,6 +96,7 @@ flowchart TB
         CS[customer_search]
         D[documents]
         M[metrics_handler]
+        SS[sync_status]
     end
     R1 --> H
     R2 --> H
@@ -105,6 +107,7 @@ flowchart TB
     R7 --> D
     R8 --> D
     R9 --> M
+    R10 --> SS
 ```
 
 **Notes:**
@@ -289,5 +292,36 @@ sequenceDiagram
 - **Outputs:** Categories and paginated product list; customer search results; cart state and finalize result; document list and content.
 - **API:** `GET /catalog/categories`, `GET /catalog/products?q=&category_id=&page=&per_page=`, `GET /customers?q=` (and legacy `?code=` for exact code). Products support search by SKU, name, or description; customers by code, name, email, or id.
 - **POS commands:** `create_cart`, `add_line_item` (optional `unit_price_override_cents` for positive price override), `set_customer`, `apply_manual_discount` (reason mandatory; kinds: percent_cart, percent_item, fixed_cart, fixed_item), `set_tendering`, `add_payment`, `finalize_order`. Promotions (coupons and automatic) are seeded and applied in pipeline; manual discounts applied after promos and included in order metadata to HQ.
-- **Layout:** Mobile-first, app-like UI: fixed bottom tab bar (Customers / Catalog / Cart) with safe-area insets; 44px minimum touch targets; full viewport height (`100dvh`). At 768px+ nav moves to header; at 1024px (e.g. iPad landscape) content is constrained with larger catalog grid. Event log shown from 768px only.
+- **Layout:** Mobile-first, app-like UI: fixed bottom tab bar (Customers / Catalog / Sync / Cart) with safe-area insets; 44px minimum touch targets; full viewport height (`100dvh`). At 768px+ nav moves to header; at 1024px (e.g. iPad landscape) content is constrained with larger catalog grid. Event log shown from 768px only.
 - **Scope:** Simulator runs as a separate dev server (e.g. Vite on port 5173); CORS enabled. Local use only.
+
+### 10. Example Sync Source and Streamed Sync
+
+**Purpose:** Document the separate example-sync-source tool and how ApexEdge pulls sync data on startup and daily via NDJSON streaming; sync status is persisted and exposed to the frontend.
+
+```mermaid
+flowchart LR
+    subgraph sourceTool [Example Sync Source Tool]
+        NDJSON[NDJSON Entity Endpoints]
+    end
+    subgraph edgeApp [ApexEdge]
+        Scheduler[Startup and Daily Scheduler]
+        Fetcher[NDJSON Stream Fetcher]
+        Ingest[Ingest and Checkpoint]
+        StatusStore[Latest Sync Status Store]
+        StatusAPI[GET /sync/status]
+        UI[Frontend Sync Status Panel]
+    end
+    Scheduler --> Fetcher
+    Fetcher --> Ingest
+    Ingest --> StatusStore
+    StatusStore --> StatusAPI
+    StatusAPI --> UI
+    NDJSON --> Fetcher
+```
+
+**Notes:**
+- **Example sync source:** Separate binary `tools/example-sync-source`; serves NDJSON per entity (first line `{"total": N}`, then N lines of base64 payload). Contract-only coupling; no app runtime dependencies. Run with `cargo run -p example-sync-source` (default port 3030; `SYNC_SOURCE_PORT` env).
+- **ApexEdge sync:** When `APEX_EDGE_SYNC_SOURCE_URL` is set, main runs sync once on startup then spawns a 24h periodic task. `run_sync_ndjson` streams each entity (line-by-line), collects payloads per entity, ingests in batch, advances checkpoints, and updates latest sync run + per-entity status in storage.
+- **Sync status:** Stored in `sync_run` (single row) and `entity_sync_status`; exposed at `GET /sync/status`. Frontend Sync tab shows last sync time, run state (idle/syncing), and per-entity progress (current, total, percent, status).
+- **Failure path:** Sync errors are logged; latest run is marked `failed` with error message; next scheduled run proceeds after 24h.

@@ -75,7 +75,7 @@ pub async fn search_products(
         .category_id
         .as_deref()
         .and_then(|s| Uuid::parse_str(s).ok());
-    let per_page = query.per_page.min(100).max(1);
+    let per_page = query.per_page.clamp(1, 100);
     let page = query.page.max(1);
     let offset = (page - 1) * per_page;
     let q = query.q.as_deref();
