@@ -19,6 +19,7 @@ async fn api_handlers_cover_health_ready_pos_and_documents() {
     let state = AppState {
         store_id: Uuid::nil(),
         pool: pool.clone(),
+        metrics_handle: None,
     };
 
     let h = health().await;
@@ -94,6 +95,7 @@ async fn get_document_returns_not_found_for_unknown_id() {
     let state = AppState {
         store_id: Uuid::nil(),
         pool,
+        metrics_handle: None,
     };
     let res = get_document(State(state), axum::extract::Path(Uuid::new_v4())).await;
     assert_eq!(

@@ -17,7 +17,7 @@ async fn start_app() -> (u16, sqlx::SqlitePool) {
         .expect("pool");
     run_migrations(&pool).await.expect("migrations");
 
-    let app = build_router(pool.clone(), Uuid::nil());
+    let app = build_router(pool.clone(), Uuid::nil(), None);
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let port = listener.local_addr().expect("local addr").port();
     tokio::spawn(async move {

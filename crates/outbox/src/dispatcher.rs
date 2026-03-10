@@ -1,6 +1,10 @@
 //! Background dispatcher: poll outbox, POST to HQ, retry with backoff + jitter, DLQ on max attempts.
 
 use apex_edge_contracts::HqOrderSubmissionResponse;
+use apex_edge_metrics::{
+    OUTBOX_DISPATCH_ATTEMPTS_TOTAL, OUTBOX_DISPATCH_DURATION_SECONDS, OUTBOX_DLQ_TOTAL,
+    OUTCOME_ACCEPTED, OUTCOME_HTTP_ERROR, OUTCOME_REJECTED, OUTCOME_TIMEOUT,
+};
 use apex_edge_storage::outbox::OutboxRow;
 use apex_edge_storage::outbox::{
     fetch_pending_outbox, mark_dead_letter, mark_delivered, schedule_retry,
@@ -8,6 +12,7 @@ use apex_edge_storage::outbox::{
 use chrono::{Duration, Utc};
 use reqwest::Client;
 use sqlx::SqlitePool;
+use std::time::Instant;
 use thiserror::Error;
 use tracing::info;
 
@@ -57,33 +62,48 @@ pub async fn run_once(
     let pending = fetch_pending_outbox(pool, 10).await?;
     let mut processed = 0;
     for row in pending {
-        match client
+        let start = Instant::now();
+        let send_result = client
             .post(hq_submit_url)
             .json(&serde_json::from_str::<serde_json::Value>(&row.payload)?)
             .send()
-            .await
-        {
+            .await;
+        let duration_secs = start.elapsed().as_secs_f64();
+        metrics::histogram!(OUTBOX_DISPATCH_DURATION_SECONDS, duration_secs);
+
+        match send_result {
             Ok(res) if res.status().is_success() => {
                 let body: HqOrderSubmissionResponse = res.json().await.unwrap_or_default();
                 if body.accepted {
+                    metrics::counter!(OUTBOX_DISPATCH_ATTEMPTS_TOTAL, 1u64, "outcome" => OUTCOME_ACCEPTED);
                     mark_delivered(pool, row.id).await?;
                     processed += 1;
                     info!(outbox_id = %row.id, "order submitted");
                 } else {
+                    metrics::counter!(OUTBOX_DISPATCH_ATTEMPTS_TOTAL, 1u64, "outcome" => OUTCOME_REJECTED);
                     schedule_retry_with_backoff(pool, &row).await?;
                 }
             }
             Ok(res) => {
+                metrics::counter!(OUTBOX_DISPATCH_ATTEMPTS_TOTAL, 1u64, "outcome" => OUTCOME_HTTP_ERROR);
                 let status = res.status();
                 let text = res.text().await.unwrap_or_default();
                 if row.attempts >= MAX_ATTEMPTS {
+                    metrics::counter!(OUTBOX_DLQ_TOTAL, 1u64);
                     mark_dead_letter(pool, row.id, &format!("{}: {}", status, text)).await?;
                 } else {
                     schedule_retry_with_backoff(pool, &row).await?;
                 }
             }
             Err(e) => {
+                let outcome = if e.is_timeout() {
+                    OUTCOME_TIMEOUT
+                } else {
+                    OUTCOME_HTTP_ERROR
+                };
+                metrics::counter!(OUTBOX_DISPATCH_ATTEMPTS_TOTAL, 1u64, "outcome" => outcome);
                 if row.attempts >= MAX_ATTEMPTS {
+                    metrics::counter!(OUTBOX_DLQ_TOTAL, 1u64);
                     mark_dead_letter(pool, row.id, &e.to_string()).await?;
                 } else {
                     schedule_retry_with_backoff(pool, &row).await?;

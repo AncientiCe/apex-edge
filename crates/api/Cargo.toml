@@ -5,6 +5,8 @@ edition = "2021"
 
 [dependencies]
 apex-edge-contracts = { path = "../contracts" }
+apex-edge-metrics = { path = "../metrics" }
+metrics = "0.21"
 apex-edge-domain = { path = "../domain" }
 apex-edge-storage = { path = "../storage" }
 apex-edge-outbox = { path = "../outbox" }

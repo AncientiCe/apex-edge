@@ -66,6 +66,7 @@ mod tests {
         let state = AppState {
             store_id: Uuid::nil(),
             pool,
+            metrics_handle: None,
         };
         let r = ready(State(state)).await.expect("ready endpoint");
         assert_eq!(r.0.status, "ready");

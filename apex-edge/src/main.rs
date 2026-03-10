@@ -15,7 +15,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let pool = create_sqlite_pool(&db_path).await?;
     apex_edge_storage::run_migrations(&pool).await?;
 
-    let app = build_router(pool, Uuid::nil());
+    let metrics_handle = apex_edge_metrics::install_recorder()?;
+    let app = build_router(pool, Uuid::nil(), Some(metrics_handle));
 
     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], 3000));
     tracing::info!("ApexEdge listening on {}", addr);

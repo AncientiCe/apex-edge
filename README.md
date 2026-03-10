@@ -15,6 +15,7 @@ Store hub orchestrator: **POS/MPOS <-> ApexEdge <-> HQ**. Offline-first, contrac
 ## Table of contents
 
 - [Overview](#overview)
+- [Architecture](docs/architecture/README.md)
 - [Build and run](#build-and-run)
 - [Quality gates](#quality-gates)
 - [Testing](#testing)
@@ -30,6 +31,7 @@ cd apex-edge
 
 ## Overview
 
+- **Architecture diagrams:** See [docs/architecture/README.md](docs/architecture/README.md) for high-level mermaid diagrams (system context, bootstrap, routes, POS/document/outbox/sync flows, observability).
 - **Northbound**: POS clients send cart/checkout commands; ApexEdge returns cart state or finalize result.
 - **Southbound**: HQ syncs catalog, prices, promos, coupons, config; ApexEdge submits orders via durable outbox.
 - **Local-first**: All transaction data (catalog, pricing, promos, coupons, config) is available on the hub so checkout does not require external calls.
@@ -91,7 +93,32 @@ Install `cargo-audit` if missing: `cargo install cargo-audit` (or `make setup`).
 - **Secrets**: Use env or a secret store for DB path and HQ URL; no secrets in logs.
 - **Transport**: In production use TLS (e.g. mTLS for HQ). Encryption at rest for DB is deployment-specific.
 - **Audit**: Order finalization and HQ submission can be recorded via `apex_edge_storage::audit::record`.
-- **Observability**: Structured logging (tracing); health/ready for DB. Add metrics (e.g. Prometheus) and distributed tracing as needed.
+- **Observability**: Structured logging (tracing); health/ready for DB. **Prometheus metrics** are exposed at `GET /metrics` when the app is started with the default binary (recorder installed). See [Metrics](#metrics) for the catalog and usage.
+
+### Metrics
+
+Metrics are Prometheus-style (counters, histograms, gauges) with an `apex_edge_` prefix and bounded label cardinality. Scrape `GET /metrics` (e.g. `http://localhost:3000/metrics`) and point Prometheus at this target.
+
+| Family | Type | Labels | Description |
+|--------|------|--------|--------------|
+| `apex_edge_http_requests_total` | counter | `method`, `route`, `status_class` | Total HTTP requests by route and outcome |
+| `apex_edge_http_request_duration_seconds` | histogram | `route` | Request latency by route |
+| `apex_edge_http_requests_in_flight` | gauge | `route` | In-flight requests by route |
+| `apex_edge_pos_commands_total` | counter | `operation`, `outcome` | POS commands (create_cart, add_line_item, finalize_order, etc.) by outcome |
+| `apex_edge_pos_command_duration_seconds` | histogram | `operation` | POS command handler duration |
+| `apex_edge_document_operations_total` | counter | `operation`, `outcome` | Document get/list by outcome (hit, not_found, error) |
+| `apex_edge_document_operation_duration_seconds` | histogram | `operation` | Document operation duration |
+| `apex_edge_outbox_dispatch_attempts_total` | counter | `outcome` | Outbox dispatch attempts (accepted, rejected, http_error, timeout) |
+| `apex_edge_outbox_dispatch_duration_seconds` | histogram | — | HQ HTTP call duration |
+| `apex_edge_outbox_dlq_total` | counter | — | Messages moved to dead-letter queue |
+| `apex_edge_sync_ingest_batches_total` | counter | `entity`, `outcome` | Sync ingest batches by entity and outcome |
+| `apex_edge_sync_ingest_duration_seconds` | histogram | `entity` | Sync batch processing duration |
+| `apex_edge_db_operations_total` | counter | `operation`, `outcome` | DB operations (get_document, fetch_pending_outbox, etc.) |
+| `apex_edge_db_operation_duration_seconds` | histogram | `operation` | DB operation duration |
+
+**Behavior ownership**: Route/flow → owner (api/health, api/pos, api/documents, outbox/dispatcher, sync/ingest). DB and HQ call sites are instrumented in storage and outbox.
+
+**Usage**: Configure Prometheus to scrape the ApexEdge instance (e.g. add to `scrape_configs`). Example alert seeds: high 5xx rate on `apex_edge_http_requests_total`, high latency on `apex_edge_http_request_duration_seconds`, non-zero `apex_edge_outbox_dlq_total`, or `apex_edge_db_operations_total` with `outcome="error"`.
 
 ## Crates
 
@@ -103,7 +130,8 @@ Install `cargo-audit` if missing: `cargo install cargo-audit` (or `make setup`).
 | `apex-edge-sync` | Async ingest with checkpoints and conflict policy |
 | `apex-edge-outbox` | Durable outbox dispatcher (retry, backoff, DLQ) |
 | `apex-edge-printing` | Document generation (render + persist for POS retrieval) |
-| `apex-edge-api` | HTTP API (POS, health, ready) |
+| `apex-edge-metrics` | Prometheus metric names, labels, and recorder bootstrap |
+| `apex-edge-api` | HTTP API (POS, health, ready, documents) |
 | `apex-edge` | Binary entrypoint |
 
 ## License

@@ -1,9 +1,14 @@
 //! Outbox table for reliable order submission.
 
-use crate::pool::PoolError;
+use apex_edge_metrics::{
+    DB_OPERATIONS_TOTAL, DB_OPERATION_DURATION_SECONDS, DB_OUTCOME_ERROR, DB_OUTCOME_SUCCESS,
+};
 use chrono::{DateTime, Utc};
 use sqlx::SqlitePool;
+use std::time::Instant;
 use uuid::Uuid;
+
+use crate::pool::PoolError;
 
 #[derive(Debug)]
 pub struct OutboxRow {
@@ -44,14 +49,24 @@ pub async fn fetch_pending_outbox(
     pool: &SqlitePool,
     limit: i32,
 ) -> Result<Vec<OutboxRow>, PoolError> {
+    const OP: &str = "fetch_pending_outbox";
+    let start = Instant::now();
     let now = Utc::now().to_rfc3339();
-    let rows = sqlx::query_as::<_, (String, String, String, String, Option<String>, i32, Option<String>)>(
+    let rows_result = sqlx::query_as::<_, (String, String, String, String, Option<String>, i32, Option<String>)>(
         "SELECT id, payload, status, created_at, next_retry_at, attempts, error_message FROM outbox WHERE status = 'pending' AND (next_retry_at IS NULL OR next_retry_at <= ?) ORDER BY created_at LIMIT ?",
     )
     .bind(&now)
     .bind(limit)
     .fetch_all(pool)
-    .await?;
+    .await;
+    let outcome = if rows_result.is_ok() {
+        DB_OUTCOME_SUCCESS
+    } else {
+        DB_OUTCOME_ERROR
+    };
+    metrics::counter!(DB_OPERATIONS_TOTAL, 1u64, "operation" => OP, "outcome" => outcome);
+    metrics::histogram!(DB_OPERATION_DURATION_SECONDS, start.elapsed().as_secs_f64(), "operation" => OP);
+    let rows = rows_result?;
     Ok(rows
         .into_iter()
         .map(
@@ -71,10 +86,20 @@ pub async fn fetch_pending_outbox(
 }
 
 pub async fn mark_delivered(pool: &SqlitePool, id: Uuid) -> Result<(), PoolError> {
-    sqlx::query("UPDATE outbox SET status = 'delivered' WHERE id = ?")
+    const OP: &str = "mark_delivered";
+    let start = Instant::now();
+    let result = sqlx::query("UPDATE outbox SET status = 'delivered' WHERE id = ?")
         .bind(id.to_string())
         .execute(pool)
-        .await?;
+        .await;
+    let outcome = if result.is_ok() {
+        DB_OUTCOME_SUCCESS
+    } else {
+        DB_OUTCOME_ERROR
+    };
+    metrics::counter!(DB_OPERATIONS_TOTAL, 1u64, "operation" => OP, "outcome" => outcome);
+    metrics::histogram!(DB_OPERATION_DURATION_SECONDS, start.elapsed().as_secs_f64(), "operation" => OP);
+    result?;
     Ok(())
 }
 
@@ -83,20 +108,42 @@ pub async fn schedule_retry(
     id: Uuid,
     next_at: DateTime<Utc>,
 ) -> Result<(), PoolError> {
+    const OP: &str = "schedule_retry";
+    let start = Instant::now();
     let next_at_str = next_at.to_rfc3339();
-    sqlx::query("UPDATE outbox SET next_retry_at = ?, attempts = attempts + 1 WHERE id = ?")
-        .bind(&next_at_str)
-        .bind(id.to_string())
-        .execute(pool)
-        .await?;
+    let result =
+        sqlx::query("UPDATE outbox SET next_retry_at = ?, attempts = attempts + 1 WHERE id = ?")
+            .bind(&next_at_str)
+            .bind(id.to_string())
+            .execute(pool)
+            .await;
+    let outcome = if result.is_ok() {
+        DB_OUTCOME_SUCCESS
+    } else {
+        DB_OUTCOME_ERROR
+    };
+    metrics::counter!(DB_OPERATIONS_TOTAL, 1u64, "operation" => OP, "outcome" => outcome);
+    metrics::histogram!(DB_OPERATION_DURATION_SECONDS, start.elapsed().as_secs_f64(), "operation" => OP);
+    result?;
     Ok(())
 }
 
 pub async fn mark_dead_letter(pool: &SqlitePool, id: Uuid, reason: &str) -> Result<(), PoolError> {
-    sqlx::query("UPDATE outbox SET status = 'dead_letter', error_message = ? WHERE id = ?")
-        .bind(reason)
-        .bind(id.to_string())
-        .execute(pool)
-        .await?;
+    const OP: &str = "mark_dead_letter";
+    let start = Instant::now();
+    let result =
+        sqlx::query("UPDATE outbox SET status = 'dead_letter', error_message = ? WHERE id = ?")
+            .bind(reason)
+            .bind(id.to_string())
+            .execute(pool)
+            .await;
+    let outcome = if result.is_ok() {
+        DB_OUTCOME_SUCCESS
+    } else {
+        DB_OUTCOME_ERROR
+    };
+    metrics::counter!(DB_OPERATIONS_TOTAL, 1u64, "operation" => OP, "outcome" => outcome);
+    metrics::histogram!(DB_OPERATION_DURATION_SECONDS, start.elapsed().as_secs_f64(), "operation" => OP);
+    result?;
     Ok(())
 }

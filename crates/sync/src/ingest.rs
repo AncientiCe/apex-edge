@@ -1,8 +1,13 @@
 //! Ingest pipeline: snapshot/delta, checkpoints, atomic upserts.
 
 use apex_edge_contracts::ContractVersion;
+use apex_edge_metrics::{
+    OUTCOME_CHECKPOINT_ADVANCED, OUTCOME_ERROR, OUTCOME_INVALID_PAYLOAD, SYNC_INGEST_BATCHES_TOTAL,
+    SYNC_INGEST_DURATION_SECONDS,
+};
 use apex_edge_storage::{get_sync_checkpoint, set_sync_checkpoint};
 use sqlx::sqlite::SqlitePool;
+use std::time::Instant;
 use thiserror::Error;
 
 use crate::conflict::ConflictPolicy;
@@ -52,9 +57,31 @@ pub async fn ingest_batch(
     payloads: &[Vec<u8>],
     policy: ConflictPolicy,
 ) -> Result<u64, IngestError> {
-    let _ = (policy, payloads);
-    let seq = get_sync_checkpoint(pool, entity).await?.unwrap_or(0);
-    let next = seq + payloads.len() as i64;
-    set_sync_checkpoint(pool, entity, next).await?;
-    Ok(next as u64)
+    let _ = policy;
+    let start = Instant::now();
+    let result = async {
+        let seq = get_sync_checkpoint(pool, entity).await?.unwrap_or(0);
+        let next = seq + payloads.len() as i64;
+        set_sync_checkpoint(pool, entity, next).await?;
+        Ok::<_, IngestError>(next as u64)
+    }
+    .await;
+
+    let outcome = match &result {
+        Ok(_) => OUTCOME_CHECKPOINT_ADVANCED,
+        Err(IngestError::InvalidPayload) => OUTCOME_INVALID_PAYLOAD,
+        Err(IngestError::Storage(_)) => OUTCOME_ERROR,
+    };
+    metrics::counter!(
+        SYNC_INGEST_BATCHES_TOTAL,
+        1u64,
+        "entity" => entity.to_string(),
+        "outcome" => outcome
+    );
+    metrics::histogram!(
+        SYNC_INGEST_DURATION_SECONDS,
+        start.elapsed().as_secs_f64(),
+        "entity" => entity.to_string()
+    );
+    result
 }

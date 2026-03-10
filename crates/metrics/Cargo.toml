@@ -1,0 +1,8 @@
+[package]
+name = "apex-edge-metrics"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+metrics = "0.21"
+metrics-exporter-prometheus = "0.13"

@@ -1,7 +1,11 @@
 //! Generated documents (rendered by ApexEdge, fetched by POS for printing).
 
+use apex_edge_metrics::{
+    DB_OPERATIONS_TOTAL, DB_OPERATION_DURATION_SECONDS, DB_OUTCOME_ERROR, DB_OUTCOME_SUCCESS,
+};
 use chrono::Utc;
 use sqlx::SqlitePool;
+use std::time::Instant;
 use uuid::Uuid;
 
 use crate::pool::PoolError;
@@ -85,12 +89,22 @@ pub async fn mark_failed(
 }
 
 pub async fn get_document(pool: &SqlitePool, id: Uuid) -> Result<Option<DocumentRow>, PoolError> {
-    let row = sqlx::query_as::<_, (String, String, Option<String>, Option<String>, String, String, String, String, Option<String>, String, Option<String>, Option<String>)>(
+    const OP: &str = "get_document";
+    let start = Instant::now();
+    let result = sqlx::query_as::<_, (String, String, Option<String>, Option<String>, String, String, String, String, Option<String>, String, Option<String>, Option<String>)>(
         "SELECT id, document_type, order_id, cart_id, status, template_id, payload, mime_type, content, created_at, completed_at, error_message FROM documents WHERE id = ?",
     )
     .bind(id.to_string())
     .fetch_optional(pool)
-    .await?;
+    .await;
+    let outcome = if result.is_ok() {
+        DB_OUTCOME_SUCCESS
+    } else {
+        DB_OUTCOME_ERROR
+    };
+    metrics::counter!(DB_OPERATIONS_TOTAL, 1u64, "operation" => OP, "outcome" => outcome);
+    metrics::histogram!(DB_OPERATION_DURATION_SECONDS, start.elapsed().as_secs_f64(), "operation" => OP);
+    let row = result?;
 
     Ok(row.map(
         |(
@@ -127,12 +141,22 @@ pub async fn list_documents_for_order(
     pool: &SqlitePool,
     order_id: Uuid,
 ) -> Result<Vec<DocumentRow>, PoolError> {
-    let rows = sqlx::query_as::<_, (String, String, Option<String>, Option<String>, String, String, String, String, Option<String>, String, Option<String>, Option<String>)>(
+    const OP: &str = "list_documents_for_order";
+    let start = Instant::now();
+    let rows_result = sqlx::query_as::<_, (String, String, Option<String>, Option<String>, String, String, String, String, Option<String>, String, Option<String>, Option<String>)>(
         "SELECT id, document_type, order_id, cart_id, status, template_id, payload, mime_type, content, created_at, completed_at, error_message FROM documents WHERE order_id = ? ORDER BY created_at",
     )
     .bind(order_id.to_string())
     .fetch_all(pool)
-    .await?;
+    .await;
+    let outcome = if rows_result.is_ok() {
+        DB_OUTCOME_SUCCESS
+    } else {
+        DB_OUTCOME_ERROR
+    };
+    metrics::counter!(DB_OPERATIONS_TOTAL, 1u64, "operation" => OP, "outcome" => outcome);
+    metrics::histogram!(DB_OPERATION_DURATION_SECONDS, start.elapsed().as_secs_f64(), "operation" => OP);
+    let rows = rows_result?;
 
     Ok(rows
         .into_iter()
