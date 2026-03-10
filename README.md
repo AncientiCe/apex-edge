@@ -1,8 +1,27 @@
 # ApexEdge
 
+[![CI](https://github.com/AncientiCe/apex-edge/actions/workflows/ci.yml/badge.svg)](https://github.com/AncientiCe/apex-edge/actions/workflows/ci.yml)
+[![Smoke (release)](https://github.com/AncientiCe/apex-edge/actions/workflows/smoke-release.yml/badge.svg)](https://github.com/AncientiCe/apex-edge/actions/workflows/smoke-release.yml)
+[![Rust](https://img.shields.io/badge/Rust-stable-orange?logo=rust)](https://www.rust-lang.org/)
+[![Docker](https://img.shields.io/badge/Docker-ready-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
+[![SQLite](https://img.shields.io/badge/DB-SQLite-003B57?logo=sqlite&logoColor=white)](https://www.sqlite.org/index.html)
+[![License](https://img.shields.io/badge/License-Proprietary-lightgrey)](#license)
+[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-blue)](#build-and-run)
+
 Store hub orchestrator: **POS/MPOS <-> ApexEdge <-> HQ**. Offline-first, contract-driven, with durable order submission and document generation.
 
 **Repository:** [https://github.com/AncientiCe/apex-edge](https://github.com/AncientiCe/apex-edge)
+
+## Table of contents
+
+- [Overview](#overview)
+- [Build and run](#build-and-run)
+- [Quality gates](#quality-gates)
+- [Testing](#testing)
+- [Contracts](#contracts)
+- [Security and operations](#security-and-operations)
+- [Crates](#crates)
+- [License](#license)
 
 ```bash
 git clone https://github.com/AncientiCe/apex-edge.git
