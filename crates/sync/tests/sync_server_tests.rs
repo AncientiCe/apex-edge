@@ -303,6 +303,7 @@ async fn streamed_ingest_advances_checkpoint_per_batch() {
         &pool,
         &config,
         apex_edge_contracts::ContractVersion::V1_0_0,
+        uuid::Uuid::nil(),
     )
     .await
     .expect("run_sync_ndjson");

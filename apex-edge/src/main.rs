@@ -44,7 +44,7 @@ fn default_sync_entities() -> Vec<SyncEntityConfig> {
 /// Run one sync cycle; log outcome. Caller ensures config is some.
 async fn run_sync_once(pool: &sqlx::SqlitePool, config: &SyncSourceConfig) {
     let client = reqwest::Client::new();
-    match run_sync_ndjson(&client, pool, config, ContractVersion::V1_0_0).await {
+    match run_sync_ndjson(&client, pool, config, ContractVersion::V1_0_0, Uuid::nil()).await {
         Ok(()) => tracing::info!("Sync completed successfully"),
         Err(e) => tracing::warn!("Sync failed: {}", e),
     }

@@ -6,6 +6,7 @@ import {
   listCategories,
   searchCustomers,
   postPosCommand,
+  getCartState,
   listOrderDocuments,
   getDocument,
   createGiftReceipt,
@@ -32,6 +33,7 @@ import { SyncStatusPanel } from './panels/SyncStatusPanel';
 
 const STORE_ID = '00000000-0000-0000-0000-000000000000';
 const REGISTER_ID = '00000000-0000-0000-0000-000000000000';
+const LS_CART_ID = 'apex_edge_cart_id';
 
 export type LogEntry = { ts: string; kind: 'req' | 'res' | 'err'; text: string };
 type Stage = 'customers' | 'catalog' | 'cart' | 'pay' | 'summary' | 'sync';
@@ -58,13 +60,16 @@ export default function App() {
   const [healthStatus, setHealthStatus] = useState<string | null>(null);
   const [readyStatus, setReadyStatus] = useState<string | null>(null);
   const [stage, setStage] = useState<Stage>('customers');
-  const [cartId, setCartId] = useState<string | null>(null);
+  const [cartId, setCartId] = useState<string | null>(
+    () => localStorage.getItem(LS_CART_ID)
+  );
   const [cartState, setCartState] = useState<CartState | null>(null);
   const [saleSummary, setSaleSummary] = useState<SaleSummary | null>(null);
   const [categories, setCategories] = useState<CategoryResult[]>([]);
   const [productList, setProductList] = useState<ProductListResponse | null>(null);
   const [customers, setCustomers] = useState<CustomerSearchResult[]>([]);
   const [selectedCustomerId, setSelectedCustomerId] = useState<string | null>(null);
+  const [attachedCustomer, setAttachedCustomer] = useState<CustomerSearchResult | null>(null);
   const [eventLog, logEvent] = useEventLog();
   const [eventLogOpen, setEventLogOpen] = useState(false);
   const [cashAmount, setCashAmount] = useState('');
@@ -352,9 +357,38 @@ export default function App() {
     setCartId(null);
     setCartState(null);
     setSelectedCustomerId(null);
+    setAttachedCustomer(null);
     setStage('customers');
     pushToast('Sale completed');
   }, [pushToast]);
+
+  // Persist cart ID to localStorage whenever it changes.
+  useEffect(() => {
+    if (cartId) {
+      localStorage.setItem(LS_CART_ID, cartId);
+    } else {
+      localStorage.removeItem(LS_CART_ID);
+    }
+  }, [cartId]);
+
+  // On mount: if a cart ID was saved, restore its state from the orchestrator.
+  useEffect(() => {
+    const savedId = localStorage.getItem(LS_CART_ID);
+    if (!savedId || !baseUrl) return;
+    getCartState(baseUrl, savedId).then((state) => {
+      if (state) {
+        setCartId(state.cart_id);
+        setCartState(state);
+      } else {
+        // Cart no longer exists on the backend — clear stale session.
+        localStorage.removeItem(LS_CART_ID);
+        setCartId(null);
+      }
+    }).catch(() => {
+      // Network error on restore is non-fatal; let user start fresh.
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // intentionally runs once on mount only
 
   useEffect(() => {
     if (!baseUrl || cartId || stage === 'summary') {
@@ -362,6 +396,25 @@ export default function App() {
     }
     void ensureCart();
   }, [baseUrl, cartId, ensureCart, stage]);
+
+  // Resolve the attached customer from the edge hub whenever the cart's customer_id changes.
+  // Checks the already-fetched customers list first; falls back to a targeted hub lookup.
+  useEffect(() => {
+    const customerId = cartState?.customer_id ?? null;
+    if (!customerId) {
+      setAttachedCustomer(null);
+      return;
+    }
+    if (attachedCustomer?.id === customerId) return;
+    const fromList = customers.find((c) => c.id === customerId);
+    if (fromList) {
+      setAttachedCustomer(fromList);
+      return;
+    }
+    void searchCustomers(baseUrl, customerId).then((results) => {
+      setAttachedCustomer(results.find((r) => r.id === customerId) ?? null);
+    });
+  }, [cartState?.customer_id, baseUrl, customers, attachedCustomer]);
 
   const isCartTab = stage === 'cart' || stage === 'pay' || stage === 'summary';
 
@@ -428,7 +481,7 @@ export default function App() {
 
         {/* ── Cart ── */}
         {stage === 'cart' && (
-          <CartPanel cartState={cartState} onGoPay={onGoToPay} canPay={cartItemCount > 0} />
+          <CartPanel cartState={cartState} attachedCustomer={attachedCustomer} onGoPay={onGoToPay} canPay={cartItemCount > 0} />
         )}
 
         {/* ── Pay ── */}

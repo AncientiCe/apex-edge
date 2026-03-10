@@ -1,8 +1,10 @@
 use apex_edge_api::{
-    create_gift_receipt_document, get_document, handle_pos_command, health, list_order_documents,
-    ready, sync_status, AppState,
+    create_gift_receipt_document, get_cart_state_handler, get_document, handle_pos_command, health,
+    list_order_documents, ready, sync_status, AppState,
 };
-use apex_edge_contracts::{ContractVersion, CreateCartPayload, PosCommand, PosRequestEnvelope};
+use apex_edge_contracts::{
+    CartState, ContractVersion, CreateCartPayload, PosCommand, PosRequestEnvelope,
+};
 use apex_edge_storage::{enqueue_document, mark_generated, run_migrations};
 use axum::{extract::State, Json};
 use sqlx::sqlite::SqlitePoolOptions;
@@ -174,4 +176,65 @@ async fn get_sync_status_returns_shape_with_last_sync_and_entities() {
                 || e.status == "error"
         );
     }
+}
+
+#[tokio::test]
+async fn get_cart_state_returns_cart_for_known_id() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("pool");
+    run_migrations(&pool).await.expect("migrations");
+
+    let state = AppState {
+        store_id: Uuid::nil(),
+        pool: pool.clone(),
+        metrics_handle: None,
+    };
+
+    // Create a cart via the POS command handler
+    let created = handle_pos_command(
+        State(state.clone()),
+        Json(PosRequestEnvelope {
+            version: ContractVersion::V1_0_0,
+            idempotency_key: Uuid::new_v4(),
+            store_id: Uuid::nil(),
+            register_id: Uuid::nil(),
+            payload: PosCommand::CreateCart(CreateCartPayload { cart_id: None }),
+        }),
+    )
+    .await;
+    assert!(created.0.success);
+    let created_state: CartState =
+        serde_json::from_value(created.0.payload.unwrap()).expect("cart state");
+    let cart_id = created_state.cart_id;
+
+    // GET /pos/cart/:cart_id should return the same cart
+    let result = get_cart_state_handler(State(state.clone()), axum::extract::Path(cart_id)).await;
+    assert!(result.is_ok(), "must return Ok for known cart_id");
+    let fetched = result.unwrap().0;
+    assert_eq!(fetched.cart_id, cart_id, "returned cart_id must match");
+}
+
+#[tokio::test]
+async fn get_cart_state_returns_not_found_for_unknown_id() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("pool");
+    run_migrations(&pool).await.expect("migrations");
+
+    let state = AppState {
+        store_id: Uuid::nil(),
+        pool,
+        metrics_handle: None,
+    };
+
+    let result = get_cart_state_handler(State(state), axum::extract::Path(Uuid::new_v4())).await;
+    assert_eq!(
+        result.expect_err("must return not found"),
+        axum::http::StatusCode::NOT_FOUND
+    );
 }

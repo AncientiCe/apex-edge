@@ -19,6 +19,11 @@ fn cart_state_to_payload(state: &CartState) -> serde_json::Value {
     serde_json::to_value(state).unwrap_or(serde_json::Value::Null)
 }
 
+/// Build a `CartState` from a `Cart`.
+pub async fn build_cart_state(_pool: &SqlitePool, _store_id: Uuid, cart: &Cart) -> CartState {
+    cart.to_cart_state()
+}
+
 fn finalize_result_to_payload(result: &FinalizeResult) -> serde_json::Value {
     serde_json::to_value(result).unwrap_or(serde_json::Value::Null)
 }

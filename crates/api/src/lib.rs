@@ -16,5 +16,5 @@ pub use customer_search::*;
 pub use documents::*;
 pub use health::*;
 pub use metrics_handler::serve_metrics;
-pub use pos::*;
+pub use pos::{get_cart_state_handler, handle_pos_command, AppState};
 pub use sync_status::*;

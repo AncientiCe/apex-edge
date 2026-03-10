@@ -1,12 +1,15 @@
 //! POS command handlers: validate envelope, apply command, return cart state or finalize result.
 
 use apex_edge_contracts::{
-    ContractVersion, PosCommand, PosError, PosRequestEnvelope, PosResponseEnvelope,
+    CartState, ContractVersion, PosCommand, PosError, PosRequestEnvelope, PosResponseEnvelope,
 };
 use apex_edge_metrics::{
     OUTCOME_SUCCESS, OUTCOME_UNSUPPORTED_VERSION, POS_COMMANDS_TOTAL, POS_COMMAND_DURATION_SECONDS,
 };
-use axum::{extract::State, Json};
+use axum::{
+    extract::{Path, State},
+    Json,
+};
 use std::time::Instant;
 use uuid::Uuid;
 
@@ -78,6 +81,26 @@ pub async fn handle_pos_command(
         "operation" => operation
     );
     response
+}
+
+/// Read a cart by ID and return its current `CartState`.
+/// Returns 404 if the cart does not exist.
+pub async fn get_cart_state_handler(
+    State(state): State<AppState>,
+    Path(cart_id): Path<Uuid>,
+) -> Result<Json<CartState>, axum::http::StatusCode> {
+    let cart = crate::pos_handler::load_cart_from_db(&state.pool, cart_id)
+        .await
+        .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    match cart {
+        Some(cart) => {
+            let cart_state =
+                crate::pos_handler::build_cart_state(&state.pool, state.store_id, &cart).await;
+            Ok(Json(cart_state))
+        }
+        None => Err(axum::http::StatusCode::NOT_FOUND),
+    }
 }
 
 #[derive(Clone)]

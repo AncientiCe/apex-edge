@@ -159,19 +159,36 @@ async fn ndjson_tax_rules(State(state): State<Arc<AppState>>) -> Response<Body> 
 
 async fn ndjson_promotions(State(state): State<Arc<AppState>>) -> Response<Body> {
     let _ = state;
-    let promo = Promotion {
-        id: Uuid::parse_str("60000000-0000-0000-0000-000000000001").unwrap(),
-        code: Some("20OFF".into()),
-        name: "20% off".into(),
-        promo_type: PromotionType::PercentageOff { percent_bps: 2000 },
-        priority: 10,
-        valid_from: Utc::now(),
-        valid_until: None,
-        conditions: vec![PromoCondition::MinBasketAmount { amount_cents: 1 }],
-        actions: vec![PromoAction::ApplyToBasket],
-        version: 1,
-    };
-    let lines = vec![b64(&serde_json::to_vec(&promo).unwrap())];
+    let promos = vec![
+        Promotion {
+            id: Uuid::parse_str("60000000-0000-0000-0000-000000000001").unwrap(),
+            code: Some("20OFF".into()),
+            name: "20% off".into(),
+            promo_type: PromotionType::PercentageOff { percent_bps: 2000 },
+            priority: 10,
+            valid_from: Utc::now(),
+            valid_until: None,
+            conditions: vec![PromoCondition::MinBasketAmount { amount_cents: 1 }],
+            actions: vec![PromoAction::ApplyToBasket],
+            version: 1,
+        },
+        Promotion {
+            id: Uuid::parse_str("60000000-0000-0000-0000-000000000002").unwrap(),
+            code: Some("BUY2_50".into()),
+            name: "Buy 2 get 50% off".into(),
+            promo_type: PromotionType::PercentageOff { percent_bps: 5000 },
+            priority: 20,
+            valid_from: Utc::now(),
+            valid_until: None,
+            conditions: vec![PromoCondition::MinBasketAmount { amount_cents: 1 }],
+            actions: vec![PromoAction::ApplyToBasket],
+            version: 1,
+        },
+    ];
+    let lines: Vec<String> = promos
+        .iter()
+        .map(|p| b64(&serde_json::to_vec(p).unwrap()))
+        .collect();
     Response::builder()
         .header("content-type", "application/x-ndjson")
         .body(ndjson_body(lines))

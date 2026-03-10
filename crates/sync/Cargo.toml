@@ -21,3 +21,4 @@ uuid = { version = "1.0", features = ["v4", "serde"] }
 [dev-dependencies]
 axum = { version = "0.7", features = ["json"] }
 tokio = { version = "1", features = ["full"] }
+uuid = { version = "1.0", features = ["v4"] }

@@ -128,6 +128,14 @@ function serializeEnvelope(envelope: PosRequestEnvelope<PosCommand>): Record<str
   };
 }
 
+/** Fetch an existing cart's current state by ID. Returns null if the cart is not found. */
+export async function getCartState(baseUrl: string, cartId: string): Promise<CartState | null> {
+  const res = await fetch(`${baseUrl}/pos/cart/${encodeURIComponent(cartId)}`);
+  if (res.status === 404) return null;
+  if (!res.ok) throw normalizeError(res.status, await res.json().catch(() => ({})));
+  return res.json();
+}
+
 export async function listOrderDocuments(baseUrl: string, orderId: string): Promise<DocumentSummary[]> {
   const res = await fetch(`${baseUrl}/orders/${orderId}/documents`);
   if (!res.ok) throw normalizeError(res.status, await res.json().catch(() => ({})));

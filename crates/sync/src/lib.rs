@@ -13,19 +13,21 @@ pub use fetch::*;
 pub use ingest::*;
 pub use progress::*;
 
-/// Run full sync using NDJSON streaming per entity; streams line-by-line, collects per entity, then ingests one batch per entity.
+/// Run full sync using NDJSON streaming per entity; streams line-by-line, collects per entity, applies to DB, then advances checkpoint.
 /// Updates latest sync run and per-entity status in storage for the status page.
+/// `store_id` is used when writing promotions (and other store-scoped entities) to the database.
 pub async fn run_sync_ndjson(
     client: &reqwest::Client,
     pool: &sqlx::SqlitePool,
     config: &SyncSourceConfig,
     version: apex_edge_contracts::ContractVersion,
+    store_id: uuid::Uuid,
 ) -> Result<(), RunSyncError> {
     let started = chrono::Utc::now();
     let _ =
         apex_edge_storage::upsert_latest_sync_run(pool, "running", Some(started), None, None).await;
 
-    let result = run_sync_ndjson_inner(client, pool, config, version).await;
+    let result = run_sync_ndjson_inner(client, pool, config, version, store_id).await;
 
     let finished = chrono::Utc::now();
     match &result {
@@ -58,6 +60,7 @@ async fn run_sync_ndjson_inner(
     pool: &sqlx::SqlitePool,
     config: &SyncSourceConfig,
     version: apex_edge_contracts::ContractVersion,
+    store_id: uuid::Uuid,
 ) -> Result<(), RunSyncError> {
     for ent in &config.entities {
         let url = config.url_for(&ent.path);
@@ -90,10 +93,36 @@ async fn run_sync_ndjson_inner(
         .await;
 
         if !batch.is_empty() {
+            apply_entity_batch(pool, &entity, &batch, store_id).await?;
             ingest_batch(pool, &entity, version, &batch, ConflictPolicy::HqWins)
                 .await
                 .map_err(RunSyncError::Ingest)?;
         }
+    }
+    Ok(())
+}
+
+/// Apply a batch of payloads to the database for the given entity (e.g. insert into promotions table).
+async fn apply_entity_batch(
+    pool: &sqlx::SqlitePool,
+    entity: &str,
+    batch: &[Vec<u8>],
+    store_id: uuid::Uuid,
+) -> Result<(), RunSyncError> {
+    match entity {
+        "promotions" => {
+            use apex_edge_contracts::Promotion;
+            for payload in batch {
+                let promo: Promotion = serde_json::from_slice(payload)
+                    .map_err(|_| crate::ingest::IngestError::InvalidPayload)?;
+                let json = serde_json::to_string(&promo).map_err(|_| crate::ingest::IngestError::InvalidPayload)?;
+                apex_edge_storage::insert_promotion(pool, promo.id, store_id, &json)
+                    .await
+                    .map_err(crate::ingest::IngestError::Storage)
+                    .map_err(RunSyncError::Ingest)?;
+            }
+        }
+        _ => {}
     }
     Ok(())
 }

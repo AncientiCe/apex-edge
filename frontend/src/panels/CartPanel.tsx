@@ -1,17 +1,34 @@
-import type { CartState } from '../api/types';
+import type { CartState, CustomerSearchResult } from '../api/types';
 
 interface Props {
   cartState: CartState | null;
+  attachedCustomer: CustomerSearchResult | null;
   onGoPay: () => void;
   canPay: boolean;
 }
 
-export function CartPanel({ cartState, onGoPay, canPay }: Props) {
+export function CartPanel({ cartState, attachedCustomer, onGoPay, canPay }: Props) {
   const lines = cartState?.lines ?? [];
+
+  const customerBanner = attachedCustomer && (
+    <div className="cart-customer-banner">
+      <span className="cart-customer-icon">👤</span>
+      <div className="cart-customer-details">
+        <span className="cart-customer-label">
+          {attachedCustomer.name}
+          <span className="cart-customer-code"> · {attachedCustomer.code}</span>
+        </span>
+        {attachedCustomer.email && (
+          <span className="cart-customer-email">{attachedCustomer.email}</span>
+        )}
+      </div>
+    </div>
+  );
 
   if (!cartState || lines.length === 0) {
     return (
       <div>
+        {customerBanner}
         <p className="ios-section-header">Your Cart</p>
         <div className="ios-card">
           <div className="cart-empty">Your cart is empty.</div>
@@ -22,6 +39,7 @@ export function CartPanel({ cartState, onGoPay, canPay }: Props) {
 
   return (
     <div>
+      {customerBanner}
       <p className="ios-section-header">Items</p>
       <div className="ios-card">
         {lines.map((l) => (

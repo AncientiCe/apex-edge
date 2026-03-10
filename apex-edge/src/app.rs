@@ -1,9 +1,9 @@
 //! Reusable app bootstrap for the binary and tests (build router, no bind).
 
 use apex_edge_api::{
-    create_gift_receipt_document, get_document, handle_pos_command, health, list_categories,
-    list_order_documents, ready, search_customers, search_products, serve_metrics, sync_status,
-    AppState,
+    create_gift_receipt_document, get_cart_state_handler, get_document, handle_pos_command, health,
+    list_categories, list_order_documents, ready, search_customers, search_products, serve_metrics,
+    sync_status, AppState,
 };
 use axum::{routing::get, Router};
 use tower_http::cors::{Any, CorsLayer};
@@ -54,6 +54,7 @@ pub fn build_router(
         .route("/health", get(health))
         .route("/ready", get(ready))
         .route("/pos/command", axum::routing::post(handle_pos_command))
+        .route("/pos/cart/:cart_id", get(get_cart_state_handler))
         .route("/catalog/products", get(search_products))
         .route("/catalog/categories", get(list_categories))
         .route("/customers", get(search_customers))
