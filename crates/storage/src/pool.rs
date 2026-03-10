@@ -16,7 +16,14 @@ pub async fn create_sqlite_pool(path: &str) -> Result<SqlitePool, PoolError> {
     // For ergonomics and OS-agnostic config, accept plain file paths and prefix them.
     let url = if path.starts_with("sqlite:") {
         path.to_string()
+    } else if path.starts_with('/') {
+        // Absolute POSIX path
+        format!("sqlite://{path}")
+    } else if path.len() >= 3 && path.as_bytes()[1] == b':' && (path.as_bytes()[2] == b'\\' || path.as_bytes()[2] == b'/') {
+        // Absolute Windows path like C:\dir\file.db or C:/dir/file.db
+        format!("sqlite:{path}")
     } else {
+        // Relative path
         format!("sqlite:{path}")
     };
     let pool = SqlitePoolOptions::new()

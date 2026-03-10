@@ -25,8 +25,9 @@ jobs:
 
       - name: Run smoke against live server
         run: |
-          DB=$(mktemp -u).db
-          export APEX_EDGE_DB="sqlite:$DB"
+          DB="$(mktemp -u).db"
+          # For absolute paths, SQLx expects sqlite:///abs/path.db
+          export APEX_EDGE_DB="sqlite://$DB"
           ./target/release/apex-edge &
           PID=$!
           trap "kill $PID 2>/dev/null || true" EXIT
