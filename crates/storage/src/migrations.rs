@@ -47,14 +47,24 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), MigrationError> {
         }
     }
     if !column_exists(pool, "customers", "email").await? {
-        sqlx::query("ALTER TABLE customers ADD COLUMN email TEXT")
+        if let Err(e) = sqlx::query("ALTER TABLE customers ADD COLUMN email TEXT")
             .execute(pool)
-            .await?;
+            .await
+        {
+            if !e.to_string().contains("duplicate column name") {
+                return Err(e.into());
+            }
+        }
     }
     if !column_exists(pool, "catalog_items", "description").await? {
-        sqlx::query("ALTER TABLE catalog_items ADD COLUMN description TEXT")
+        if let Err(e) = sqlx::query("ALTER TABLE catalog_items ADD COLUMN description TEXT")
             .execute(pool)
-            .await?;
+            .await
+        {
+            if !e.to_string().contains("duplicate column name") {
+                return Err(e.into());
+            }
+        }
     }
     Ok(())
 }

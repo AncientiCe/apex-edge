@@ -58,7 +58,21 @@ Fix any failure before marking the task complete.
 
 ---
 
-## 6. No Unused Variables or Dead Code
+## 6. Observability and Metrics
+
+- **Every new feature must include metrics.** Instrument new code paths with counters, gauges, histograms, or timers as appropriate.
+- **If you touch an existing feature that lacks metrics, add them.** Do not leave touched code paths unobserved.
+- At minimum, instrument:
+  - **Counts** — how many times an operation is invoked (e.g. requests, commands, events processed).
+  - **Errors** — how many times an operation fails, labelled by error kind where possible.
+  - **Latency** — how long critical operations take (e.g. database queries, external calls, sync steps).
+- Use the existing metrics infrastructure in the codebase (e.g. `metrics` crate, Prometheus counters/histograms). Do not invent a parallel mechanism.
+- Metric names must follow the existing naming convention: `<subsystem>_<operation>_<unit>` (e.g. `sync_push_duration_seconds`, `orders_created_total`).
+- Do not merge a feature without verifiable metric emission — confirm in tests or by inspection that the metric is recorded on the relevant code path.
+
+---
+
+## 7. No Unused Variables or Dead Code
 
 - **No unused variables.** Every declared variable must be used; remove or replace with `_` if intentionally unused in Rust.
 - **No dead code.** Remove unreachable functions, branches, types, and imports — do not leave them commented out or hidden behind `#[allow(dead_code)]`.
@@ -74,5 +88,6 @@ Fix any failure before marking the task complete.
 | Quality | `cargo fmt` \| `cargo clippy` \| `cargo audit` \| `cargo test` |
 | Docs | New user behaviour → diagram in `docs/architecture/README.md` |
 | No plan files | No `.md` for plans; only real documentation |
+| Observability | New feature → add metrics; touched feature without metrics → add them |
 | No dead code | No unused variables, dead code, or `#[allow(dead_code)]` |
 | System impact | Consider callers, storage, API, sync, outbox, observability |

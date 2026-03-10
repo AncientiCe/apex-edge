@@ -78,9 +78,9 @@ pub async fn handle_pos_command(
     metrics::histogram!(
         POS_COMMAND_DURATION_SECONDS,
         start.elapsed().as_secs_f64(),
-        "operation" => operation,
-        "span_entered" => std::mem::size_of_val(&guard).to_string()
+        "operation" => operation
     );
+    drop(guard);
     response
 }
 

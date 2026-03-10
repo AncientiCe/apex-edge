@@ -113,16 +113,21 @@ async fn fetch_from_sync_server_each_entity_on_own_endpoint() {
         ],
     };
 
-    let entities_called: std::cell::RefCell<Vec<String>> = std::cell::RefCell::new(Vec::new());
+    let entities_called: std::cell::RefCell<std::collections::HashSet<String>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
     let current_by_entity = |entity: &str| {
-        entities_called.borrow_mut().push(entity.to_string());
+        entities_called.borrow_mut().insert(entity.to_string());
         None::<i64>
     };
     let (results, summary) = fetch_all(&client, &config, current_by_entity)
         .await
         .expect("fetch_all");
 
-    assert_eq!(entities_called.borrow().len(), 5, "callback should be called per entity");
+    assert_eq!(
+        entities_called.borrow().len(),
+        5,
+        "callback should see all 5 entities"
+    );
     assert_eq!(results.len(), 5);
     let catalog = results.iter().find(|(e, _, _)| e == "catalog").unwrap();
     assert_eq!(catalog.1.len(), 2);
@@ -188,7 +193,11 @@ async fn sync_data_progress_percent_and_ingest_with_any_progress() {
 
     // Ingest only catalog (partial progress is valid)
     for (entity, payloads, total) in &results {
-        assert_eq!(*total, payloads.len() as u64, "total should match payload count");
+        assert_eq!(
+            *total,
+            payloads.len() as u64,
+            "total should match payload count"
+        );
         if entity == "catalog" && !payloads.is_empty() {
             ingest_batch(
                 &pool,

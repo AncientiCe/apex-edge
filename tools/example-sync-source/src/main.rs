@@ -160,7 +160,7 @@ async fn ndjson_tax_rules(State(state): State<Arc<AppState>>) -> Response<Body> 
 async fn ndjson_promotions(State(state): State<Arc<AppState>>) -> Response<Body> {
     eprintln!("promotions request store_id={}", state.store_id);
     let item_demo_001 = Uuid::parse_str("30000000-0000-0000-0000-000000000001").unwrap();
-    let promos = vec![
+    let promos = [
         Promotion {
             id: Uuid::parse_str("60000000-0000-0000-0000-000000000001").unwrap(),
             code: Some("20OFF".into()),

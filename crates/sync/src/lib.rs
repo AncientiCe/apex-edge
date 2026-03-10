@@ -109,21 +109,18 @@ async fn apply_entity_batch(
     batch: &[Vec<u8>],
     store_id: uuid::Uuid,
 ) -> Result<(), RunSyncError> {
-    match entity {
-        "promotions" => {
-            use apex_edge_contracts::Promotion;
-            for payload in batch {
-                let promo: Promotion = serde_json::from_slice(payload)
-                    .map_err(|_| crate::ingest::IngestError::InvalidPayload)?;
-                let json = serde_json::to_string(&promo)
-                    .map_err(|_| crate::ingest::IngestError::InvalidPayload)?;
-                apex_edge_storage::insert_promotion(pool, promo.id, store_id, &json)
-                    .await
-                    .map_err(crate::ingest::IngestError::Storage)
-                    .map_err(RunSyncError::Ingest)?;
-            }
+    if entity == "promotions" {
+        use apex_edge_contracts::Promotion;
+        for payload in batch {
+            let promo: Promotion = serde_json::from_slice(payload)
+                .map_err(|_| crate::ingest::IngestError::InvalidPayload)?;
+            let json = serde_json::to_string(&promo)
+                .map_err(|_| crate::ingest::IngestError::InvalidPayload)?;
+            apex_edge_storage::insert_promotion(pool, promo.id, store_id, &json)
+                .await
+                .map_err(crate::ingest::IngestError::Storage)
+                .map_err(RunSyncError::Ingest)?;
         }
-        _ => {}
     }
     Ok(())
 }

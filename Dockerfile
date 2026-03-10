@@ -5,6 +5,7 @@ WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY apex-edge/ apex-edge/
 COPY crates/ crates/
+COPY tools/ tools/
 
 RUN cargo build --release -p apex-edge
 
