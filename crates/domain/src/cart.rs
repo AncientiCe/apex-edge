@@ -292,3 +292,55 @@ impl Cart {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{Cart, CartLineItem};
+    use crate::errors::DomainError;
+    use apex_edge_contracts::CartStateKind;
+    use uuid::Uuid;
+
+    #[test]
+    fn cannot_finalize_when_not_paid() {
+        let cart = Cart::new(Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+        let err = cart.ensure_can_finalize().expect_err("must reject");
+        match err {
+            DomainError::InvalidTransition(_) => {}
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn add_payment_requires_tendering_or_paid_state() {
+        let mut cart = Cart::new(Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+        let err = cart
+            .add_payment(Uuid::new_v4(), 100, None)
+            .expect_err("must reject payment in open state");
+        match err {
+            DomainError::InvalidTransition(_) => {}
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn payment_transitions_tendering_to_paid() {
+        let mut cart = Cart::new(Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+        cart.lines.push(CartLineItem {
+            line_id: Uuid::new_v4(),
+            item_id: Uuid::new_v4(),
+            sku: "sku".into(),
+            name: "item".into(),
+            quantity: 1,
+            modifier_option_ids: vec![],
+            notes: None,
+            unit_price_cents: 100,
+            line_total_cents: 100,
+            discount_cents: 0,
+            tax_cents: 0,
+        });
+        cart.state = CartStateKind::Tendering;
+        cart.add_payment(Uuid::new_v4(), 100, None)
+            .expect("payment should succeed");
+        assert_eq!(cart.state, CartStateKind::Paid);
+    }
+}

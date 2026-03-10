@@ -199,3 +199,70 @@ fn allocate_discount_to_lines(
         *line_totals.get_mut(&line.line_id).unwrap() = line_net.saturating_sub(discount);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::apply_promos_to_lines;
+    use crate::cart::CartLineItem;
+    use apex_edge_contracts::{PromoAction, PromoCondition, Promotion, PromotionType};
+    use chrono::{Duration, Utc};
+    use uuid::Uuid;
+
+    fn line(item_id: Uuid, total: u64) -> CartLineItem {
+        CartLineItem {
+            line_id: Uuid::new_v4(),
+            item_id,
+            sku: "sku".into(),
+            name: "name".into(),
+            quantity: 1,
+            modifier_option_ids: vec![],
+            notes: None,
+            unit_price_cents: total,
+            line_total_cents: total,
+            discount_cents: 0,
+            tax_cents: 0,
+        }
+    }
+
+    #[test]
+    fn percentage_promo_allocates_discount_to_applicable_lines() {
+        let item_a = Uuid::new_v4();
+        let item_b = Uuid::new_v4();
+        let lines = vec![line(item_a, 1000), line(item_b, 1000)];
+        let promo = Promotion {
+            id: Uuid::new_v4(),
+            code: Some("P10".into()),
+            name: "10 off".into(),
+            promo_type: PromotionType::PercentageOff { percent_bps: 1000 },
+            priority: 10,
+            valid_from: Utc::now() - Duration::minutes(1),
+            valid_until: Some(Utc::now() + Duration::minutes(1)),
+            conditions: vec![],
+            actions: vec![PromoAction::ApplyToBasket],
+            version: 1,
+        };
+        let priced = apply_promos_to_lines(&lines, |_| Uuid::nil(), &[promo], 2000);
+        let total_discount: u64 = priced.iter().map(|l| l.discount_cents).sum();
+        assert_eq!(total_discount, 200);
+    }
+
+    #[test]
+    fn promo_with_unmet_condition_does_not_apply() {
+        let item = Uuid::new_v4();
+        let lines = vec![line(item, 500)];
+        let promo = Promotion {
+            id: Uuid::new_v4(),
+            code: None,
+            name: "min basket".into(),
+            promo_type: PromotionType::FixedAmountOff { amount_cents: 100 },
+            priority: 1,
+            valid_from: Utc::now() - Duration::minutes(1),
+            valid_until: Some(Utc::now() + Duration::minutes(1)),
+            conditions: vec![PromoCondition::MinBasketAmount { amount_cents: 9999 }],
+            actions: vec![PromoAction::ApplyToBasket],
+            version: 1,
+        };
+        let priced = apply_promos_to_lines(&lines, |_| Uuid::nil(), &[promo], 500);
+        assert_eq!(priced[0].discount_cents, 0);
+    }
+}

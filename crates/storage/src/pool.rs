@@ -11,6 +11,18 @@ pub enum PoolError {
     Connection(#[from] sqlx::Error),
 }
 
+/// Create a SQLite pool from either:
+/// - a SQLx URL (e.g. `sqlite::memory:`), or
+/// - a plain path (e.g. `./apex_edge.db`, `/data/apex_edge.db`).
+///
+/// # Examples
+///
+/// ```no_run
+/// use apex_edge_storage::create_sqlite_pool;
+///
+/// let _memory_pool = create_sqlite_pool("sqlite::memory:");
+/// let _file_pool = create_sqlite_pool("./apex_edge.db");
+/// ```
 pub async fn create_sqlite_pool(path: &str) -> Result<SqlitePool, PoolError> {
     // SQLx expects a SQLite URL (e.g. `sqlite:apex_edge.db`, `sqlite::memory:`).
     // For ergonomics and OS-agnostic config, accept plain file paths and prefix them.

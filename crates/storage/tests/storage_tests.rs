@@ -76,4 +76,24 @@ async fn storage_roundtrip_for_core_tables() {
             .expect("get checkpoint"),
         Some(9)
     );
+
+    let cart_id = Uuid::new_v4();
+    let store_id = Uuid::new_v4();
+    let register_id = Uuid::new_v4();
+    save_cart(
+        &pool,
+        cart_id,
+        store_id,
+        register_id,
+        &apex_edge_contracts::CartStateKind::Itemized,
+        &serde_json::json!({"line_count": 1}),
+    )
+    .await
+    .expect("save cart");
+    let loaded = load_cart(&pool, cart_id)
+        .await
+        .expect("load cart")
+        .expect("cart row");
+    assert_eq!(loaded.id, cart_id);
+    assert_eq!(loaded.store_id, store_id);
 }

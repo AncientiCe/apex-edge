@@ -5,6 +5,16 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 
 /// Contract API version (semver).
+///
+/// # Examples
+///
+/// ```
+/// use apex_edge_contracts::ContractVersion;
+///
+/// let v = ContractVersion::new(1, 2, 0);
+/// assert_eq!(v.to_string(), "1.2.0");
+/// assert_eq!(ContractVersion::default(), ContractVersion::V1_0_0);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct ContractVersion {
@@ -34,5 +44,20 @@ impl fmt::Display for ContractVersion {
 impl Default for ContractVersion {
     fn default() -> Self {
         Self::V1_0_0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ContractVersion;
+
+    #[test]
+    fn default_is_v1_0_0() {
+        assert_eq!(ContractVersion::default(), ContractVersion::V1_0_0);
+    }
+
+    #[test]
+    fn display_formats_semver() {
+        assert_eq!(ContractVersion::new(2, 4, 6).to_string(), "2.4.6");
     }
 }

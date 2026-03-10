@@ -10,6 +10,19 @@ pub struct HealthResponse {
     pub status: String,
 }
 
+/// Liveness endpoint payload.
+///
+/// # Examples
+///
+/// ```no_run
+/// use apex_edge_api::health;
+///
+/// # #[tokio::main(flavor = "current_thread")]
+/// # async fn main() {
+/// let json = health().await;
+/// assert_eq!(json.0.status, "ok");
+/// # }
+/// ```
 pub async fn health() -> Json<HealthResponse> {
     Json(HealthResponse {
         status: "ok".into(),
@@ -27,4 +40,34 @@ pub async fn ready(
     Ok(Json(HealthResponse {
         status: "ready".into(),
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{health, ready};
+    use crate::pos::AppState;
+    use axum::extract::State;
+    use sqlx::sqlite::SqlitePoolOptions;
+    use uuid::Uuid;
+
+    #[tokio::test]
+    async fn health_returns_ok() {
+        let h = health().await;
+        assert_eq!(h.0.status, "ok");
+    }
+
+    #[tokio::test]
+    async fn ready_returns_ready_with_live_db() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("pool");
+        let state = AppState {
+            store_id: Uuid::nil(),
+            pool,
+        };
+        let r = ready(State(state)).await.expect("ready endpoint");
+        assert_eq!(r.0.status, "ready");
+    }
 }

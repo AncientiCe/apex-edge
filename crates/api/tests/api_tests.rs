@@ -81,3 +81,23 @@ async fn api_handlers_cover_health_ready_pos_and_documents() {
         .expect("get doc");
     assert_eq!(fetched.0.status, "generated");
 }
+
+#[tokio::test]
+async fn get_document_returns_not_found_for_unknown_id() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("pool");
+    run_migrations(&pool).await.expect("migrations");
+
+    let state = AppState {
+        store_id: Uuid::nil(),
+        pool,
+    };
+    let res = get_document(State(state), axum::extract::Path(Uuid::new_v4())).await;
+    assert_eq!(
+        res.expect_err("must return not found"),
+        axum::http::StatusCode::NOT_FOUND
+    );
+}

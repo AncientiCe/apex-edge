@@ -15,6 +15,33 @@ pub struct LinePriceResult {
 }
 
 /// Lookup base price for item + modifiers (from local price book).
+///
+/// # Examples
+///
+/// ```
+/// use apex_edge_contracts::PriceBookEntry;
+/// use apex_edge_domain::base_price_cents;
+/// use uuid::Uuid;
+///
+/// let item_id = Uuid::new_v4();
+/// let mod_id = Uuid::new_v4();
+/// let entries = vec![
+///     PriceBookEntry {
+///         item_id,
+///         modifier_option_id: None,
+///         price_cents: 500,
+///         currency: "USD".into(),
+///     },
+///     PriceBookEntry {
+///         item_id,
+///         modifier_option_id: Some(mod_id),
+///         price_cents: 50,
+///         currency: "USD".into(),
+///     },
+/// ];
+///
+/// assert_eq!(base_price_cents(item_id, &[mod_id], 2, &entries), 1100);
+/// ```
 pub fn base_price_cents(
     item_id: Uuid,
     modifier_option_ids: &[Uuid],
@@ -40,6 +67,15 @@ pub fn base_price_cents(
 }
 
 /// Apply tax (inclusive or exclusive) to amount. rate_bps = basis points (e.g. 1000 = 10%).
+///
+/// # Examples
+///
+/// ```
+/// use apex_edge_domain::apply_tax;
+///
+/// assert_eq!(apply_tax(1000, 1000, false), 100);
+/// assert_eq!(apply_tax(1100, 1000, true), 100);
+/// ```
 pub fn apply_tax(amount_cents: u64, rate_bps: u32, inclusive: bool) -> u64 {
     if inclusive {
         amount_cents - (amount_cents * 10000 / (10000 + rate_bps as u64))
@@ -60,4 +96,38 @@ pub fn tax_for_line(
         None => return 0,
     };
     apply_tax(line_net_cents, rule.rate_bps, inclusive)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{apply_tax, base_price_cents};
+    use apex_edge_contracts::PriceBookEntry;
+    use uuid::Uuid;
+
+    #[test]
+    fn base_price_includes_modifiers_and_quantity() {
+        let item = Uuid::new_v4();
+        let m1 = Uuid::new_v4();
+        let entries = vec![
+            PriceBookEntry {
+                item_id: item,
+                modifier_option_id: None,
+                price_cents: 200,
+                currency: "USD".into(),
+            },
+            PriceBookEntry {
+                item_id: item,
+                modifier_option_id: Some(m1),
+                price_cents: 50,
+                currency: "USD".into(),
+            },
+        ];
+        assert_eq!(base_price_cents(item, &[m1], 3, &entries), 750);
+    }
+
+    #[test]
+    fn apply_tax_handles_exclusive_and_inclusive() {
+        assert_eq!(apply_tax(1000, 1000, false), 100);
+        assert_eq!(apply_tax(1100, 1000, true), 100);
+    }
 }

@@ -15,6 +15,36 @@ pub enum IngestError {
     InvalidPayload,
 }
 
+/// Ingest a batch and advance the per-entity checkpoint.
+///
+/// # Examples
+///
+/// ```no_run
+/// use apex_edge_contracts::ContractVersion;
+/// use apex_edge_sync::{ingest_batch, ConflictPolicy};
+/// use sqlx::sqlite::SqlitePoolOptions;
+///
+/// # #[tokio::main(flavor = "current_thread")]
+/// # async fn main() {
+/// let pool = SqlitePoolOptions::new()
+///     .max_connections(1)
+///     .connect("sqlite::memory:")
+///     .await
+///     .unwrap();
+/// apex_edge_storage::run_migrations(&pool).await.unwrap();
+///
+/// let next = ingest_batch(
+///     &pool,
+///     "catalog",
+///     ContractVersion::V1_0_0,
+///     &[b"delta-1".to_vec()],
+///     ConflictPolicy::HqWins,
+/// )
+/// .await
+/// .unwrap();
+/// assert_eq!(next, 1);
+/// # }
+/// ```
 pub async fn ingest_batch(
     pool: &SqlitePool,
     entity: &str,
