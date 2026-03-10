@@ -157,13 +157,13 @@ async fn ndjson_tax_rules(State(state): State<Arc<AppState>>) -> Response<Body> 
         .unwrap()
 }
 
-async fn ndjson_promotions(State(state): State<Arc<AppState>>) -> Response<Body> {
-    let _ = state;
+async fn ndjson_promotions(State(_state): State<Arc<AppState>>) -> Response<Body> {
+    let item_demo_001 = Uuid::parse_str("30000000-0000-0000-0000-000000000001").unwrap();
     let promos = vec![
         Promotion {
             id: Uuid::parse_str("60000000-0000-0000-0000-000000000001").unwrap(),
             code: Some("20OFF".into()),
-            name: "20% off".into(),
+            name: "20% off basket".into(),
             promo_type: PromotionType::PercentageOff { percent_bps: 2000 },
             priority: 10,
             valid_from: Utc::now(),
@@ -175,13 +175,19 @@ async fn ndjson_promotions(State(state): State<Arc<AppState>>) -> Response<Body>
         Promotion {
             id: Uuid::parse_str("60000000-0000-0000-0000-000000000002").unwrap(),
             code: Some("BUY2_50".into()),
-            name: "Buy 2 get 50% off".into(),
+            name: "Buy 2 of Example Product One get 50% off each".into(),
             promo_type: PromotionType::PercentageOff { percent_bps: 5000 },
             priority: 20,
             valid_from: Utc::now(),
             valid_until: None,
-            conditions: vec![PromoCondition::MinBasketAmount { amount_cents: 1 }],
-            actions: vec![PromoAction::ApplyToBasket],
+            conditions: vec![PromoCondition::ItemInBasket {
+                item_id: item_demo_001,
+                min_quantity: 2,
+            }],
+            actions: vec![PromoAction::ApplyToItem {
+                item_id: item_demo_001,
+                max_quantity: Some(2),
+            }],
             version: 1,
         },
     ];

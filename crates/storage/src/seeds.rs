@@ -228,6 +228,7 @@ pub async fn seed_demo_data(
         conditions: vec![],
         actions: vec![PromoAction::ApplyToCategory {
             category_id: beverages_id,
+            max_quantity: None,
         }],
         version: 1,
     };
@@ -239,30 +240,31 @@ pub async fn seed_demo_data(
     )
     .await?;
 
-    // Automatic: Buy 2+ Bakery items, 15% off Bakery (category_id = 0x1001)
-    let bakery_id = categories[1].0;
-    let promo_bakery = Promotion {
+    // Automatic: Buy 2 of Bakery Item 106, get 50% off each (only the first 2 units)
+    let bakery_item_106_id = Uuid::from_u128(0x2000 + 105);
+    let promo_bakery_106 = Promotion {
         id: Uuid::from_u128(0x4006),
         code: None,
-        name: "Buy 2+ Bakery get 15% off Bakery".into(),
-        promo_type: PromotionType::PercentageOff { percent_bps: 1500 },
+        name: "Buy 2 of Bakery Item 106 get 50% off each".into(),
+        promo_type: PromotionType::PercentageOff { percent_bps: 5000 },
         priority: 9,
         valid_from,
         valid_until,
-        conditions: vec![PromoCondition::CategoryInBasket {
-            category_id: bakery_id,
+        conditions: vec![PromoCondition::ItemInBasket {
+            item_id: bakery_item_106_id,
             min_quantity: 2,
         }],
-        actions: vec![PromoAction::ApplyToCategory {
-            category_id: bakery_id,
+        actions: vec![PromoAction::ApplyToItem {
+            item_id: bakery_item_106_id,
+            max_quantity: Some(2),
         }],
         version: 1,
     };
     insert_promotion(
         pool,
-        promo_bakery.id,
+        promo_bakery_106.id,
         store_id,
-        &serde_json::to_string(&promo_bakery).unwrap_or_default(),
+        &serde_json::to_string(&promo_bakery_106).unwrap_or_default(),
     )
     .await?;
 

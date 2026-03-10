@@ -55,7 +55,17 @@ pub enum PromoCondition {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum PromoAction {
-    ApplyToItem { item_id: Uuid },
-    ApplyToCategory { category_id: Uuid },
+    /// Discount applies only to this item. If max_quantity is Some(n), only the first n units get the discount (e.g. "Buy 2 get 50% off each" = cap 2).
+    ApplyToItem {
+        item_id: Uuid,
+        #[serde(default)]
+        max_quantity: Option<u32>,
+    },
+    /// Discount applies only to this category. If max_quantity is Some(n), only the first n units get the discount.
+    ApplyToCategory {
+        category_id: Uuid,
+        #[serde(default)]
+        max_quantity: Option<u32>,
+    },
     ApplyToBasket,
 }
