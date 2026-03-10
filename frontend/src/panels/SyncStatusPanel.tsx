@@ -98,6 +98,20 @@ export function SyncStatusPanel({ baseUrl, disabled }: Props) {
           </div>
         </>
       )}
+      {!data.last_sync_at && !data.is_syncing && data.entities.length === 0 && (
+        <div className="sync-status-hint">
+          <p className="ios-section-header">No sync run yet</p>
+          <p className="sync-status-muted">
+            Sync runs on startup and every 24h only when the app is started with{' '}
+            <code>APEX_EDGE_SYNC_SOURCE_URL</code> set. Start the example sync source, then restart
+            the app with the env var (e.g. <code>http://localhost:3030</code>).
+          </p>
+          <p className="sync-status-muted" style={{ marginTop: '0.5rem' }}>
+            Example: <code>cargo run -p example-sync-source</code> on port 3030, then{' '}
+            <code>APEX_EDGE_SYNC_SOURCE_URL=http://localhost:3030 cargo run -p apex-edge</code>.
+          </p>
+        </div>
+      )}
       <div className="btn-stack" style={{ marginTop: '1rem' }}>
         <button type="button" className="btn-secondary" onClick={fetchStatus} disabled={loading}>
           Refresh

@@ -1043,3 +1043,17 @@ button:disabled {
   color: var(--label-tertiary);
   margin-top: 0.25rem;
 }
+
+.sync-status-hint {
+  margin-top: 1rem;
+  padding: 0.75rem;
+  background: var(--bg-search);
+  border-radius: var(--radius-card);
+}
+.sync-status-hint code {
+  font-family: ui-monospace, monospace;
+  font-size: 0.85em;
+  padding: 0.1em 0.35em;
+  background: var(--bg-secondary);
+  border-radius: 4px;
+}
