@@ -3,13 +3,13 @@
 //! verify document and HQ payload.
 
 use apex_edge::build_router;
+use apex_edge_contracts::HqOrderSubmissionEnvelope;
+use apex_edge_contracts::{AddLineItemPayload, AddPaymentPayload, SetTenderingPayload};
 use apex_edge_contracts::{
     ContractVersion, CreateCartPayload, FinalizeOrderPayload, PosCommand, PosRequestEnvelope,
     SetCustomerPayload,
 };
-use apex_edge_contracts::{AddLineItemPayload, AddPaymentPayload, SetTenderingPayload};
 use apex_edge_contracts::{PromoAction, PromoCondition, Promotion, PromotionType};
-use apex_edge_contracts::HqOrderSubmissionEnvelope;
 use apex_edge_storage::{
     enqueue_document, fetch_pending_outbox, insert_catalog_item, insert_customer,
     insert_price_book_entry, insert_promotion, insert_tax_rule, mark_generated, run_migrations,
@@ -114,9 +114,7 @@ async fn seed_full_flow_data(pool: &sqlx::SqlitePool) {
         priority: 10,
         valid_from: Utc::now() - Duration::days(1),
         valid_until: Some(Utc::now() + Duration::days(1)),
-        conditions: vec![PromoCondition::MinBasketAmount {
-            amount_cents: 1,
-        }],
+        conditions: vec![PromoCondition::MinBasketAmount { amount_cents: 1 }],
         actions: vec![PromoAction::ApplyToBasket],
         version: 1,
     };
@@ -311,7 +309,10 @@ async fn full_order_flow_journey() {
         .expect("create cart");
     assert_eq!(create_res.status(), StatusCode::OK);
     let create_json: serde_json::Value = create_res.json().await.expect("create json");
-    assert_eq!(create_json.get("success"), Some(&serde_json::Value::Bool(true)));
+    assert_eq!(
+        create_json.get("success"),
+        Some(&serde_json::Value::Bool(true))
+    );
     let payload = create_json.get("payload").expect("payload");
     assert_eq!(
         payload.get("cart_id").and_then(|v| v.as_str()),
@@ -355,7 +356,10 @@ async fn full_order_flow_journey() {
         .expect("add line item");
     assert_eq!(add1_res.status(), StatusCode::OK);
     let add1_json: serde_json::Value = add1_res.json().await.expect("add1 json");
-    assert_eq!(add1_json.get("success"), Some(&serde_json::Value::Bool(true)));
+    assert_eq!(
+        add1_json.get("success"),
+        Some(&serde_json::Value::Bool(true))
+    );
 
     // 4) Search customer
     let cust_res = client
@@ -366,7 +370,10 @@ async fn full_order_flow_journey() {
     assert_eq!(cust_res.status(), StatusCode::OK);
     let customers: Vec<serde_json::Value> = cust_res.json().await.expect("customers json");
     assert!(!customers.is_empty());
-    let customer_id_str = customers[0].get("id").and_then(|v| v.as_str()).expect("customer id");
+    let customer_id_str = customers[0]
+        .get("id")
+        .and_then(|v| v.as_str())
+        .expect("customer id");
     let customer_id = Uuid::parse_str(customer_id_str).expect("parse customer id");
 
     // 5) Add customer
@@ -402,7 +409,10 @@ async fn full_order_flow_journey() {
     assert_eq!(search2_res.status(), StatusCode::OK);
     let products2: Vec<serde_json::Value> = search2_res.json().await.expect("products2 json");
     assert!(!products2.is_empty());
-    let product2_id_str = products2[0].get("id").and_then(|v| v.as_str()).expect("product2 id");
+    let product2_id_str = products2[0]
+        .get("id")
+        .and_then(|v| v.as_str())
+        .expect("product2 id");
     let product2_uuid = Uuid::parse_str(product2_id_str).expect("parse product2 id");
 
     let add2_req = PosRequestEnvelope {
@@ -426,7 +436,10 @@ async fn full_order_flow_journey() {
         .expect("add second product");
     assert_eq!(add2_res.status(), StatusCode::OK);
     let add2_json: serde_json::Value = add2_res.json().await.expect("add2 json");
-    assert_eq!(add2_json.get("success"), Some(&serde_json::Value::Bool(true)));
+    assert_eq!(
+        add2_json.get("success"),
+        Some(&serde_json::Value::Bool(true))
+    );
 
     // 7) Assert automatic 20% promotion: subtotal 2000, discount 400, total 1600
     let cart_payload = add2_json.get("payload").expect("cart payload");
@@ -515,9 +528,7 @@ async fn full_order_flow_journey() {
         .expect("order_id");
     let order_id = Uuid::parse_str(order_id_str).expect("parse order_id");
     assert_eq!(
-        finalize_payload
-            .get("total_cents")
-            .and_then(|v| v.as_u64()),
+        finalize_payload.get("total_cents").and_then(|v| v.as_u64()),
         Some(1600)
     );
     let print_job_ids = finalize_payload
@@ -548,7 +559,10 @@ async fn full_order_flow_journey() {
         .expect("get document");
     assert_eq!(get_doc_res.status(), StatusCode::OK);
     let doc_body: serde_json::Value = get_doc_res.json().await.expect("doc body");
-    let content = doc_body.get("content").and_then(|v| v.as_str()).expect("content");
+    let content = doc_body
+        .get("content")
+        .and_then(|v| v.as_str())
+        .expect("content");
     assert!(
         content.contains(order_id_str) || content.contains(&order_id.to_string()),
         "document content should contain order_id"

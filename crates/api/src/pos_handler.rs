@@ -5,11 +5,11 @@ use apex_edge_contracts::{
     PosRequestEnvelope, PosResponseEnvelope,
 };
 use apex_edge_domain::{apply_promos_to_lines, base_price_cents, tax_for_line, Cart};
+use apex_edge_printing::generate_document;
 use apex_edge_storage::{
     get_catalog_item, get_customer, insert_outbox, list_price_book_entries, list_promotions,
     list_tax_rules, load_cart, save_cart,
 };
-use apex_edge_printing::generate_document;
 use sqlx::SqlitePool;
 use uuid::Uuid;
 
@@ -47,10 +47,7 @@ pub async fn load_cart_from_db(
     Ok(Some(cart))
 }
 
-pub async fn save_cart_to_db(
-    pool: &SqlitePool,
-    cart: &Cart,
-) -> Result<(), Vec<PosError>> {
+pub async fn save_cart_to_db(pool: &SqlitePool, cart: &Cart) -> Result<(), Vec<PosError>> {
     let data = serde_json::to_value(cart).map_err(|e| {
         vec![PosError {
             code: "CART_SERIALIZE".into(),
@@ -106,17 +103,17 @@ pub async fn run_pricing_pipeline(
         }
     }
 
-    let category_by_item = |item_id: Uuid| *item_to_tax_category.get(&item_id).unwrap_or(&Uuid::nil());
+    let category_by_item =
+        |item_id: Uuid| *item_to_tax_category.get(&item_id).unwrap_or(&Uuid::nil());
     let subtotal = cart.subtotal_cents();
-    let mut results = apply_promos_to_lines(
-        &cart.lines,
-        category_by_item,
-        &promos,
-        subtotal,
-    );
+    let mut results = apply_promos_to_lines(&cart.lines, category_by_item, &promos, subtotal);
 
     for res in &mut results {
-        let line = cart.lines.iter().find(|l| l.line_id == res.line_id).unwrap();
+        let line = cart
+            .lines
+            .iter()
+            .find(|l| l.line_id == res.line_id)
+            .unwrap();
         let tax_cat = category_by_item(line.item_id);
         let line_net = res.line_total_cents.saturating_sub(res.discount_cents);
         res.tax_cents = tax_for_line(line_net, tax_cat, &rules, false);
@@ -181,7 +178,12 @@ pub async fn execute_pos_command(
                     }],
                 };
             };
-            if get_customer(pool, store_id, p.customer_id).await.ok().flatten().is_none() {
+            if get_customer(pool, store_id, p.customer_id)
+                .await
+                .ok()
+                .flatten()
+                .is_none()
+            {
                 return PosResponseEnvelope {
                     version: ContractVersion::V1_0_0,
                     success: false,
@@ -240,7 +242,11 @@ pub async fn execute_pos_command(
                     }],
                 };
             }
-            let Some(item) = get_catalog_item(pool, store_id, p.item_id).await.ok().flatten() else {
+            let Some(item) = get_catalog_item(pool, store_id, p.item_id)
+                .await
+                .ok()
+                .flatten()
+            else {
                 return PosResponseEnvelope {
                     version: ContractVersion::V1_0_0,
                     success: false,
@@ -272,12 +278,8 @@ pub async fn execute_pos_command(
                     };
                 }
             };
-            let base_cents = base_price_cents(
-                p.item_id,
-                &p.modifier_option_ids,
-                p.quantity,
-                &entries,
-            );
+            let base_cents =
+                base_price_cents(p.item_id, &p.modifier_option_ids, p.quantity, &entries);
             let unit_price = if p.quantity > 0 {
                 base_cents / (p.quantity as u64)
             } else {
@@ -381,11 +383,9 @@ pub async fn execute_pos_command(
                     }],
                 };
             };
-            if let Err(_) = cart.add_payment(
-                p.tender_id,
-                p.amount_cents,
-                p.external_reference.clone(),
-            ) {
+            if let Err(_) =
+                cart.add_payment(p.tender_id, p.amount_cents, p.external_reference.clone())
+            {
                 return PosResponseEnvelope {
                     version: ContractVersion::V1_0_0,
                     success: false,

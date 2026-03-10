@@ -6,7 +6,10 @@ use uuid::Uuid;
 
 use crate::pool::PoolError;
 
-pub async fn list_promotions(pool: &SqlitePool, store_id: Uuid) -> Result<Vec<Promotion>, PoolError> {
+pub async fn list_promotions(
+    pool: &SqlitePool,
+    store_id: Uuid,
+) -> Result<Vec<Promotion>, PoolError> {
     let rows = sqlx::query_as::<_, (String,)>("SELECT data FROM promotions WHERE store_id = ?")
         .bind(store_id.to_string())
         .fetch_all(pool)

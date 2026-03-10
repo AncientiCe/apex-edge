@@ -28,14 +28,16 @@ pub async fn get_catalog_item(
     .bind(store_id.to_string())
     .fetch_optional(pool)
     .await?;
-    Ok(row.map(|(id, store_id, sku, name, category_id, tax_category_id)| CatalogItemRow {
-        id: Uuid::parse_str(&id).unwrap_or_default(),
-        store_id: Uuid::parse_str(&store_id).unwrap_or_default(),
-        sku,
-        name,
-        category_id: Uuid::parse_str(&category_id).unwrap_or_default(),
-        tax_category_id: Uuid::parse_str(&tax_category_id).unwrap_or_default(),
-    }))
+    Ok(row.map(
+        |(id, store_id, sku, name, category_id, tax_category_id)| CatalogItemRow {
+            id: Uuid::parse_str(&id).unwrap_or_default(),
+            store_id: Uuid::parse_str(&store_id).unwrap_or_default(),
+            sku,
+            name,
+            category_id: Uuid::parse_str(&category_id).unwrap_or_default(),
+            tax_category_id: Uuid::parse_str(&tax_category_id).unwrap_or_default(),
+        },
+    ))
 }
 
 pub async fn get_catalog_item_by_sku(
@@ -50,14 +52,16 @@ pub async fn get_catalog_item_by_sku(
     .bind(sku)
     .fetch_optional(pool)
     .await?;
-    Ok(row.map(|(id, store_id, sku, name, category_id, tax_category_id)| CatalogItemRow {
-        id: Uuid::parse_str(&id).unwrap_or_default(),
-        store_id: Uuid::parse_str(&store_id).unwrap_or_default(),
-        sku,
-        name,
-        category_id: Uuid::parse_str(&category_id).unwrap_or_default(),
-        tax_category_id: Uuid::parse_str(&tax_category_id).unwrap_or_default(),
-    }))
+    Ok(row.map(
+        |(id, store_id, sku, name, category_id, tax_category_id)| CatalogItemRow {
+            id: Uuid::parse_str(&id).unwrap_or_default(),
+            store_id: Uuid::parse_str(&store_id).unwrap_or_default(),
+            sku,
+            name,
+            category_id: Uuid::parse_str(&category_id).unwrap_or_default(),
+            tax_category_id: Uuid::parse_str(&tax_category_id).unwrap_or_default(),
+        },
+    ))
 }
 
 pub async fn insert_catalog_item(
@@ -95,12 +99,14 @@ pub async fn list_price_book_entries(
     .await?;
     Ok(rows
         .into_iter()
-        .map(|(item_id, modifier_option_id, price_cents, currency)| PriceBookEntry {
-            item_id: Uuid::parse_str(&item_id).unwrap_or_default(),
-            modifier_option_id: modifier_option_id.and_then(|s| Uuid::parse_str(&s).ok()),
-            price_cents: price_cents as u64,
-            currency,
-        })
+        .map(
+            |(item_id, modifier_option_id, price_cents, currency)| PriceBookEntry {
+                item_id: Uuid::parse_str(&item_id).unwrap_or_default(),
+                modifier_option_id: modifier_option_id.and_then(|s| Uuid::parse_str(&s).ok()),
+                price_cents: price_cents as u64,
+                currency,
+            },
+        )
         .collect())
 }
 
