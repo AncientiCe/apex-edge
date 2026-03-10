@@ -149,7 +149,7 @@ fn compute_promo_discount(
     actions: &[PromoAction],
     category_by_item: &impl Fn(Uuid) -> Uuid,
 ) -> u64 {
-    let capped = applicable_lines_with_cap(lines, line_totals, actions, category_by_item);
+    let capped = applicable_lines_with_cap(lines, actions, category_by_item);
     let applicable_total: u64 = capped
         .iter()
         .map(|(l, eligible_qty)| {
@@ -208,7 +208,7 @@ fn allocate_discount_to_lines(
     total_discount: u64,
     category_by_item: &impl Fn(Uuid) -> Uuid,
 ) {
-    let capped = applicable_lines_with_cap(lines, line_totals, actions, category_by_item);
+    let capped = applicable_lines_with_cap(lines, actions, category_by_item);
     let eligible_total_cents: u64 = capped
         .iter()
         .map(|(l, eligible_qty)| {

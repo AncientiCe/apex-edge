@@ -13,8 +13,11 @@ mod tests {
 
     #[test]
     fn conflict_policy_variants_exist() {
-        let _ = ConflictPolicy::HqWins;
-        let _ = ConflictPolicy::EdgeWins;
-        let _ = ConflictPolicy::MergeRules;
+        let policies = [
+            ConflictPolicy::HqWins,
+            ConflictPolicy::EdgeWins,
+            ConflictPolicy::MergeRules,
+        ];
+        assert_eq!(policies.len(), 3);
     }
 }

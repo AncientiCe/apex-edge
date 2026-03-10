@@ -70,7 +70,10 @@ async fn start_sync_server() -> (u16, String) {
     let port = listener.local_addr().expect("addr").port();
     let base = format!("http://127.0.0.1:{}", port);
     tokio::spawn(async move {
-        let _ = axum::serve(listener, app).await;
+        let result = axum::serve(listener, app).await;
+        if let Err(e) = result {
+            eprintln!("serve ended: {}", e);
+        }
     });
     tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
     (port, base)
@@ -78,7 +81,11 @@ async fn start_sync_server() -> (u16, String) {
 
 #[tokio::test]
 async fn fetch_from_sync_server_each_entity_on_own_endpoint() {
-    let (_port, base_url) = start_sync_server().await;
+    let (port, base_url) = start_sync_server().await;
+    assert!(
+        base_url.contains(port.to_string().as_str()),
+        "base_url should contain port"
+    );
     let client = reqwest::Client::new();
     let config = SyncSourceConfig {
         base_url: base_url.clone(),
@@ -106,11 +113,16 @@ async fn fetch_from_sync_server_each_entity_on_own_endpoint() {
         ],
     };
 
-    let current_by_entity = |_entity: &str| None::<i64>;
+    let entities_called: std::cell::RefCell<Vec<String>> = std::cell::RefCell::new(Vec::new());
+    let current_by_entity = |entity: &str| {
+        entities_called.borrow_mut().push(entity.to_string());
+        None::<i64>
+    };
     let (results, summary) = fetch_all(&client, &config, current_by_entity)
         .await
         .expect("fetch_all");
 
+    assert_eq!(entities_called.borrow().len(), 5, "callback should be called per entity");
     assert_eq!(results.len(), 5);
     let catalog = results.iter().find(|(e, _, _)| e == "catalog").unwrap();
     assert_eq!(catalog.1.len(), 2);
@@ -131,7 +143,8 @@ async fn fetch_from_sync_server_each_entity_on_own_endpoint() {
 
 #[tokio::test]
 async fn sync_data_progress_percent_and_ingest_with_any_progress() {
-    let (_port, base_url) = start_sync_server().await;
+    let (port, base_url) = start_sync_server().await;
+    assert!(base_url.contains(port.to_string().as_str()));
     let pool = SqlitePoolOptions::new()
         .max_connections(1)
         .connect("sqlite::memory:")
@@ -174,7 +187,8 @@ async fn sync_data_progress_percent_and_ingest_with_any_progress() {
     assert!((0.0..=100.0).contains(&pct_before));
 
     // Ingest only catalog (partial progress is valid)
-    for (entity, payloads, _total) in &results {
+    for (entity, payloads, total) in &results {
+        assert_eq!(*total, payloads.len() as u64, "total should match payload count");
         if entity == "catalog" && !payloads.is_empty() {
             ingest_batch(
                 &pool,
@@ -236,7 +250,10 @@ async fn start_ndjson_sync_server() -> (u16, String) {
     let port = listener.local_addr().expect("addr").port();
     let base = format!("http://127.0.0.1:{}", port);
     tokio::spawn(async move {
-        let _ = axum::serve(listener, app).await;
+        let result = axum::serve(listener, app).await;
+        if let Err(e) = result {
+            eprintln!("serve ended: {}", e);
+        }
     });
     tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
     (port, base)
@@ -244,7 +261,8 @@ async fn start_ndjson_sync_server() -> (u16, String) {
 
 #[tokio::test]
 async fn fetch_entity_ndjson_stream_yields_payloads_incrementally() {
-    let (_port, base_url) = start_ndjson_sync_server().await;
+    let (port, base_url) = start_ndjson_sync_server().await;
+    assert!(base_url.contains(port.to_string().as_str()));
     let client = reqwest::Client::new();
     let url = format!("{}/sync/ndjson/catalog", base_url.trim_end_matches('/'));
 
@@ -279,7 +297,8 @@ async fn fetch_entity_ndjson_stream_yields_payloads_incrementally() {
 
 #[tokio::test]
 async fn streamed_ingest_advances_checkpoint_per_batch() {
-    let (_port, base_url) = start_ndjson_sync_server().await;
+    let (port, base_url) = start_ndjson_sync_server().await;
+    assert!(base_url.contains(port.to_string().as_str()));
     let client = reqwest::Client::new();
     let pool = SqlitePoolOptions::new()
         .max_connections(1)

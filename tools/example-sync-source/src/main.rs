@@ -45,7 +45,7 @@ fn b64(s: &[u8]) -> String {
 }
 
 async fn ndjson_catalog(State(state): State<Arc<AppState>>) -> Response<Body> {
-    let _store_id = state.store_id;
+    eprintln!("catalog request store_id={}", state.store_id);
     let cat_id = Uuid::parse_str("10000000-0000-0000-0000-000000000001").unwrap();
     let tax_id = Uuid::parse_str("20000000-0000-0000-0000-000000000002").unwrap();
 
@@ -157,7 +157,8 @@ async fn ndjson_tax_rules(State(state): State<Arc<AppState>>) -> Response<Body> 
         .unwrap()
 }
 
-async fn ndjson_promotions(State(_state): State<Arc<AppState>>) -> Response<Body> {
+async fn ndjson_promotions(State(state): State<Arc<AppState>>) -> Response<Body> {
+    eprintln!("promotions request store_id={}", state.store_id);
     let item_demo_001 = Uuid::parse_str("30000000-0000-0000-0000-000000000001").unwrap();
     let promos = vec![
         Promotion {

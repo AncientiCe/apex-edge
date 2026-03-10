@@ -53,11 +53,10 @@ pub enum IngestError {
 pub async fn ingest_batch(
     pool: &SqlitePool,
     entity: &str,
-    _version: ContractVersion,
+    version: ContractVersion,
     payloads: &[Vec<u8>],
     policy: ConflictPolicy,
 ) -> Result<u64, IngestError> {
-    let _ = policy;
     let start = Instant::now();
     let result = async {
         let seq = get_sync_checkpoint(pool, entity).await?.unwrap_or(0);
@@ -76,7 +75,9 @@ pub async fn ingest_batch(
         SYNC_INGEST_BATCHES_TOTAL,
         1u64,
         "entity" => entity.to_string(),
-        "outcome" => outcome
+        "outcome" => outcome,
+        "policy" => format!("{:?}", policy),
+        "version" => version.to_string()
     );
     metrics::histogram!(
         SYNC_INGEST_DURATION_SECONDS,

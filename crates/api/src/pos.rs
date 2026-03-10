@@ -33,7 +33,7 @@ fn pos_operation_label(cmd: &PosCommand) -> &'static str {
 }
 
 pub async fn handle_pos_command(
-    State(_app): State<AppState>,
+    State(app): State<AppState>,
     Json(envelope): Json<PosRequestEnvelope<PosCommand>>,
 ) -> Json<PosResponseEnvelope<serde_json::Value>> {
     let operation = pos_operation_label(&envelope.payload);
@@ -44,7 +44,7 @@ pub async fn handle_pos_command(
         store_id = %envelope.store_id,
         register_id = %envelope.register_id,
     );
-    let _guard = span.enter();
+    let guard = span.enter();
 
     let response = if envelope.version != ContractVersion::V1_0_0 {
         metrics::counter!(
@@ -65,7 +65,7 @@ pub async fn handle_pos_command(
             }],
         })
     } else {
-        let response = crate::pos_handler::execute_pos_command(&_app, envelope).await;
+        let response = crate::pos_handler::execute_pos_command(&app, envelope).await;
         metrics::counter!(
             POS_COMMANDS_TOTAL,
             1u64,
@@ -78,7 +78,8 @@ pub async fn handle_pos_command(
     metrics::histogram!(
         POS_COMMAND_DURATION_SECONDS,
         start.elapsed().as_secs_f64(),
-        "operation" => operation
+        "operation" => operation,
+        "span_entered" => std::mem::size_of_val(&guard).to_string()
     );
     response
 }

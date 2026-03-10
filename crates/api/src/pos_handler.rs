@@ -20,7 +20,8 @@ fn cart_state_to_payload(state: &CartState) -> serde_json::Value {
 }
 
 /// Build a `CartState` from a `Cart`.
-pub async fn build_cart_state(_pool: &SqlitePool, _store_id: Uuid, cart: &Cart) -> CartState {
+pub async fn build_cart_state(pool: &SqlitePool, store_id: Uuid, cart: &Cart) -> CartState {
+    tracing::debug!(store_id = %store_id, pool_size = std::mem::size_of_val(pool), "building cart state");
     cart.to_cart_state()
 }
 

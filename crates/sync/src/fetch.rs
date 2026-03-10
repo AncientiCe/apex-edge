@@ -30,12 +30,13 @@ pub async fn fetch_entity(
     client: &reqwest::Client,
     base_url: &str,
     path: &str,
-    _since: i64,
+    since: i64,
 ) -> Result<(Vec<Vec<u8>>, u64), FetchError> {
     let url = format!(
-        "{}/{}",
+        "{}/{}?since={}",
         base_url.trim_end_matches('/'),
-        path.trim_start_matches('/')
+        path.trim_start_matches('/'),
+        since
     );
     let resp = client.get(&url).send().await?;
     resp.error_for_status_ref()?;
@@ -64,13 +65,15 @@ struct NdjsonMeta {
 pub async fn fetch_entity_ndjson_stream<F>(
     client: &reqwest::Client,
     url: &str,
-    _since: i64,
+    since: i64,
     mut on_batch: F,
 ) -> Result<(), FetchError>
 where
     F: FnMut(&[Vec<u8>], u64),
 {
-    let resp = client.get(url).send().await?;
+    let sep = if url.contains('?') { "&" } else { "?" };
+    let url_with_since = format!("{}{}since={}", url, sep, since);
+    let resp = client.get(&url_with_since).send().await?;
     resp.error_for_status_ref()?;
     let text = resp.text().await?;
     let engine = base64::engine::general_purpose::STANDARD;

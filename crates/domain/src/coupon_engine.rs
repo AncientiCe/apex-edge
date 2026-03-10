@@ -12,6 +12,8 @@ pub struct CouponEligibility {
     pub code: String,
     pub discount_cents: u64,
     pub reason: Option<String>,
+    /// Basket net after promo discounts (for capping coupon discount).
+    pub basket_net_cents: u64,
 }
 
 /// Check coupon: valid window, not over redeemed. Caller provides redemption count for this coupon.
@@ -19,9 +21,10 @@ pub fn check_eligibility(
     def: &CouponDefinition,
     redemption_count_total: u64,
     redemption_count_customer: Option<u32>,
-    _basket_subtotal_cents: u64,
-    _promo_discount_cents: u64,
+    basket_subtotal_cents: u64,
+    promo_discount_cents: u64,
 ) -> CouponEligibility {
+    let basket_net_cents = basket_subtotal_cents.saturating_sub(promo_discount_cents);
     let now = Utc::now();
     if now < def.valid_from {
         return CouponEligibility {
@@ -30,6 +33,7 @@ pub fn check_eligibility(
             code: def.code.clone(),
             discount_cents: 0,
             reason: Some("coupon not yet valid".into()),
+            basket_net_cents,
         };
     }
     if let Some(until) = def.valid_until {
@@ -40,6 +44,7 @@ pub fn check_eligibility(
                 code: def.code.clone(),
                 discount_cents: 0,
                 reason: Some("coupon expired".into()),
+                basket_net_cents,
             };
         }
     }
@@ -51,6 +56,7 @@ pub fn check_eligibility(
                 code: def.code.clone(),
                 discount_cents: 0,
                 reason: Some("coupon redemption limit reached".into()),
+                basket_net_cents,
             };
         }
     }
@@ -63,6 +69,7 @@ pub fn check_eligibility(
                     code: def.code.clone(),
                     discount_cents: 0,
                     reason: Some("per-customer limit reached".into()),
+                    basket_net_cents,
                 };
             }
         }
@@ -73,6 +80,7 @@ pub fn check_eligibility(
         code: def.code.clone(),
         discount_cents: 0,
         reason: None,
+        basket_net_cents,
     }
 }
 

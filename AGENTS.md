@@ -23,6 +23,7 @@ Before considering a task done, ensure all of the following pass:
 - **`cargo clippy`** — no clippy warnings or errors.
 - **`cargo audit`** — no known security advisories in dependencies.
 - **Tests** — full test suite passes (e.g. `cargo test`).
+- **Pipeline pass** - check pipeline steps that can be run locally and make sure they pass
 
 Fix any failure before marking the task complete.
 

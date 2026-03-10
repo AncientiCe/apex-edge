@@ -21,8 +21,9 @@ async fn smoke_health_returns_ok() {
     let app = app_with_ephemeral_db().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
-    let _server = tokio::spawn(async move { axum::serve(listener, app).await });
+    let server = tokio::spawn(async move { axum::serve(listener, app).await });
     tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+    assert!(!server.is_finished(), "server should still be running");
 
     let url = format!("http://127.0.0.1:{}/health", port);
     let client = reqwest::Client::new();
@@ -37,8 +38,9 @@ async fn smoke_ready_returns_ready() {
     let app = app_with_ephemeral_db().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
-    let _server = tokio::spawn(async move { axum::serve(listener, app).await });
+    let server = tokio::spawn(async move { axum::serve(listener, app).await });
     tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+    assert!(!server.is_finished(), "server should still be running");
 
     let url = format!("http://127.0.0.1:{}/ready", port);
     let client = reqwest::Client::new();
@@ -53,8 +55,9 @@ async fn smoke_pos_command_create_cart_returns_success() {
     let app = app_with_ephemeral_db().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
-    let _server = tokio::spawn(async move { axum::serve(listener, app).await });
+    let server = tokio::spawn(async move { axum::serve(listener, app).await });
     tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+    assert!(!server.is_finished(), "server should still be running");
 
     let envelope = PosRequestEnvelope {
         version: ContractVersion::V1_0_0,
