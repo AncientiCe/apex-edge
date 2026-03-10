@@ -24,11 +24,11 @@ pub struct SyncProgressSummary {
 impl SyncEntityProgress {
     /// Progress as 0.0..=100.0 when total is known; None otherwise.
     pub fn percent(&self) -> Option<f64> {
-        self.total.and_then(|t| {
+        self.total.map(|t| {
             if t == 0 {
-                Some(100.0)
+                100.0
             } else {
-                Some((self.current as f64 / t as f64).min(1.0) * 100.0)
+                (self.current as f64 / t as f64).min(1.0) * 100.0
             }
         })
     }

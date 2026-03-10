@@ -229,7 +229,7 @@ pub async fn execute_pos_command(
                     }],
                 };
             };
-            if let Err(_) = cart.ensure_can_edit() {
+            if cart.ensure_can_edit().is_err() {
                 return PosResponseEnvelope {
                     version: ContractVersion::V1_0_0,
                     success: false,
@@ -286,16 +286,16 @@ pub async fn execute_pos_command(
                 0
             };
             let line_id = Uuid::new_v4();
-            cart.add_line_item(
+            cart.add_line_item(apex_edge_domain::cart::AddLineItemInput {
                 line_id,
-                p.item_id,
-                item.sku.clone(),
-                item.name.clone(),
-                p.quantity,
-                unit_price,
-                p.modifier_option_ids.clone(),
-                p.notes.clone(),
-            );
+                item_id: p.item_id,
+                sku: item.sku.clone(),
+                name: item.name.clone(),
+                quantity: p.quantity,
+                unit_price_cents: unit_price,
+                modifier_option_ids: p.modifier_option_ids.clone(),
+                notes: p.notes.clone(),
+            });
             if let Err(errors) = run_pricing_pipeline(pool, store_id, &mut cart).await {
                 return PosResponseEnvelope {
                     version: ContractVersion::V1_0_0,
@@ -337,7 +337,7 @@ pub async fn execute_pos_command(
                     }],
                 };
             };
-            if let Err(_) = cart.ensure_can_tender() {
+            if cart.ensure_can_tender().is_err() {
                 return PosResponseEnvelope {
                     version: ContractVersion::V1_0_0,
                     success: false,
@@ -383,8 +383,9 @@ pub async fn execute_pos_command(
                     }],
                 };
             };
-            if let Err(_) =
-                cart.add_payment(p.tender_id, p.amount_cents, p.external_reference.clone())
+            if cart
+                .add_payment(p.tender_id, p.amount_cents, p.external_reference.clone())
+                .is_err()
             {
                 return PosResponseEnvelope {
                     version: ContractVersion::V1_0_0,

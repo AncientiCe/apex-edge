@@ -19,6 +19,7 @@ apex-edge-outbox = { path = "../crates/outbox" }
 axum = { version = "0.7", features = ["json"] }
 metrics = "0.21"
 tower = "0.4"
+tower-http = { version = "0.5", features = ["cors"] }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite"] }
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"

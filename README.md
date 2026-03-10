@@ -18,6 +18,7 @@ Store hub orchestrator: **POS/MPOS <-> ApexEdge <-> HQ**. Offline-first, contrac
 - [Architecture](docs/architecture/README.md)
 - [Build and run](#build-and-run)
 - [Quality gates](#quality-gates)
+- [Manual testing: Local POS Simulator](#manual-testing-local-pos-simulator)
 - [Testing](#testing)
 - [Contracts](#contracts)
 - [Security and operations](#security-and-operations)
@@ -77,6 +78,47 @@ This runs (in order): `cargo fmt --all -- --check`, `cargo clippy --workspace --
 - `make audit` — dependency advisories.
 
 Install `cargo-audit` if missing: `cargo install cargo-audit` (or `make setup`).
+
+## Manual testing: Local POS Simulator
+
+A local-only POS simulator frontend (Vite + React + TypeScript in `frontend/`) lets you drive the API from a browser for manual testing.
+
+### Prerequisites
+
+- Backend and frontend run as separate processes; the simulator talks to the API at a configurable base URL (default `http://localhost:3000`).
+- For a full cart → order → documents flow, the backend database must have catalog items, price book entries, tax rules, and optionally customers and promotions (e.g. seed data as in `apex-edge/tests/orchestrator_journey.rs` or your own fixtures).
+
+### Steps
+
+1. **Start the backend**
+   - From the repo root: `cargo run -p apex-edge` (or `cargo build --release` then `APEX_EDGE_DB=./apex_edge.db ./target/release/apex-edge`).
+   - Leave it running (default: `http://0.0.0.0:3000`).
+
+2. **Start the frontend**
+   - `cd frontend`, then `npm install`, then `npm run dev`.
+   - Open the URL shown (e.g. `http://localhost:5173`) in a browser.
+
+3. **Configure connection**
+   - In the simulator, set **API base URL** to `http://localhost:3000` (or the host/port where the backend is listening).
+   - Click **Health** then **Ready**.  
+   - **Pass:** Health shows `ok`, Ready shows `ready`.  
+   - **Fail:** If you see an error or no response, check that the backend is running and CORS is enabled (backend uses `tower-http` CORS layer).
+
+4. **Run a POS journey**
+   - **Create cart:** Click **Create cart**. **Pass:** Cart ID appears and state is `open`.
+   - **Lookup product:** Enter a SKU that exists in your DB (e.g. from seeded data), click **Search products**. **Pass:** At least one product appears. Select it, set quantity, click **Add line**. **Pass:** Cart state updates; line appears; total/subtotal reflect the item.
+   - **Set customer (optional):** Enter a customer code that exists, click **Search customers**. Select a customer, click **Set customer**. **Pass:** Cart shows customer.
+   - **Checkout:** Click **Set tendering**. **Pass:** State becomes `tendering`. Enter an amount ≥ cart total (e.g. `10.00`), click **Add payment**. **Pass:** State becomes `paid`. Click **Finalize order**. **Pass:** Order ID and print job IDs appear; cart is cleared.
+
+5. **Validate documents**
+   - After finalize, the **Documents** panel can use the shown Order ID. Click **List documents**. **Pass:** At least one document summary is returned (e.g. receipt).
+   - Click a document link to **fetch** its content. **Pass:** Document content (or error message) is shown.
+
+6. **Negative checks**
+   - Search for an invalid SKU or customer code. **Pass:** UI shows empty list or error in event log; no crash.
+   - Send an unsupported command path if the UI exposes it. **Pass:** Backend error details appear in the event log.
+
+**Pass criteria (summary):** Health and Ready return OK; you can create a cart, add a line (with a valid product), set tendering, add payment, and finalize; order ID and print job IDs are shown; listing and fetching documents for that order succeed; errors for invalid input are visible in the UI/event log.
 
 ## Testing
 

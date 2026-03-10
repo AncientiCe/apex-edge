@@ -5,6 +5,7 @@ use apex_edge_api::{
     search_products, serve_metrics, AppState,
 };
 use axum::{routing::get, Router};
+use tower_http::cors::{Any, CorsLayer};
 use uuid::Uuid;
 
 use crate::http_metrics_layer::HttpMetricsLayer;
@@ -40,6 +41,14 @@ pub fn build_router(
         pool,
         metrics_handle,
     };
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods([
+            axum::http::Method::GET,
+            axum::http::Method::POST,
+            axum::http::Method::OPTIONS,
+        ])
+        .allow_headers([axum::http::header::CONTENT_TYPE]);
     let routes = Router::new()
         .route("/health", get(health))
         .route("/ready", get(ready))
@@ -50,7 +59,7 @@ pub fn build_router(
         .route("/orders/:order_id/documents", get(list_order_documents))
         .route("/metrics", get(serve_metrics))
         .with_state(app_state);
-    routes.layer(HttpMetricsLayer)
+    routes.layer(cors).layer(HttpMetricsLayer)
 }
 
 #[cfg(test)]

@@ -1,0 +1,128 @@
+:root {
+  --bg: #0f1419;
+  --surface: #1a2332;
+  --border: #2d3a4d;
+  --text: #e6edf3;
+  --muted: #8b949e;
+  --accent: #58a6ff;
+  --success: #3fb950;
+  --error: #f85149;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  line-height: 1.5;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+}
+
+.app {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 1rem;
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: auto auto 1fr auto;
+  grid-template-areas:
+    'connection connection'
+    'lookup lookup'
+    'cart checkout'
+    'documents documents'
+    'log log';
+}
+
+@media (max-width: 768px) {
+  .app {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      'connection'
+      'lookup'
+      'cart'
+      'checkout'
+      'documents'
+      'log';
+  }
+}
+
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1rem;
+}
+
+.panel h2 {
+  margin: 0 0 0.75rem 0;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.connection { grid-area: connection; }
+.lookup { grid-area: lookup; }
+.cart { grid-area: cart; }
+.checkout { grid-area: checkout; }
+.documents { grid-area: documents; }
+.log { grid-area: log; }
+
+input, button, select {
+  font: inherit;
+  color: inherit;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.4rem 0.6rem;
+}
+
+button {
+  cursor: pointer;
+  color: var(--accent);
+}
+button:hover {
+  background: var(--border);
+}
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+
+.row:last-child { margin-bottom: 0; }
+
+.status { font-size: 0.875rem; color: var(--muted); }
+.status.ok { color: var(--success); }
+.status.err { color: var(--error); }
+
+.event-log {
+  max-height: 200px;
+  overflow-y: auto;
+  font-family: ui-monospace, monospace;
+  font-size: 0.75rem;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.event-entry {
+  padding: 0.25rem 0;
+  border-bottom: 1px solid var(--border);
+}
+.event-entry:last-child { border-bottom: none; }
+.event-entry.req { color: var(--accent); }
+.event-entry.res { color: var(--success); }
+.event-entry.err { color: var(--error); }
+
+.pre { white-space: pre-wrap; word-break: break-all; }

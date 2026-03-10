@@ -24,6 +24,19 @@ pub struct Cart {
     pub updated_at: DateTime<Utc>,
 }
 
+/// Input for adding a line item to a cart (avoids too many arguments on add_line_item).
+#[derive(Debug, Clone)]
+pub struct AddLineItemInput {
+    pub line_id: Uuid,
+    pub item_id: Uuid,
+    pub sku: String,
+    pub name: String,
+    pub quantity: u32,
+    pub unit_price_cents: u64,
+    pub modifier_option_ids: Vec<Uuid>,
+    pub notes: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CartLineItem {
     pub line_id: Uuid,
@@ -78,27 +91,17 @@ impl Cart {
     }
 
     /// Add a line item (caller must run pricing pipeline and apply_pricing afterward).
-    pub fn add_line_item(
-        &mut self,
-        line_id: Uuid,
-        item_id: Uuid,
-        sku: String,
-        name: String,
-        quantity: u32,
-        unit_price_cents: u64,
-        modifier_option_ids: Vec<Uuid>,
-        notes: Option<String>,
-    ) {
-        let line_total_cents = unit_price_cents.saturating_mul(quantity as u64);
+    pub fn add_line_item(&mut self, input: AddLineItemInput) {
+        let line_total_cents = input.unit_price_cents.saturating_mul(input.quantity as u64);
         self.lines.push(CartLineItem {
-            line_id,
-            item_id,
-            sku,
-            name,
-            quantity,
-            modifier_option_ids,
-            notes,
-            unit_price_cents,
+            line_id: input.line_id,
+            item_id: input.item_id,
+            sku: input.sku,
+            name: input.name,
+            quantity: input.quantity,
+            modifier_option_ids: input.modifier_option_ids,
+            notes: input.notes,
+            unit_price_cents: input.unit_price_cents,
             line_total_cents,
             discount_cents: 0,
             tax_cents: 0,

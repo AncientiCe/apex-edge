@@ -126,7 +126,7 @@ async fn fetch_from_sync_server_each_entity_on_own_endpoint() {
     assert_eq!(summary.entities.len(), 5);
     assert!(summary.overall_percent.is_some());
     let pct = summary.overall_percent.unwrap();
-    assert!(pct >= 0.0 && pct <= 100.0);
+    assert!((0.0..=100.0).contains(&pct));
 }
 
 #[tokio::test]
@@ -171,7 +171,7 @@ async fn sync_data_progress_percent_and_ingest_with_any_progress() {
 
     assert!(summary.overall_percent.is_some());
     let pct_before = summary.overall_percent.unwrap();
-    assert!(pct_before >= 0.0 && pct_before <= 100.0);
+    assert!((0.0..=100.0).contains(&pct_before));
 
     // Ingest only catalog (partial progress is valid)
     for (entity, payloads, _total) in &results {

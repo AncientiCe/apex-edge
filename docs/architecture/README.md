@@ -239,3 +239,39 @@ flowchart TB
 - **Inputs:** Route or flow (see table in [METRICS_BEHAVIORS.md](../METRICS_BEHAVIORS.md)); health/ready = liveness/readiness; `/metrics` = Prometheus scrape when metrics handle present.
 - **Outputs:** Each behavior is the unit of ownership for metrics and tracing; DB probe only in ready_check; document fetch/list via storage; outbox and sync via their crates.
 - **Transparency:** Single source of truth for route → behavior → owner is METRICS_BEHAVIORS.md; tiers (Tier 1–5) define implementation priority.
+
+### 9. Local POS Simulator Frontend
+
+**Purpose:** Document the local-only POS simulator UI used to manually exercise the northbound API (health, lookup, cart, checkout, documents) without a real POS device.
+
+```mermaid
+sequenceDiagram
+    participant Tester as Tester
+    participant UI as POSSimulatorUI
+    participant API as ApexEdge API
+    participant Storage as SQLite
+    Tester->>UI: Set API URL, run journey
+    UI->>API: GET /health, GET /ready
+    API-->>UI: status
+    UI->>API: GET /catalog/products?sku=, GET /customers?code=
+    API->>Storage: lookup
+    Storage-->>API: rows
+    API-->>UI: product/customer list
+    UI->>API: POST /pos/command create_cart, add_line_item, set_customer, set_tendering, add_payment, finalize_order
+    API->>Storage: load/save cart, run pricing, persist order
+    Storage-->>API: cart/order state
+    API-->>UI: cart state or finalize result
+    UI->>API: GET /orders/:order_id/documents
+    API->>Storage: list_documents_for_order
+    Storage-->>API: document summaries
+    API-->>UI: document list
+    UI->>API: GET /documents/:id
+    API->>Storage: get_document
+    Storage-->>UI: document content
+```
+
+**Notes:**
+- **Inputs:** Backend base URL (e.g. `http://localhost:3000`); user actions in the simulator (create cart, add line, set customer, tendering, payment, finalize; list/fetch documents).
+- **Outputs:** Cart state and finalize result in UI; document list and document content for the completed order; event log of requests/responses for debugging.
+- **Failure path:** Invalid SKU/customer or unsupported command returns backend errors; UI shows errors in event log and does not advance state; network/CORS issues surface as failed health/ready or request errors.
+- **Scope:** Simulator runs as a separate dev server (e.g. Vite on port 5173); CORS is enabled on the API so the browser can call the backend. For local use only, not deployed with production.
