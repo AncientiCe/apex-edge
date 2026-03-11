@@ -149,6 +149,10 @@ export interface ProductSearchResult {
   category_id: string;
   tax_category_id: string;
   description?: string | null;
+  is_active: boolean;
+  /** `null` when inventory has not been synced (stock untracked). */
+  available_qty: number | null;
+  image_urls: string[];
 }
 
 export interface ProductListResponse {

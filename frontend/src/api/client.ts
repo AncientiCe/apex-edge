@@ -63,6 +63,17 @@ export async function searchProductsBySku(baseUrl: string, sku: string): Promise
   return Array.isArray(data) ? data : [];
 }
 
+/** Fetch a single product by UUID. Returns null if not found. */
+export async function getProductById(
+  baseUrl: string,
+  id: string
+): Promise<ProductSearchResult | null> {
+  const res = await fetch(`${baseUrl}/catalog/products/${encodeURIComponent(id)}`);
+  if (res.status === 404) return null;
+  if (!res.ok) throw normalizeError(res.status, await res.json().catch(() => ({})));
+  return res.json();
+}
+
 /** List/browse products with optional search, category filter, and pagination. */
 export async function listProducts(
   baseUrl: string,

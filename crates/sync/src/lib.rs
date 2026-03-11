@@ -208,6 +208,19 @@ async fn apply_entity_batch(
                 .map_err(RunSyncError::Ingest)?;
             }
         }
+        "inventory" => {
+            use apex_edge_contracts::InventoryLevel;
+            let mut levels: Vec<InventoryLevel> = Vec::with_capacity(batch.len());
+            for payload in batch {
+                let level: InventoryLevel = serde_json::from_slice(payload)
+                    .map_err(|_| crate::ingest::IngestError::InvalidPayload)?;
+                levels.push(level);
+            }
+            apex_edge_storage::replace_inventory_levels(pool, store_id, &levels)
+                .await
+                .map_err(crate::ingest::IngestError::Storage)
+                .map_err(RunSyncError::Ingest)?;
+        }
         _ => {
             // Unknown entity: checkpoint advances but no data is stored.
             // This is intentional for forward-compatibility with future HQ entity types.

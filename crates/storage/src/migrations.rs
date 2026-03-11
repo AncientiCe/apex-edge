@@ -66,6 +66,37 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), MigrationError> {
             }
         }
     }
+    // Migration 005: inventory availability fields (idempotent ADD COLUMN).
+    for (table, column, ddl) in &[
+        (
+            "catalog_items",
+            "is_active",
+            "ALTER TABLE catalog_items ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1",
+        ),
+        (
+            "catalog_items",
+            "available_qty",
+            "ALTER TABLE catalog_items ADD COLUMN available_qty INTEGER",
+        ),
+        (
+            "catalog_items",
+            "is_available",
+            "ALTER TABLE catalog_items ADD COLUMN is_available INTEGER",
+        ),
+        (
+            "catalog_items",
+            "image_urls",
+            "ALTER TABLE catalog_items ADD COLUMN image_urls TEXT NOT NULL DEFAULT '[]'",
+        ),
+    ] {
+        if !column_exists(pool, table, column).await? {
+            if let Err(e) = sqlx::query(ddl).execute(pool).await {
+                if !e.to_string().contains("duplicate column name") {
+                    return Err(e.into());
+                }
+            }
+        }
+    }
     Ok(())
 }
 

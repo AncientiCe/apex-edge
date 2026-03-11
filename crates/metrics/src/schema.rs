@@ -16,6 +16,7 @@ pub fn route_label(path: &str) -> &'static str {
         "/pos/command" => "pos_command",
         "/pos/cart/:cart_id" | "/pos/cart/{cart_id}" => "pos_cart",
         "/catalog/products" => "catalog_products",
+        "/catalog/products/:id" | "/catalog/products/{id}" => "catalog_product_id",
         "/catalog/categories" => "catalog_categories",
         "/customers" => "customers",
         "/documents/:id" | "/documents/{id}" => "documents_id",
@@ -59,6 +60,9 @@ pub fn request_path_to_route(path: &str) -> &'static str {
     }
     if path.starts_with("/documents/") && path.len() > 10 {
         return "documents_id";
+    }
+    if path.starts_with("/catalog/products/") && path.len() > 18 {
+        return "catalog_product_id";
     }
     if path.starts_with("/orders/") && path.ends_with("/documents/gift-receipt") {
         return "orders_gift_receipt";
@@ -149,3 +153,10 @@ pub const DB_OPERATION_DURATION_SECONDS: &str = "apex_edge_db_operation_duration
 pub const DEPENDENCY_HTTP_REQUESTS_TOTAL: &str = "apex_edge_dependency_http_requests_total";
 /// Histogram: outbound HTTP duration. No unbounded labels.
 pub const DEPENDENCY_HTTP_DURATION_SECONDS: &str = "apex_edge_dependency_http_duration_seconds";
+
+// ---------- Catalog / stock (api::pos_handler) ----------
+/// Counter: stock availability checks on add-to-cart. Labels: outcome (ok, OUT_OF_STOCK, INSUFFICIENT_STOCK).
+pub const CATALOG_STOCK_CHECKS_TOTAL: &str = "apex_edge_catalog_stock_checks_total";
+
+/// Counter: product-by-id endpoint hits. Labels: outcome (hit, not_found, error).
+pub const CATALOG_PRODUCT_BY_ID_TOTAL: &str = "apex_edge_catalog_product_by_id_total";

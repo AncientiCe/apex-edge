@@ -3,10 +3,12 @@
 //! These tests verify that after `run_sync_ndjson`, each synced entity's data
 //! actually appears in the corresponding DB table — not just that checkpoints advance.
 
-use apex_edge_contracts::{CatalogItem, Category, Customer, PriceBook, PriceBookEntry, TaxRule};
+use apex_edge_contracts::{
+    CatalogItem, Category, Customer, InventoryLevel, PriceBook, PriceBookEntry, TaxRule,
+};
 use apex_edge_storage::{
-    insert_catalog_item, list_catalog_items, list_categories, list_price_book_entries,
-    list_tax_rules, run_migrations, search_customers,
+    get_catalog_item, insert_catalog_item, list_catalog_items, list_categories,
+    list_price_book_entries, list_tax_rules, run_migrations, search_customers,
 };
 use apex_edge_sync::{run_sync_ndjson, SyncEntityConfig, SyncSourceConfig};
 use axum::body::Body;
@@ -357,6 +359,131 @@ async fn sync_customers_are_applied_to_db() {
     assert_eq!(results[0].code, "SYNCCUST01");
     assert_eq!(results[0].name, "Synced Customer");
     assert_eq!(results[0].email.as_deref(), Some("synced@test.local"));
+}
+
+#[tokio::test]
+async fn sync_inventory_levels_are_applied_to_db() {
+    let item_id = Uuid::parse_str("a1a1a1a1-a1a1-a1a1-a1a1-a1a1a1a1a1a1").unwrap();
+    let level = InventoryLevel {
+        item_id,
+        available_qty: 42,
+        is_available: true,
+        image_urls: vec![
+            "https://example.com/img1.jpg".into(),
+            "https://example.com/img2.jpg".into(),
+        ],
+        version: 1,
+    };
+    let payload = serde_json::to_vec(&level).unwrap();
+    let body = ndjson_body(&[payload]);
+
+    let (_, base_url) = start_entity_server("inventory", body).await;
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("pool");
+    run_migrations(&pool).await.expect("migrations");
+
+    insert_catalog_item(
+        &pool,
+        item_id,
+        STORE_ID,
+        "INV-TEST-001",
+        "Inventory Test Product",
+        Uuid::nil(),
+        Uuid::nil(),
+    )
+    .await
+    .expect("insert catalog item");
+
+    let config = SyncSourceConfig {
+        base_url,
+        entities: vec![SyncEntityConfig {
+            entity: "inventory".into(),
+            path: "/sync/ndjson/inventory".into(),
+        }],
+    };
+    run_sync_ndjson(
+        &reqwest::Client::new(),
+        &pool,
+        &config,
+        apex_edge_contracts::ContractVersion::V1_0_0,
+        STORE_ID,
+    )
+    .await
+    .expect("run_sync_ndjson");
+
+    let item = get_catalog_item(&pool, STORE_ID, item_id)
+        .await
+        .expect("get catalog item")
+        .expect("item exists");
+    assert_eq!(
+        item.available_qty,
+        Some(42),
+        "available_qty should be synced"
+    );
+    assert_eq!(
+        item.is_available,
+        Some(true),
+        "is_available should be synced"
+    );
+    assert_eq!(item.image_urls.len(), 2, "image_urls should be synced");
+    assert!(item
+        .image_urls
+        .contains(&"https://example.com/img1.jpg".to_string()));
+}
+
+#[tokio::test]
+async fn sync_catalog_persists_is_active_flag() {
+    let item_id = Uuid::parse_str("b2b2b2b2-b2b2-b2b2-b2b2-000000000001").unwrap();
+    let item = CatalogItem {
+        id: item_id,
+        sku: "INACTIVE-001".into(),
+        name: "Inactive Product".into(),
+        description: None,
+        category_id: Uuid::nil(),
+        tax_category_id: Uuid::nil(),
+        modifiers: vec![],
+        is_active: false,
+        version: 1,
+    };
+    let payload = serde_json::to_vec(&item).unwrap();
+    let body = ndjson_body(&[payload]);
+
+    let (_, base_url) = start_entity_server("catalog", body).await;
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("pool");
+    run_migrations(&pool).await.expect("migrations");
+
+    let config = SyncSourceConfig {
+        base_url,
+        entities: vec![SyncEntityConfig {
+            entity: "catalog".into(),
+            path: "/sync/ndjson/catalog".into(),
+        }],
+    };
+    run_sync_ndjson(
+        &reqwest::Client::new(),
+        &pool,
+        &config,
+        apex_edge_contracts::ContractVersion::V1_0_0,
+        STORE_ID,
+    )
+    .await
+    .expect("run_sync_ndjson");
+
+    let stored = get_catalog_item(&pool, STORE_ID, item_id)
+        .await
+        .expect("get catalog item")
+        .expect("item exists");
+    assert!(
+        !stored.is_active,
+        "is_active=false should be persisted from catalog sync"
+    );
 }
 
 #[tokio::test]

@@ -354,6 +354,38 @@ pub async fn execute_pos_command(
                     }],
                 };
             };
+            if let Some(stock_error) = item.check_quantity(p.quantity as i64) {
+                metrics::counter!(
+                    apex_edge_metrics::CATALOG_STOCK_CHECKS_TOTAL,
+                    1u64,
+                    "outcome" => stock_error
+                );
+                let message = match stock_error {
+                    "OUT_OF_STOCK" => "Item is out of stock".into(),
+                    "INSUFFICIENT_STOCK" => format!(
+                        "Requested quantity {} exceeds available stock ({})",
+                        p.quantity,
+                        item.available_qty.unwrap_or(0)
+                    ),
+                    other => format!("Stock check failed: {other}"),
+                };
+                return PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors: vec![PosError {
+                        code: stock_error.into(),
+                        message,
+                        field: None,
+                    }],
+                };
+            }
+            metrics::counter!(
+                apex_edge_metrics::CATALOG_STOCK_CHECKS_TOTAL,
+                1u64,
+                "outcome" => "ok"
+            );
             let entries = list_price_book_entries(pool, store_id).await.map_err(|e| {
                 vec![PosError {
                     code: "PRICE_BOOK".into(),

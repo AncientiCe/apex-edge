@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { BrowserRouter, Route, Routes, useNavigate, useParams } from 'react-router-dom';
 import {
   getHealth,
+  getProductById,
   getReady,
   listProducts,
   listCategories,
@@ -30,6 +32,7 @@ import { CustomerPanel } from './panels/CustomerPanel';
 import { CartPanel } from './panels/CartPanel';
 import { EventLogPanel } from './panels/EventLogPanel';
 import { SyncStatusPanel } from './panels/SyncStatusPanel';
+import { ProductDetailPage } from './panels/ProductDetailPage';
 
 const STORE_ID = '00000000-0000-0000-0000-000000000000';
 const REGISTER_ID = '00000000-0000-0000-0000-000000000000';
@@ -38,6 +41,39 @@ const LS_CART_ID = 'apex_edge_cart_id';
 export type LogEntry = { ts: string; kind: 'req' | 'res' | 'err'; text: string };
 type Stage = 'customers' | 'catalog' | 'cart' | 'pay' | 'summary' | 'sync';
 type Toast = { id: number; message: string };
+
+/** Inner PDP route that loads product by ID from URL params. */
+function ProductDetailRoute({
+  baseUrl,
+  onAddProduct,
+}: {
+  baseUrl: string;
+  onAddProduct: (product: ProductSearchResult, quantity: number) => void;
+}) {
+  const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
+  const [product, setProduct] = useState<ProductSearchResult | null | undefined>(undefined);
+
+  useEffect(() => {
+    if (!id || !baseUrl) return;
+    let cancelled = false;
+    getProductById(baseUrl, id)
+      .then((p) => { if (!cancelled) setProduct(p); })
+      .catch(() => { if (!cancelled) setProduct(null); });
+    return () => { cancelled = true; };
+  }, [id, baseUrl]);
+
+  return (
+    <ProductDetailPage
+      product={product ?? null}
+      onAddProduct={(p, qty) => {
+        onAddProduct(p, qty);
+        navigate('/catalog');
+      }}
+      onBack={() => navigate('/catalog')}
+    />
+  );
+}
 type SaleSummary = {
   finalize: FinalizeResult;
   cartSnapshot: CartState | null;
@@ -53,7 +89,8 @@ function useEventLog() {
   return [entries, log] as const;
 }
 
-export default function App() {
+function AppInner() {
+  const navigate = useNavigate();
   const [baseUrl, setBaseUrl] = useState(
     () => import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:3000'
   );
@@ -443,7 +480,14 @@ export default function App() {
 
   const isCartTab = stage === 'cart' || stage === 'pay' || stage === 'summary';
 
-  return (
+  const onViewProduct = useCallback(
+    (product: ProductSearchResult) => {
+      navigate(`/product/${product.id}`);
+    },
+    [navigate]
+  );
+
+  const mainContent = (
     <div className="pos-app">
       <header className="pos-header">
         <ConnectionPanel
@@ -501,6 +545,7 @@ export default function App() {
             onLoadCategories={onLoadCategories}
             onLoadProducts={onLoadProducts}
             onAddProduct={onAddProduct}
+            onViewProduct={onViewProduct}
           />
         )}
 
@@ -685,5 +730,25 @@ export default function App() {
         ))}
       </div>
     </div>
+  );
+
+  return (
+    <Routes>
+      <Route
+        path="/product/:id"
+        element={
+          <ProductDetailRoute baseUrl={baseUrl} onAddProduct={onAddProduct} />
+        }
+      />
+      <Route path="/*" element={mainContent} />
+    </Routes>
+  );
+}
+
+export default function App() {
+  return (
+    <BrowserRouter>
+      <AppInner />
+    </BrowserRouter>
   );
 }

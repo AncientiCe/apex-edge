@@ -8,6 +8,7 @@ interface Props {
   onLoadCategories: () => void;
   onLoadProducts: (params: { q?: string; category_id?: string; page: number }) => void;
   onAddProduct: (product: ProductSearchResult, quantity: number) => void;
+  onViewProduct?: (product: ProductSearchResult) => void;
 }
 
 export function CatalogPanel({
@@ -17,6 +18,7 @@ export function CatalogPanel({
   onLoadCategories,
   onLoadProducts,
   onAddProduct,
+  onViewProduct,
 }: Props) {
   const [q, setQ] = useState('');
   const [submittedQ, setSubmittedQ] = useState('');
@@ -85,25 +87,59 @@ export function CatalogPanel({
 
       {/* Product grid */}
       <div className="catalog-grid">
-        {(productList?.items ?? []).map((p) => (
-          <div key={p.id} className="catalog-card">
-            <div className="catalog-card-sku">{p.sku}</div>
-            <div className="catalog-card-name">{p.name}</div>
-            {p.description && (
-              <div className="catalog-card-desc">{p.description}</div>
-            )}
-            <div className="catalog-card-footer">
-              <button
-                type="button"
-                className="btn-add"
-                onClick={() => onAddProduct(p, 1)}
-                aria-label={`Add ${p.name} to cart`}
-              >
-                + Add
-              </button>
+        {(productList?.items ?? []).map((p) => {
+          const isOutOfStock = !p.is_active || (p.available_qty !== null && p.available_qty <= 0);
+          return (
+            <div key={p.id} className={`catalog-card${isOutOfStock ? ' out-of-stock' : ''}`}>
+              {p.image_urls.length > 0 && (
+                <div className="catalog-card-image-wrap">
+                  <img
+                    src={p.image_urls[0]}
+                    alt={p.name}
+                    className="catalog-card-image"
+                  />
+                </div>
+              )}
+              <div className="catalog-card-sku">{p.sku}</div>
+              <div className="catalog-card-name">{p.name}</div>
+              {p.description && (
+                <div className="catalog-card-desc">{p.description}</div>
+              )}
+              <div className="catalog-card-availability">
+                {isOutOfStock ? (
+                  <span className="avail-badge out-of-stock">Out of Stock</span>
+                ) : p.available_qty !== null ? (
+                  <span className={`avail-badge${p.available_qty <= 5 ? ' low-stock' : ' in-stock'}`}>
+                    {p.available_qty <= 5 ? `${p.available_qty} left` : 'In Stock'}
+                  </span>
+                ) : (
+                  <span className="avail-badge in-stock">Available</span>
+                )}
+              </div>
+              <div className="catalog-card-footer">
+                {onViewProduct && (
+                  <button
+                    type="button"
+                    className="btn-sm"
+                    onClick={() => onViewProduct(p)}
+                    aria-label={`View ${p.name}`}
+                  >
+                    View
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="btn-add"
+                  onClick={() => onAddProduct(p, 1)}
+                  aria-label={`Add ${p.name} to cart`}
+                  disabled={isOutOfStock}
+                >
+                  + Add
+                </button>
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
 
       {/* Pagination */}

@@ -95,6 +95,7 @@ flowchart TB
         R2["GET /ready"]
         R3["POST /pos/command"]
         R4["GET /catalog/products"]
+        R4b["GET /catalog/products/:id"]
         R5["GET /catalog/categories"]
         R6["GET /customers"]
         R7["GET /documents/:id"]
@@ -116,6 +117,7 @@ flowchart TB
     R2 --> H
     R3 --> P
     R4 --> C
+    R4b --> C
     R5 --> CC
     R6 --> CS
     R7 --> D
@@ -227,12 +229,13 @@ flowchart TB
     ForEntity --> Fetch[fetch_entity_ndjson_stream from HQ URL]
     Fetch --> Apply[apply_entity_batch pool, entity, payloads, store_id]
     Apply --> EntitySwitch{entity?}
-    EntitySwitch -->|catalog| InsertCatalogItems[insert_catalog_item + update_catalog_item_description per item]
+    EntitySwitch -->|catalog| InsertCatalogItems["replace_catalog_items\n(persists is_active)"]
     EntitySwitch -->|categories| InsertCategory[insert_category per item]
     EntitySwitch -->|price_book| ReplacePriceBook[replace_price_book_entries atomically]
     EntitySwitch -->|tax_rules| InsertTaxRule[insert_tax_rule per item]
     EntitySwitch -->|customers| InsertCustomer[insert_customer per item]
     EntitySwitch -->|promotions| InsertPromotion[insert_promotion per item]
+    EntitySwitch -->|inventory| ReplaceInventory["replace_inventory_levels\n(available_qty, is_available, image_urls)"]
     EntitySwitch -->|unknown| SkipLog[log debug skip]
     InsertCatalogItems --> Ingest[ingest_batch advance checkpoint]
     InsertCategory --> Ingest
@@ -240,17 +243,19 @@ flowchart TB
     InsertTaxRule --> Ingest
     InsertCustomer --> Ingest
     InsertPromotion --> Ingest
+    ReplaceInventory --> Ingest
     SkipLog --> Ingest
     Ingest --> ForEntity
     ForEntity --> UpdateStatus[upsert_latest_sync_run success]
 ```
 
 **Notes:**
-- **Inputs:** `pool`, `SyncSourceConfig` (base URL + entity paths), `ContractVersion`, `store_id`. Contract types: `CatalogItem`, `Category`, `PriceBook`, `TaxRule`, `Customer`, `Promotion`.
+- **Inputs:** `pool`, `SyncSourceConfig` (base URL + entity paths), `ContractVersion`, `store_id`. Contract types: `CatalogItem`, `Category`, `PriceBook`, `TaxRule`, `Customer`, `Promotion`, `InventoryLevel`.
 - **Outputs:** Each entity's data persisted to its storage table; checkpoint advanced per entity; sync run status updated.
 - **Metrics:** `apex_edge_sync_ingest_batches_total{entity, outcome}`, `apex_edge_sync_ingest_duration_seconds{entity}`.
 - **Failure path:** Invalid JSON payload fails the entity's batch with `IngestError::InvalidPayload`; the whole sync run is marked `failed`; checkpoint does not advance for failed entities; next run retries.
 - **price_book:** Synced with delete-and-replace semantics (atomically replaces all price book entries for the store in a transaction).
+- **inventory:** Updates `available_qty`, `is_available`, and `image_urls` on existing `catalog_items` rows. Missing item IDs are silently skipped (forward-compatible). Default `available_qty = NULL` means untracked — no stock constraint applied.
 
 ### 8. Observability and Behavior Ownership
 
@@ -333,6 +338,8 @@ sequenceDiagram
 - **Customer on cart:** When `set_customer` succeeds, the API handler looks up the customer record and populates `customer_name` and `customer_code` in `CartState`. Every subsequent command that returns `CartState` also enriches these fields. The cart panel shows a banner with the customer name and code whenever a customer is attached.
 - **Layout:** Mobile-first, app-like UI: fixed bottom tab bar (Customers / Catalog / Sync / Cart) with safe-area insets; 44px minimum touch targets; full viewport height (`100dvh`). At 768px+ nav moves to header; at 1024px (e.g. iPad landscape) content is constrained with larger catalog grid. Event log shown from 768px only.
 - **Scope:** Simulator runs as a separate dev server (e.g. Vite on port 5173); CORS enabled. Local use only.
+- **Product Detail Page:** Clicking "View" on any catalog card navigates to `/product/:id` (URL route). PDP fetches full product via `GET /catalog/products/:id`, displays image gallery (thumbnail strip + main image), availability badge, quantity stepper, and "Add to Cart" button. After add-to-cart, navigates back to `/catalog`. Add-to-cart is disabled when item is inactive or out of stock.
+- **Availability in catalog:** Product cards show availability badge (Out of Stock / low stock / In Stock / Available). The "+ Add" button is disabled for out-of-stock or inactive items. Images (first thumbnail) shown when synced.
 
 ### 10. Example Sync Source and Streamed Sync
 
@@ -360,12 +367,86 @@ flowchart LR
 ```
 
 **Notes:**
-- **Example sync source:** Separate binary `tools/example-sync-source`; serves NDJSON per entity (first line `{"total": N}`, then N lines of base64 payload). Contract-only coupling; no app runtime dependencies. Run with `cargo run -p example-sync-source` (default port 3030; `SYNC_SOURCE_PORT` env).
+- **Example sync source:** Separate binary `tools/example-sync-source`; serves NDJSON per entity (first line `{"total": N}`, then N lines of base64 payload). Contract-only coupling; no app runtime dependencies. Run with `cargo run -p example-sync-source` (default port 3030; `SYNC_SOURCE_PORT` env). Entities: catalog, categories, price_book, tax_rules, promotions, customers, coupons, **inventory** (per-item availability + image URLs).
 - **ApexEdge sync:** When `APEX_EDGE_SYNC_SOURCE_URL` is set, main runs sync once on startup then spawns a 24h periodic task. `run_sync_ndjson` streams each entity (line-by-line), collects payloads per entity, ingests in batch, advances checkpoints, and updates latest sync run + per-entity status in storage.
 - **Sync status:** Stored in `sync_run` (single row) and `entity_sync_status`; exposed at `GET /sync/status`. Frontend Sync tab shows last sync time, run state (idle/syncing), and per-entity progress (current, total, percent, status).
 - **Failure path:** Sync errors are logged; latest run is marked `failed` with error message; next scheduled run proceeds after 24h.
 
-### 11. Internal Security Baseline (CORS)
+### 11. Stock and Availability Sync
+
+**Purpose:** Document how inventory levels and product availability are synced from HQ and enforced on the POS add-to-cart path and exposed in the product catalog API.
+
+```mermaid
+flowchart TB
+    subgraph hq [HQ Sync Source]
+        CatalogEnt["catalog entity\n(CatalogItem.is_active)"]
+        InventoryEnt["inventory entity\n(InventoryLevel)"]
+    end
+    subgraph sync [apex_edge_sync]
+        ApplyBatch[apply_entity_batch]
+    end
+    subgraph storage [SQLite catalog_items]
+        IsActive[is_active col]
+        AvailQty[available_qty col]
+        ImgUrls[image_urls col]
+    end
+    subgraph api [apex_edge_api]
+        ProductSearch["GET /catalog/products\nGET /catalog/products/:id"]
+        AddLine["POST /pos/command\nadd_line_item"]
+    end
+    CatalogEnt --> ApplyBatch
+    InventoryEnt --> ApplyBatch
+    ApplyBatch --> IsActive
+    ApplyBatch --> AvailQty
+    ApplyBatch --> ImgUrls
+    IsActive --> ProductSearch
+    AvailQty --> ProductSearch
+    ImgUrls --> ProductSearch
+    IsActive --> AddLine
+    AvailQty --> AddLine
+    AddLine -->|"OUT_OF_STOCK\nINSUFFICIENT_STOCK"| StockError[POS error response]
+    AddLine --> CartState[cart state updated]
+```
+
+**Notes:**
+- **Inputs:** `catalog` sync entity persists `is_active` from `CatalogItem`. `inventory` sync entity persists `available_qty`, `is_available`, and `image_urls` from `InventoryLevel` (per-item, per-store).
+- **Outputs:** `ProductSearchResult` now includes `is_active`, `available_qty` (nullable — `null` = untracked), and `image_urls`. `GET /catalog/products/:id` returns full product detail for PDP.
+- **Stock enforcement:** `add_line_item` checks `CatalogItemRow::check_quantity` before inserting a line. Returns `OUT_OF_STOCK` if `is_active=false` or `available_qty <= 0`; returns `INSUFFICIENT_STOCK` if `quantity > available_qty`. Items with `available_qty = NULL` (inventory not yet synced) are not constrained.
+- **Metrics:** `apex_edge_catalog_stock_checks_total{outcome}` counts add-to-cart stock checks (ok, OUT_OF_STOCK, INSUFFICIENT_STOCK). `apex_edge_catalog_product_by_id_total{outcome}` counts product-by-id requests.
+- **Failure path:** HQ may not have inventory synced for all items — defaults to NULL (untracked), which never blocks cart. is_active defaults to 1 (active).
+
+### 12. Product Detail Page (PDP) with Image Gallery
+
+**Purpose:** Document the URL-routed Product Detail Page in the POS simulator frontend; image gallery, quantity stepper, availability badge, and add-to-cart flow.
+
+```mermaid
+sequenceDiagram
+    participant Cashier as Cashier
+    participant CatalogUI as CatalogPanel
+    participant Router as react-router
+    participant PDP as ProductDetailPage
+    participant API as ApexEdge API
+    participant POS as POS command
+    Cashier->>CatalogUI: Click "View" on product card
+    CatalogUI->>Router: navigate("/product/:id")
+    Router->>PDP: render ProductDetailPage
+    PDP->>API: GET /catalog/products/:id
+    API-->>PDP: ProductSearchResult with availability+images
+    PDP-->>Cashier: Render gallery, availability badge, quantity stepper
+    Cashier->>PDP: Adjust quantity, click "Add to Cart"
+    PDP->>POS: POST /pos/command add_line_item(item_id, quantity)
+    POS-->>PDP: cart state updated
+    PDP->>Router: navigate("/catalog")
+```
+
+**Notes:**
+- **Inputs:** URL parameter `:id` (product UUID). Backend `GET /catalog/products/:id` returns full `ProductSearchResult` including `available_qty`, `is_active`, and `image_urls`.
+- **Outputs:** PDP displays product name, SKU, description, availability badge (Out of Stock / low stock / In Stock / Available-untracked), image gallery with thumbnail strip, quantity stepper, and Add to Cart button.
+- **Routing:** PDP is at `/product/:id`. CatalogPanel "View" button navigates there. PDP Back button and post-add-to-cart both navigate to `/catalog`. Main POS app continues at `/*` routes.
+- **Availability enforcement:** "Add to Cart" button is disabled when `is_active=false` or `available_qty <= 0`. Quantity stepper is capped at `available_qty` when tracked.
+- **Image gallery:** Thumbnail strip shows all `image_urls`; clicking a thumbnail swaps the main image. Keyboard-accessible. Falls back to placeholder icon when no images are synced.
+
+### 13. Internal Security Baseline (CORS)
 
 **Purpose:** Document the configurable CORS posture introduced for the v0.1.0 internal-alpha security baseline. By default the hub allows all origins (suitable for local dev); a comma-separated env var locks CORS to an explicit allowlist in controlled deployments.
 

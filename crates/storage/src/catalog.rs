@@ -1,6 +1,6 @@
 //! Catalog and reference data (ingested by sync or seeded for tests).
 
-use apex_edge_contracts::{CatalogItem, PriceBookEntry};
+use apex_edge_contracts::{CatalogItem, InventoryLevel, PriceBookEntry};
 use sqlx::SqlitePool;
 use uuid::Uuid;
 
@@ -15,17 +15,48 @@ pub struct CatalogItemRow {
     pub category_id: Uuid,
     pub tax_category_id: Uuid,
     pub description: Option<String>,
+    /// Persisted from `CatalogItem.is_active`; false = item is not sold.
+    pub is_active: bool,
+    /// Units available to sell; `None` = inventory not tracked (no constraint on add-to-cart qty).
+    pub available_qty: Option<i64>,
+    /// Explicit sellability flag from the inventory level. `None` = not yet synced.
+    pub is_available: Option<bool>,
+    /// Ordered product image URLs for PDP gallery.
+    pub image_urls: Vec<String>,
 }
 
-fn map_catalog_row(
-    id: String,
-    store_id: String,
-    sku: String,
-    name: String,
-    category_id: String,
-    tax_category_id: String,
-    description: Option<String>,
-) -> CatalogItemRow {
+type CatalogRow = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    Option<String>,
+    Option<i64>,
+    Option<i64>,
+    Option<i64>,
+    Option<String>,
+);
+
+fn map_catalog_row(row: CatalogRow) -> CatalogItemRow {
+    let (
+        id,
+        store_id,
+        sku,
+        name,
+        category_id,
+        tax_category_id,
+        description,
+        is_active_int,
+        available_qty,
+        is_available_int,
+        image_urls_json,
+    ) = row;
+    let image_urls: Vec<String> = image_urls_json
+        .as_deref()
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or_default();
     CatalogItemRow {
         id: Uuid::parse_str(&id).unwrap_or_default(),
         store_id: Uuid::parse_str(&store_id).unwrap_or_default(),
@@ -34,34 +65,53 @@ fn map_catalog_row(
         category_id: Uuid::parse_str(&category_id).unwrap_or_default(),
         tax_category_id: Uuid::parse_str(&tax_category_id).unwrap_or_default(),
         description,
+        is_active: is_active_int.unwrap_or(1) != 0,
+        available_qty,
+        is_available: is_available_int.map(|v| v != 0),
+        image_urls,
     }
 }
+
+impl CatalogItemRow {
+    /// Check if the requested quantity can be sold. Returns `None` if ok, or an error
+    /// code string matching the POS error codes.
+    ///
+    /// - `is_active = false` → `OUT_OF_STOCK`
+    /// - inventory tracked and `available_qty <= 0` → `OUT_OF_STOCK`
+    /// - inventory tracked and `quantity > available_qty` → `INSUFFICIENT_STOCK`
+    /// - inventory not tracked → `None` (allowed)
+    pub fn check_quantity(&self, quantity: i64) -> Option<&'static str> {
+        if !self.is_active {
+            return Some("OUT_OF_STOCK");
+        }
+        if let Some(qty) = self.available_qty {
+            if qty <= 0 {
+                return Some("OUT_OF_STOCK");
+            }
+            if quantity > qty {
+                return Some("INSUFFICIENT_STOCK");
+            }
+        }
+        None
+    }
+}
+
+const SELECT_CATALOG_COLS: &str =
+    "id, store_id, sku, name, category_id, tax_category_id, description, is_active, available_qty, is_available, image_urls";
 
 pub async fn get_catalog_item(
     pool: &SqlitePool,
     store_id: Uuid,
     item_id: Uuid,
 ) -> Result<Option<CatalogItemRow>, PoolError> {
-    let row = sqlx::query_as::<_, (String, String, String, String, String, String, Option<String>)>(
-        "SELECT id, store_id, sku, name, category_id, tax_category_id, description FROM catalog_items WHERE id = ? AND store_id = ?",
-    )
+    let row = sqlx::query_as::<_, CatalogRow>(&format!(
+        "SELECT {SELECT_CATALOG_COLS} FROM catalog_items WHERE id = ? AND store_id = ?"
+    ))
     .bind(item_id.to_string())
     .bind(store_id.to_string())
     .fetch_optional(pool)
     .await?;
-    Ok(row.map(
-        |(id, store_id, sku, name, category_id, tax_category_id, description)| {
-            map_catalog_row(
-                id,
-                store_id,
-                sku,
-                name,
-                category_id,
-                tax_category_id,
-                description,
-            )
-        },
-    ))
+    Ok(row.map(map_catalog_row))
 }
 
 pub async fn get_catalog_item_by_sku(
@@ -69,26 +119,14 @@ pub async fn get_catalog_item_by_sku(
     store_id: Uuid,
     sku: &str,
 ) -> Result<Option<CatalogItemRow>, PoolError> {
-    let row = sqlx::query_as::<_, (String, String, String, String, String, String, Option<String>)>(
-        "SELECT id, store_id, sku, name, category_id, tax_category_id, description FROM catalog_items WHERE store_id = ? AND sku = ?",
-    )
+    let row = sqlx::query_as::<_, CatalogRow>(&format!(
+        "SELECT {SELECT_CATALOG_COLS} FROM catalog_items WHERE store_id = ? AND sku = ?"
+    ))
     .bind(store_id.to_string())
     .bind(sku)
     .fetch_optional(pool)
     .await?;
-    Ok(row.map(
-        |(id, store_id, sku, name, category_id, tax_category_id, description)| {
-            map_catalog_row(
-                id,
-                store_id,
-                sku,
-                name,
-                category_id,
-                tax_category_id,
-                description,
-            )
-        },
-    ))
+    Ok(row.map(map_catalog_row))
 }
 
 pub async fn list_catalog_items(
@@ -144,26 +182,22 @@ pub async fn list_catalog_items(
         _ => (0,),
     };
     let total = total.0 as u64;
-    let list_sql = match (category_id.is_some(), q_trimmed.is_some()) {
-        (false, false) => "SELECT id, store_id, sku, name, category_id, tax_category_id, description FROM catalog_items WHERE store_id = ? ORDER BY name LIMIT ? OFFSET ?",
-        (true, false) => "SELECT id, store_id, sku, name, category_id, tax_category_id, description FROM catalog_items WHERE store_id = ? AND category_id = ? ORDER BY name LIMIT ? OFFSET ?",
-        (false, true) => "SELECT id, store_id, sku, name, category_id, tax_category_id, description FROM catalog_items WHERE store_id = ? AND (sku = ? OR name LIKE ? OR description LIKE ?) ORDER BY name LIMIT ? OFFSET ?",
-        (true, true) => "SELECT id, store_id, sku, name, category_id, tax_category_id, description FROM catalog_items WHERE store_id = ? AND category_id = ? AND (sku = ? OR name LIKE ? OR description LIKE ?) ORDER BY name LIMIT ? OFFSET ?",
-    };
-    let rows = match (category_id, q_trimmed, name_pattern.as_ref()) {
+    let list_sql_base =
+        format!("SELECT {SELECT_CATALOG_COLS} FROM catalog_items WHERE store_id = ?");
+    let list_sql_cat = format!(
+        "SELECT {SELECT_CATALOG_COLS} FROM catalog_items WHERE store_id = ? AND category_id = ?"
+    );
+    let list_sql_q = format!(
+        "SELECT {SELECT_CATALOG_COLS} FROM catalog_items WHERE store_id = ? AND (sku = ? OR name LIKE ? OR description LIKE ?)"
+    );
+    let list_sql_cat_q = format!(
+        "SELECT {SELECT_CATALOG_COLS} FROM catalog_items WHERE store_id = ? AND category_id = ? AND (sku = ? OR name LIKE ? OR description LIKE ?)"
+    );
+    let rows: Vec<CatalogRow> = match (category_id, q_trimmed, name_pattern.as_ref()) {
         (None, None, _) => {
-            sqlx::query_as::<
-                _,
-                (
-                    String,
-                    String,
-                    String,
-                    String,
-                    String,
-                    String,
-                    Option<String>,
-                ),
-            >(list_sql)
+            sqlx::query_as::<_, CatalogRow>(&format!(
+                "{list_sql_base} ORDER BY name LIMIT ? OFFSET ?"
+            ))
             .bind(store_id.to_string())
             .bind(limit as i64)
             .bind(offset as i64)
@@ -171,18 +205,9 @@ pub async fn list_catalog_items(
             .await?
         }
         (Some(cid), None, _) => {
-            sqlx::query_as::<
-                _,
-                (
-                    String,
-                    String,
-                    String,
-                    String,
-                    String,
-                    String,
-                    Option<String>,
-                ),
-            >(list_sql)
+            sqlx::query_as::<_, CatalogRow>(&format!(
+                "{list_sql_cat} ORDER BY name LIMIT ? OFFSET ?"
+            ))
             .bind(store_id.to_string())
             .bind(cid.to_string())
             .bind(limit as i64)
@@ -191,40 +216,20 @@ pub async fn list_catalog_items(
             .await?
         }
         (None, Some(qs), Some(pat)) => {
-            sqlx::query_as::<
-                _,
-                (
-                    String,
-                    String,
-                    String,
-                    String,
-                    String,
-                    String,
-                    Option<String>,
-                ),
-            >(list_sql)
-            .bind(store_id.to_string())
-            .bind(qs)
-            .bind(pat)
-            .bind(pat)
-            .bind(limit as i64)
-            .bind(offset as i64)
-            .fetch_all(pool)
-            .await?
+            sqlx::query_as::<_, CatalogRow>(&format!("{list_sql_q} ORDER BY name LIMIT ? OFFSET ?"))
+                .bind(store_id.to_string())
+                .bind(qs)
+                .bind(pat)
+                .bind(pat)
+                .bind(limit as i64)
+                .bind(offset as i64)
+                .fetch_all(pool)
+                .await?
         }
         (Some(cid), Some(qs), Some(pat)) => {
-            sqlx::query_as::<
-                _,
-                (
-                    String,
-                    String,
-                    String,
-                    String,
-                    String,
-                    String,
-                    Option<String>,
-                ),
-            >(list_sql)
+            sqlx::query_as::<_, CatalogRow>(&format!(
+                "{list_sql_cat_q} ORDER BY name LIMIT ? OFFSET ?"
+            ))
             .bind(store_id.to_string())
             .bind(cid.to_string())
             .bind(qs)
@@ -237,22 +242,7 @@ pub async fn list_catalog_items(
         }
         _ => vec![],
     };
-    let items = rows
-        .into_iter()
-        .map(
-            |(id, store_id, sku, name, category_id, tax_category_id, description)| {
-                map_catalog_row(
-                    id,
-                    store_id,
-                    sku,
-                    name,
-                    category_id,
-                    tax_category_id,
-                    description,
-                )
-            },
-        )
-        .collect();
+    let items = rows.into_iter().map(map_catalog_row).collect();
     Ok((items, total))
 }
 
@@ -293,7 +283,7 @@ pub async fn replace_catalog_items(
         .await?;
     for item in items {
         sqlx::query(
-            "INSERT INTO catalog_items (id, store_id, sku, name, category_id, tax_category_id, description) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO catalog_items (id, store_id, sku, name, category_id, tax_category_id, description, is_active) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(item.id.to_string())
         .bind(store_id.to_string())
@@ -302,6 +292,35 @@ pub async fn replace_catalog_items(
         .bind(item.category_id.to_string())
         .bind(item.tax_category_id.to_string())
         .bind(item.description.as_deref())
+        .bind(item.is_active as i64)
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Apply a batch of inventory levels for a store.
+/// Updates `available_qty`, `is_available` (stored as `available_qty` ≥ 0 or explicit flag),
+/// and `image_urls` on matching `catalog_items` rows. Rows without a matching catalog item
+/// are silently skipped (forward-compatibility: item may not have synced yet).
+pub async fn replace_inventory_levels(
+    pool: &SqlitePool,
+    store_id: Uuid,
+    levels: &[InventoryLevel],
+) -> Result<(), PoolError> {
+    let mut tx = pool.begin().await?;
+    for level in levels {
+        let image_urls_json =
+            serde_json::to_string(&level.image_urls).unwrap_or_else(|_| "[]".into());
+        sqlx::query(
+            "UPDATE catalog_items SET available_qty = ?, is_available = ?, image_urls = ? WHERE id = ? AND store_id = ?",
+        )
+        .bind(level.available_qty)
+        .bind(level.is_available as i64)
+        .bind(&image_urls_json)
+        .bind(level.item_id.to_string())
+        .bind(store_id.to_string())
         .execute(&mut *tx)
         .await?;
     }

@@ -1,3 +1,4 @@
+use apex_edge_contracts::InventoryLevel;
 use apex_edge_storage::*;
 use chrono::Utc;
 use sqlx::sqlite::SqlitePoolOptions;
@@ -125,6 +126,121 @@ async fn seed_demo_data_populates_enough_catalog_and_customers() {
             .await
             .expect("customer count");
     assert!(customer_count.0 >= 80);
+}
+
+// --- Inventory / availability ---
+
+#[tokio::test]
+async fn replace_inventory_levels_updates_availability_fields() {
+    let pool = test_pool().await;
+    let store_id = Uuid::from_u128(1);
+    let item_id = Uuid::from_u128(0xAA01);
+
+    insert_catalog_item(
+        &pool,
+        item_id,
+        store_id,
+        "INV-001",
+        "Inventory Item",
+        Uuid::nil(),
+        Uuid::nil(),
+    )
+    .await
+    .expect("insert catalog item");
+
+    let levels = vec![InventoryLevel {
+        item_id,
+        available_qty: 15,
+        is_available: true,
+        image_urls: vec!["https://img.example.com/a.jpg".into()],
+        version: 1,
+    }];
+    replace_inventory_levels(&pool, store_id, &levels)
+        .await
+        .expect("replace inventory levels");
+
+    let row = get_catalog_item(&pool, store_id, item_id)
+        .await
+        .expect("get catalog item")
+        .expect("item exists");
+    assert_eq!(row.available_qty, Some(15));
+    assert_eq!(row.is_available, Some(true));
+    assert_eq!(row.image_urls, vec!["https://img.example.com/a.jpg"]);
+}
+
+#[tokio::test]
+async fn replace_inventory_levels_clears_previous_data_for_store() {
+    let pool = test_pool().await;
+    let store_id = Uuid::from_u128(2);
+    let item_id = Uuid::from_u128(0xAA02);
+
+    insert_catalog_item(
+        &pool,
+        item_id,
+        store_id,
+        "INV-002",
+        "Item 2",
+        Uuid::nil(),
+        Uuid::nil(),
+    )
+    .await
+    .expect("insert catalog item");
+
+    let first = vec![InventoryLevel {
+        item_id,
+        available_qty: 99,
+        is_available: true,
+        image_urls: vec![],
+        version: 1,
+    }];
+    replace_inventory_levels(&pool, store_id, &first)
+        .await
+        .expect("first replace");
+
+    let updated = vec![InventoryLevel {
+        item_id,
+        available_qty: 3,
+        is_available: true,
+        image_urls: vec!["https://new.img/x.jpg".into()],
+        version: 2,
+    }];
+    replace_inventory_levels(&pool, store_id, &updated)
+        .await
+        .expect("second replace");
+
+    let row = get_catalog_item(&pool, store_id, item_id)
+        .await
+        .expect("get catalog item")
+        .expect("item");
+    assert_eq!(row.available_qty, Some(3));
+    assert_eq!(row.image_urls, vec!["https://new.img/x.jpg"]);
+}
+
+#[tokio::test]
+async fn catalog_item_is_active_flag_is_persisted_on_replace() {
+    let pool = test_pool().await;
+    let store_id = Uuid::from_u128(3);
+    let item_id = Uuid::from_u128(0xAA03);
+    let item = apex_edge_contracts::CatalogItem {
+        id: item_id,
+        sku: "INACTIVE-TEST".into(),
+        name: "Inactive Test Item".into(),
+        description: None,
+        category_id: Uuid::nil(),
+        tax_category_id: Uuid::nil(),
+        modifiers: vec![],
+        is_active: false,
+        version: 1,
+    };
+    replace_catalog_items(&pool, store_id, &[item])
+        .await
+        .expect("replace catalog items");
+
+    let row = get_catalog_item(&pool, store_id, item_id)
+        .await
+        .expect("get catalog item")
+        .expect("item exists");
+    assert!(!row.is_active, "is_active=false should be stored");
 }
 
 // --- Latest-only sync status persistence ---

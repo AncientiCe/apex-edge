@@ -4,8 +4,8 @@
 //! Listen port: 3030 by default (env SYNC_SOURCE_PORT).
 
 use apex_edge_contracts::{
-    CatalogItem, Category, CouponDefinition, Customer, PriceBook, PriceBookEntry, PromoAction,
-    PromoCondition, Promotion, PromotionType, TaxRule,
+    CatalogItem, Category, CouponDefinition, Customer, InventoryLevel, PriceBook, PriceBookEntry,
+    PromoAction, PromoCondition, Promotion, PromotionType, TaxRule,
 };
 use axum::{body::Body, extract::State, http::Response, routing::get, Router};
 use base64::Engine;
@@ -234,6 +234,38 @@ async fn ndjson_customers(State(state): State<Arc<AppState>>) -> Response<Body> 
         .unwrap()
 }
 
+async fn ndjson_inventory(State(state): State<Arc<AppState>>) -> Response<Body> {
+    let _ = state;
+    let items = demo_catalog_items();
+    let levels: Vec<InventoryLevel> = items
+        .iter()
+        .enumerate()
+        .map(|(idx, item)| InventoryLevel {
+            item_id: item.id,
+            available_qty: ((idx % 20) as i64 + 1) * 5,
+            is_available: true,
+            image_urls: vec![
+                format!(
+                    "https://via.placeholder.com/400x400?text=Product+{}",
+                    idx + 1
+                ),
+                format!(
+                    "https://via.placeholder.com/400x400/0055ff/ffffff?text=Product+{idx}+View+2"
+                ),
+            ],
+            version: 1,
+        })
+        .collect();
+    let lines: Vec<String> = levels
+        .iter()
+        .map(|l| b64(&serde_json::to_vec(l).unwrap()))
+        .collect();
+    Response::builder()
+        .header("content-type", "application/x-ndjson")
+        .body(ndjson_body(lines))
+        .unwrap()
+}
+
 async fn ndjson_coupons(State(state): State<Arc<AppState>>) -> Response<Body> {
     let _ = state;
     let promo_id = Uuid::parse_str("60000000-0000-0000-0000-000000000001").unwrap();
@@ -273,6 +305,7 @@ async fn main() {
         .route("/sync/ndjson/promotions", get(ndjson_promotions))
         .route("/sync/ndjson/customers", get(ndjson_customers))
         .route("/sync/ndjson/coupons", get(ndjson_coupons))
+        .route("/sync/ndjson/inventory", get(ndjson_inventory))
         .with_state(state);
 
     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
