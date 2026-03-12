@@ -12,9 +12,16 @@ Store hub orchestrator: **POS/MPOS <-> ApexEdge <-> HQ**. Offline-first, contrac
 
 **Repository:** [https://github.com/AncientiCe/apex-edge](https://github.com/AncientiCe/apex-edge)
 
+## Social image
+
+![ApexEdge social image](docs/assets/apex-edge-social.svg)
+
+Use `docs/assets/apex-edge-social.svg` as the project social preview asset.
+
 ## Table of contents
 
 - [Overview](#overview)
+- [Social image](#social-image)
 - [Architecture](docs/architecture/README.md)
 - [Build and run](#build-and-run)
 - [Quality gates](#quality-gates)
