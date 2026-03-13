@@ -95,5 +95,5 @@ Internal alpha release for team-only testing in a controlled environment.
 - Mock NDJSON sync server served raw bytes for catalog items; updated to serve valid
   `CatalogItem` JSON payloads so `apply_entity_batch` deserialization succeeds in tests.
 
-[Unreleased]: https://github.com/your-org/apex-edge/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/your-org/apex-edge/releases/tag/v0.1.0
+[Unreleased]: https://github.com/AncientiCe/apex-edge/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/AncientiCe/apex-edge/releases/tag/v0.1.0

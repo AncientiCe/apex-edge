@@ -2,6 +2,8 @@
 
 Canonical message and data shapes for POS <-> ApexEdge and ApexEdge <-> HQ.
 
+Related: [README](../../README.md) · [Architecture](../architecture/README.md) · [Runbook](../runbook/README.md)
+
 ## Versioning
 
 - **Semver**: `major.minor.patch`. Breaking changes bump major.

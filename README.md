@@ -1,3 +1,5 @@
+![ApexEdge](docs/assets/apex-edge-social.svg)
+
 # ApexEdge
 
 [![CI](https://github.com/AncientiCe/apex-edge/actions/workflows/ci.yml/badge.svg)](https://github.com/AncientiCe/apex-edge/actions/workflows/ci.yml)
@@ -5,24 +7,14 @@
 [![Rust](https://img.shields.io/badge/Rust-stable-orange?logo=rust)](https://www.rust-lang.org/)
 [![Docker](https://img.shields.io/badge/Docker-ready-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
 [![SQLite](https://img.shields.io/badge/DB-SQLite-003B57?logo=sqlite&logoColor=white)](https://www.sqlite.org/index.html)
-[![License](https://img.shields.io/badge/License-Proprietary-lightgrey)](#license)
+[![License](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue)](#license)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-blue)](#build-and-run)
 
 Store hub orchestrator: **POS/MPOS <-> ApexEdge <-> HQ**. Offline-first, contract-driven, with durable order submission and document generation.
 
-**Repository:** [https://github.com/AncientiCe/apex-edge](https://github.com/AncientiCe/apex-edge)
-
-## Social image
-
-![ApexEdge social image](docs/assets/apex-edge-social.svg)
-
-Use `docs/assets/apex-edge-social.svg` as the project social preview asset.
-
-## Table of contents
+## Table of Contents
 
 - [Overview](#overview)
-- [Social image](#social-image)
-- [Architecture](docs/architecture/README.md)
 - [Build and run](#build-and-run)
 - [Quality gates](#quality-gates)
 - [Manual testing: Local POS Simulator](#manual-testing-local-pos-simulator)
@@ -30,6 +22,8 @@ Use `docs/assets/apex-edge-social.svg` as the project social preview asset.
 - [Contracts](#contracts)
 - [Security and operations](#security-and-operations)
 - [Crates](#crates)
+- [Documentation](#documentation)
+- [Project policies](#project-policies)
 - [License](#license)
 
 ```bash
@@ -173,7 +167,7 @@ A local-only POS simulator frontend (Vite + React + TypeScript in `frontend/`) l
 
 ## Contracts
 
-- **POS <-> ApexEdge**: `PosRequestEnvelope<PosCommand>`, `PosResponseEnvelope<T>`, `CartState`, `FinalizeResult`. See `crates/contracts` and `docs/contracts/`.
+- **POS <-> ApexEdge**: `PosRequestEnvelope<PosCommand>`, `PosResponseEnvelope<T>`, `CartState`, `FinalizeResult`. See `crates/contracts` and [docs/contracts/](docs/contracts/README.md).
 - **ApexEdge -> HQ**: `HqOrderSubmissionEnvelope` (with `submission_id`, `sequence_number`, `checksum`). Idempotent ingest expected.
 
 ## Security and operations
@@ -182,6 +176,7 @@ A local-only POS simulator frontend (Vite + React + TypeScript in `frontend/`) l
 - **Transport**: In production use TLS (e.g. mTLS for HQ). Encryption at rest for DB is deployment-specific.
 - **Audit**: Order finalization and HQ submission can be recorded via `apex_edge_storage::audit::record`.
 - **Observability**: Structured logging (tracing); health/ready for DB. **Prometheus metrics** are exposed at `GET /metrics` when the app is started with the default binary (recorder installed). See [Metrics](#metrics) for the catalog and usage.
+- **Vulnerability reporting**: See [SECURITY.md](SECURITY.md).
 
 ### Metrics
 
@@ -222,6 +217,32 @@ Metrics are Prometheus-style (counters, histograms, gauges) with an `apex_edge_`
 | `apex-edge-api` | HTTP API (POS, health, ready, documents) |
 | `apex-edge` | Binary entrypoint |
 
+## Documentation
+
+| Document | Description |
+|----------|-------------|
+| [Architecture](docs/architecture/README.md) | System context, bootstrap, routes, POS/outbox/sync/observability diagrams |
+| [Contracts](docs/contracts/README.md) | POS ↔ ApexEdge and ApexEdge → HQ message shapes |
+| [Runbook](docs/runbook/README.md) | Deployment, environment variables, health checks, troubleshooting, go/no-go checklist |
+| [Changelog](CHANGELOG.md) | Release history |
+
+## Project policies
+
+| Policy | Description |
+|--------|-------------|
+| [Contributing](CONTRIBUTING.md) | How to set up, develop, and submit changes |
+| [Security](SECURITY.md) | How to report vulnerabilities privately |
+| [Code of Conduct](CODE_OF_CONDUCT.md) | Community standards |
+
 ## License
 
-Proprietary or as specified by your organization.
+Licensed under either of:
+
+- [MIT License](LICENSE-MIT)
+- [Apache License, Version 2.0](LICENSE-APACHE)
+
+at your option.
+
+Unless you explicitly state otherwise, any contribution intentionally submitted for
+inclusion in this project shall be dual-licensed as above, without any additional terms
+or conditions.

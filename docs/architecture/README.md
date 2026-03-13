@@ -5,7 +5,7 @@
 - **Local-first**: catalog, prices, promos, coupons, config available on hub; sync is async with checkpoints.
 - **Print**: persistent queue, template rendering, device adapters (ESC/POS, PDF, network).
 
-See plan for full component list and phased delivery.
+Related: [README](../../README.md) · [Contracts](../contracts/README.md) · [Runbook](../runbook/README.md) · [Contributing](../../CONTRIBUTING.md) · [Security](../../SECURITY.md)
 
 ---
 
