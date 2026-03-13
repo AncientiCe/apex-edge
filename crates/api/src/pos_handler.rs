@@ -3,9 +3,12 @@
 use apex_edge_contracts::{
     build_submission_envelope, AppliedPromoInfo, CartState, ContractVersion, FinalizeResult,
     ManualDiscountInfo, ManualDiscountKind, PosCommand, PosError, PosRequestEnvelope,
-    PosResponseEnvelope,
+    PosResponseEnvelope, TaxRule,
 };
-use apex_edge_domain::{apply_promos_with_attribution, base_price_cents, tax_for_line, Cart};
+use apex_edge_domain::{
+    apply_promos_with_attribution, base_price_cents, tax_for_line, Cart, CartLineItem,
+    LinePriceResult,
+};
 use apex_edge_printing::generate_document;
 use apex_edge_storage::{
     get_catalog_item, get_customer, insert_outbox, list_price_book_entries, list_promotions,
@@ -109,6 +112,35 @@ pub async fn save_cart_to_db(pool: &SqlitePool, cart: &Cart) -> Result<(), Vec<P
     Ok(())
 }
 
+/// Apply tax to each pricing result, returning `PRICING_INTERNAL` if a result references a line
+/// that is not present in `cart_lines`. Extracted for testability.
+pub(crate) fn apply_tax_to_pricing_results<F>(
+    results: &mut [LinePriceResult],
+    cart_lines: &[CartLineItem],
+    category_by_item: &F,
+    rules: &[TaxRule],
+) -> Result<(), Vec<PosError>>
+where
+    F: Fn(Uuid) -> Uuid,
+{
+    for res in results.iter_mut() {
+        let line = cart_lines
+            .iter()
+            .find(|l| l.line_id == res.line_id)
+            .ok_or_else(|| {
+                vec![PosError {
+                    code: "PRICING_INTERNAL".into(),
+                    message: "Pricing result references an unknown line".into(),
+                    field: None,
+                }]
+            })?;
+        let tax_cat = category_by_item(line.item_id);
+        let line_net = res.line_total_cents.saturating_sub(res.discount_cents);
+        res.tax_cents = tax_for_line(line_net, tax_cat, rules, false);
+    }
+    Ok(())
+}
+
 /// Run pricing pipeline (promos + tax) and apply results to cart.
 pub async fn run_pricing_pipeline(
     pool: &SqlitePool,
@@ -144,16 +176,7 @@ pub async fn run_pricing_pipeline(
     let (mut results, applied_promo_ids) =
         apply_promos_with_attribution(&cart.lines, category_by_item, &promos, subtotal);
 
-    for res in &mut results {
-        let line = cart
-            .lines
-            .iter()
-            .find(|l| l.line_id == res.line_id)
-            .unwrap();
-        let tax_cat = category_by_item(line.item_id);
-        let line_net = res.line_total_cents.saturating_sub(res.discount_cents);
-        res.tax_cents = tax_for_line(line_net, tax_cat, &rules, false);
-    }
+    apply_tax_to_pricing_results(&mut results, &cart.lines, &category_by_item, &rules)?;
 
     let mut applied_any = false;
     for res in &results {
@@ -176,7 +199,7 @@ pub async fn run_pricing_pipeline(
 /// Apply stored manual discounts to lines (add amount to line.discount_cents) and recalc tax.
 fn apply_manual_discounts_to_lines(
     cart: &mut Cart,
-    rules: &[apex_edge_contracts::TaxRule],
+    rules: &[TaxRule],
     item_to_tax_category: &std::collections::HashMap<Uuid, Uuid>,
 ) -> Result<(), Vec<PosError>> {
     if cart.manual_discounts.is_empty() {
@@ -957,4 +980,49 @@ pub async fn execute_pos_command(
         },
     };
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use uuid::Uuid;
+
+    #[test]
+    fn apply_tax_returns_pricing_internal_error_for_mismatched_line_id() {
+        let item_id = Uuid::new_v4();
+        let real_line_id = Uuid::new_v4();
+        let phantom_line_id = Uuid::new_v4();
+
+        let cart_lines = vec![CartLineItem {
+            line_id: real_line_id,
+            item_id,
+            sku: "SKU-001".into(),
+            name: "Test Item".into(),
+            quantity: 1,
+            modifier_option_ids: vec![],
+            notes: None,
+            unit_price_cents: 1000,
+            line_total_cents: 1000,
+            discount_cents: 0,
+            tax_cents: 0,
+        }];
+
+        // A result whose line_id is NOT present in cart_lines — the invariant-violation case.
+        let mut results = vec![LinePriceResult {
+            line_id: phantom_line_id,
+            unit_price_cents: 1000,
+            line_total_cents: 1000,
+            discount_cents: 0,
+            tax_cents: 0,
+        }];
+
+        let no_tax = |_: Uuid| Uuid::nil();
+        let rules = vec![];
+
+        let err = apply_tax_to_pricing_results(&mut results, &cart_lines, &no_tax, &rules)
+            .expect_err("must return PRICING_INTERNAL when result line_id is not in cart");
+
+        assert_eq!(err.len(), 1);
+        assert_eq!(err[0].code, "PRICING_INTERNAL");
+    }
 }
