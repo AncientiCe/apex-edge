@@ -8,7 +8,8 @@ use apex_edge_contracts::{
 };
 use apex_edge_storage::{
     enqueue_document, insert_catalog_item, insert_price_book_entry, insert_promotion,
-    mark_generated, run_migrations,
+    insert_tax_rule, list_documents_for_order, mark_generated, run_migrations,
+    upsert_print_template,
 };
 use axum::response::IntoResponse;
 use axum::{extract::State, Json};
@@ -445,4 +446,230 @@ async fn add_line_item_response_includes_applied_promo_name() {
         state_after_add.applied_promos[0].name,
         "Donna Dress 2 for 1"
     );
+}
+
+/// When a customer_receipt template is synced and we finalize an order, the generated document
+/// must have mime_type application/pdf and content that decodes to valid PDF bytes.
+#[tokio::test]
+async fn finalize_order_with_synced_template_produces_pdf_receipt() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("pool");
+    run_migrations(&pool).await.expect("migrations");
+    let store_id = Uuid::nil();
+
+    upsert_print_template(
+        &pool,
+        store_id,
+        "customer_receipt",
+        Uuid::new_v4(),
+        "<html><body>Receipt {{order_id}} Total: {{total_cents}}</body></html>",
+        1,
+    )
+    .await
+    .expect("upsert template");
+
+    let state = AppState {
+        store_id,
+        pool: pool.clone(),
+        metrics_handle: None,
+    };
+    let item_id = Uuid::new_v4();
+    insert_catalog_item(
+        &pool,
+        item_id,
+        store_id,
+        "PDF-001",
+        "PDF Test Item",
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+    )
+    .await
+    .expect("insert_catalog_item");
+    insert_price_book_entry(&pool, store_id, item_id, None, 500, "USD")
+        .await
+        .expect("insert_price_book_entry");
+    insert_tax_rule(
+        &pool,
+        Uuid::new_v4(),
+        store_id,
+        Uuid::nil(),
+        0,
+        "No tax",
+        false,
+    )
+    .await
+    .expect("insert_tax_rule");
+
+    let created = handle_pos_command(
+        State(state.clone()),
+        Json(PosRequestEnvelope {
+            version: ContractVersion::V1_0_0,
+            idempotency_key: Uuid::new_v4(),
+            store_id,
+            register_id: Uuid::nil(),
+            payload: PosCommand::CreateCart(CreateCartPayload { cart_id: None }),
+        }),
+    )
+    .await;
+    assert!(created.0.success);
+    let cart_state: CartState =
+        serde_json::from_value(created.0.payload.unwrap()).expect("cart state");
+
+    let _ = handle_pos_command(
+        State(state.clone()),
+        Json(PosRequestEnvelope {
+            version: ContractVersion::V1_0_0,
+            idempotency_key: Uuid::new_v4(),
+            store_id,
+            register_id: Uuid::nil(),
+            payload: PosCommand::AddLineItem(AddLineItemPayload {
+                cart_id: cart_state.cart_id,
+                item_id,
+                modifier_option_ids: vec![],
+                quantity: 1,
+                notes: None,
+                unit_price_override_cents: None,
+            }),
+        }),
+    )
+    .await;
+    let _ = handle_pos_command(
+        State(state.clone()),
+        Json(PosRequestEnvelope {
+            version: ContractVersion::V1_0_0,
+            idempotency_key: Uuid::new_v4(),
+            store_id,
+            register_id: Uuid::nil(),
+            payload: PosCommand::SetTendering(apex_edge_contracts::SetTenderingPayload {
+                cart_id: cart_state.cart_id,
+            }),
+        }),
+    )
+    .await;
+    let _ = handle_pos_command(
+        State(state.clone()),
+        Json(PosRequestEnvelope {
+            version: ContractVersion::V1_0_0,
+            idempotency_key: Uuid::new_v4(),
+            store_id,
+            register_id: Uuid::nil(),
+            payload: PosCommand::AddPayment(apex_edge_contracts::AddPaymentPayload {
+                cart_id: cart_state.cart_id,
+                tender_id: Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap(),
+                amount_cents: 500,
+                external_reference: None,
+            }),
+        }),
+    )
+    .await;
+    let finalize_res = handle_pos_command(
+        State(state.clone()),
+        Json(PosRequestEnvelope {
+            version: ContractVersion::V1_0_0,
+            idempotency_key: Uuid::new_v4(),
+            store_id,
+            register_id: Uuid::nil(),
+            payload: PosCommand::FinalizeOrder(apex_edge_contracts::FinalizeOrderPayload {
+                cart_id: cart_state.cart_id,
+            }),
+        }),
+    )
+    .await;
+    assert!(finalize_res.0.success, "finalize should succeed");
+    let finalize_payload: apex_edge_contracts::FinalizeResult =
+        serde_json::from_value(finalize_res.0.payload.unwrap()).expect("finalize payload");
+    let order_id = finalize_payload.order_id;
+
+    let docs = list_documents_for_order(&pool, order_id)
+        .await
+        .expect("list docs");
+    let receipt = docs
+        .iter()
+        .find(|d| d.document_type == "customer_receipt" || d.document_type == "receipt")
+        .expect("receipt document should exist");
+    assert_eq!(
+        receipt.mime_type, "application/pdf",
+        "receipt document must be PDF when template is synced"
+    );
+    let doc = apex_edge_storage::get_document(&pool, receipt.id)
+        .await
+        .expect("get doc")
+        .expect("doc exists");
+    assert_eq!(doc.mime_type, "application/pdf");
+    let content = doc.content.expect("content present");
+    let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, content.trim())
+        .expect("content must be valid base64 PDF");
+    assert!(
+        bytes.starts_with(b"%PDF-"),
+        "decoded content must be PDF (starts with %PDF-)"
+    );
+}
+
+/// When a gift_receipt template is synced, create_gift_receipt_document must produce a document
+/// with mime_type application/pdf.
+#[tokio::test]
+async fn gift_receipt_with_synced_template_produces_pdf() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("pool");
+    run_migrations(&pool).await.expect("migrations");
+    let store_id = Uuid::nil();
+
+    upsert_print_template(
+        &pool,
+        store_id,
+        "gift_receipt",
+        Uuid::new_v4(),
+        "<html><body>Gift Receipt {{order_id}}</body></html>",
+        1,
+    )
+    .await
+    .expect("upsert gift_receipt template");
+
+    let order_id = Uuid::new_v4();
+    let source_doc_id = Uuid::new_v4();
+    enqueue_document(
+        &pool,
+        source_doc_id,
+        "receipt",
+        Some(order_id),
+        None,
+        Uuid::new_v4(),
+        r#"{"order_id":"oid","total_cents":999}"#,
+    )
+    .await
+    .expect("enqueue");
+    mark_generated(&pool, source_doc_id, "text/plain", "receipt")
+        .await
+        .expect("mark generated");
+
+    let state = AppState {
+        store_id,
+        pool: pool.clone(),
+        metrics_handle: None,
+    };
+    let created = create_gift_receipt_document(State(state), axum::extract::Path(order_id))
+        .await
+        .expect("create_gift_receipt");
+    assert_eq!(created.0.document_type, "gift_receipt");
+    assert_eq!(
+        created.0.mime_type, "application/pdf",
+        "gift receipt document must be PDF when template is synced"
+    );
+    let new_doc_id = created.0.id;
+    assert_ne!(new_doc_id, source_doc_id);
+    let doc = apex_edge_storage::get_document(&pool, new_doc_id)
+        .await
+        .expect("get")
+        .expect("doc");
+    assert_eq!(doc.mime_type, "application/pdf");
+    let content = doc.content.expect("content");
+    let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, content.trim())
+        .expect("base64");
+    assert!(bytes.starts_with(b"%PDF-"));
 }

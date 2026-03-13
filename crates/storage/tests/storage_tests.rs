@@ -272,6 +272,70 @@ async fn sync_status_upsert_and_read_latest_run() {
     assert!(run2.finished_at.is_some());
 }
 
+// --- Print templates ---
+
+#[tokio::test]
+async fn print_template_upsert_and_get_by_store_and_document_type() {
+    let pool = test_pool().await;
+    let store_id = Uuid::from_u128(1);
+    let template_id = Uuid::from_u128(0xBB01);
+
+    upsert_print_template(
+        &pool,
+        store_id,
+        "customer_receipt",
+        template_id,
+        "<html><body>Receipt {{order_id}}</body></html>",
+        1,
+    )
+    .await
+    .expect("upsert_print_template");
+
+    let row = get_print_template(&pool, store_id, "customer_receipt")
+        .await
+        .expect("get_print_template")
+        .expect("template exists");
+    assert_eq!(row.template_id, template_id);
+    assert_eq!(row.document_type, "customer_receipt");
+    assert!(row.template_body.contains("{{order_id}}"));
+
+    // Upsert again (replace); version and body can change.
+    upsert_print_template(
+        &pool,
+        store_id,
+        "customer_receipt",
+        template_id,
+        "<html><body>Receipt {{order_id}} v2</body></html>",
+        2,
+    )
+    .await
+    .expect("upsert again");
+
+    let row2 = get_print_template(&pool, store_id, "customer_receipt")
+        .await
+        .expect("get")
+        .expect("template exists");
+    assert_eq!(row2.version, 2);
+    assert!(row2.template_body.contains("v2"));
+
+    // Different document_type is separate row.
+    upsert_print_template(
+        &pool,
+        store_id,
+        "gift_receipt",
+        Uuid::from_u128(0xBB02),
+        "<html>Gift</html>",
+        1,
+    )
+    .await
+    .expect("upsert gift_receipt");
+    let gift = get_print_template(&pool, store_id, "gift_receipt")
+        .await
+        .expect("get")
+        .expect("gift template exists");
+    assert_eq!(gift.document_type, "gift_receipt");
+}
+
 #[tokio::test]
 async fn sync_status_upsert_and_read_entity_statuses() {
     let pool = test_pool().await;

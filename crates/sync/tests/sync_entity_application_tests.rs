@@ -4,10 +4,11 @@
 //! actually appears in the corresponding DB table — not just that checkpoints advance.
 
 use apex_edge_contracts::{
-    CatalogItem, Category, Customer, InventoryLevel, PriceBook, PriceBookEntry, TaxRule,
+    CatalogItem, Category, Customer, DocumentType, InventoryLevel, PriceBook, PriceBookEntry,
+    PrintTemplateConfig, TaxRule,
 };
 use apex_edge_storage::{
-    get_catalog_item, insert_catalog_item, list_catalog_items, list_categories,
+    get_catalog_item, get_print_template, insert_catalog_item, list_catalog_items, list_categories,
     list_price_book_entries, list_tax_rules, run_migrations, search_customers,
 };
 use apex_edge_sync::{run_sync_ndjson, SyncEntityConfig, SyncSourceConfig};
@@ -484,6 +485,99 @@ async fn sync_catalog_persists_is_active_flag() {
         !stored.is_active,
         "is_active=false should be persisted from catalog sync"
     );
+}
+
+#[tokio::test]
+async fn sync_print_templates_are_applied_to_db() {
+    let template_id = Uuid::parse_str("a7a7a7a7-a7a7-a7a7-a7a7-a7a7a7a7a7a7").unwrap();
+    let template = PrintTemplateConfig {
+        id: template_id,
+        document_type: DocumentType::CustomerReceipt,
+        template_body:
+            "<html><body>Sales Receipt {{order_id}} Total: {{total_cents}}</body></html>".into(),
+        version: 1,
+    };
+    let payload = serde_json::to_vec(&template).unwrap();
+    let body = ndjson_body(&[payload]);
+
+    let (_, base_url) = start_entity_server("print_templates", body).await;
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("pool");
+    run_migrations(&pool).await.expect("migrations");
+
+    let config = SyncSourceConfig {
+        base_url,
+        entities: vec![SyncEntityConfig {
+            entity: "print_templates".into(),
+            path: "/sync/ndjson/print_templates".into(),
+        }],
+    };
+    run_sync_ndjson(
+        &reqwest::Client::new(),
+        &pool,
+        &config,
+        apex_edge_contracts::ContractVersion::V1_0_0,
+        STORE_ID,
+    )
+    .await
+    .expect("run_sync_ndjson");
+
+    let row = get_print_template(&pool, STORE_ID, "customer_receipt")
+        .await
+        .expect("get_print_template")
+        .expect("one template should be stored");
+    assert_eq!(row.template_id, template_id);
+    assert_eq!(row.document_type, "customer_receipt");
+    assert!(row.template_body.contains("{{order_id}}"));
+    assert_eq!(row.version, 1);
+}
+
+#[tokio::test]
+async fn sync_gift_receipt_template_applied_to_db() {
+    let template_id = Uuid::parse_str("b8b8b8b8-b8b8-b8b8-b8b8-b8b8b8b8b8b8").unwrap();
+    let template = PrintTemplateConfig {
+        id: template_id,
+        document_type: DocumentType::GiftReceipt,
+        template_body: "<html><body>Gift Receipt {{order_id}}</body></html>".into(),
+        version: 1,
+    };
+    let payload = serde_json::to_vec(&template).unwrap();
+    let body = ndjson_body(&[payload]);
+
+    let (_, base_url) = start_entity_server("print_templates", body).await;
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("pool");
+    run_migrations(&pool).await.expect("migrations");
+
+    let config = SyncSourceConfig {
+        base_url,
+        entities: vec![SyncEntityConfig {
+            entity: "print_templates".into(),
+            path: "/sync/ndjson/print_templates".into(),
+        }],
+    };
+    run_sync_ndjson(
+        &reqwest::Client::new(),
+        &pool,
+        &config,
+        apex_edge_contracts::ContractVersion::V1_0_0,
+        STORE_ID,
+    )
+    .await
+    .expect("run_sync_ndjson");
+
+    let row = get_print_template(&pool, STORE_ID, "gift_receipt")
+        .await
+        .expect("get_print_template")
+        .expect("gift receipt template should be stored");
+    assert_eq!(row.template_id, template_id);
+    assert_eq!(row.document_type, "gift_receipt");
 }
 
 #[tokio::test]

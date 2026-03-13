@@ -221,6 +221,29 @@ async fn apply_entity_batch(
                 .map_err(crate::ingest::IngestError::Storage)
                 .map_err(RunSyncError::Ingest)?;
         }
+        "print_templates" => {
+            use apex_edge_contracts::PrintTemplateConfig;
+            for payload in batch {
+                let template: PrintTemplateConfig = serde_json::from_slice(payload)
+                    .map_err(|_| crate::ingest::IngestError::InvalidPayload)?;
+                // Use serde (rename_all = "snake_case") to get document_type string
+                let doc_type_str = serde_json::to_string(&template.document_type)
+                    .ok()
+                    .map(|s| s.trim_matches('"').to_string())
+                    .unwrap_or_else(|| "customer_receipt".into());
+                apex_edge_storage::upsert_print_template(
+                    pool,
+                    store_id,
+                    &doc_type_str,
+                    template.id,
+                    &template.template_body,
+                    template.version as i64,
+                )
+                .await
+                .map_err(crate::ingest::IngestError::Storage)
+                .map_err(RunSyncError::Ingest)?;
+            }
+        }
         _ => {
             // Unknown entity: checkpoint advances but no data is stored.
             // This is intentional for forward-compatibility with future HQ entity types.

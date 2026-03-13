@@ -271,6 +271,7 @@ flowchart TB
         B5[list_order_documents]
         B6[outbox_dispatch]
         B7[sync_ingest]
+        B8[document_render]
     end
     subgraph owners [Owner Crate / Module]
         O1[apex_edge_api / health]
@@ -280,6 +281,7 @@ flowchart TB
         O5[apex_edge_api / documents]
         O6[apex_edge_outbox / dispatcher]
         O7[apex_edge_sync / ingest]
+        O8[apex_edge_printing / generator]
     end
     B1 --> O1
     B2 --> O2
@@ -288,6 +290,7 @@ flowchart TB
     B5 --> O5
     B6 --> O6
     B7 --> O7
+    B8 --> O8
 ```
 
 **Notes:**
@@ -467,3 +470,27 @@ flowchart TD
 - **Outputs:** `access-control-allow-origin` header on preflight and actual responses; restricted list means unknown origins receive no matching header and browsers enforce the block.
 - **Failure path:** Malformed origin strings (not valid `HeaderValue`) are silently skipped; if all entries are invalid the fallback is wildcard with a warning.
 - **Tests:** `cors_restricted_trusted_origin_is_allowed` and `cors_restricted_unknown_origin_is_rejected` in `apex-edge/tests/cors_http.rs` verify both branches.
+
+### 14. Synced PDF Receipt Templates
+
+**Purpose:** Document how receipt and gift-receipt documents are produced from synced HTML templates, rendered with cart/order data, and output as PDFs for the POS to open or print.
+
+```mermaid
+flowchart LR
+    HqTemplates[HQTemplateSync] --> SyncApply[SyncApplyPrintTemplates]
+    SyncApply --> TemplateStore[(PrintTemplatesSQLite)]
+    FinalizeOrder[FinalizeOrder] --> ReceiptVm[BuildReceiptViewModel]
+    ReceiptVm --> TemplateResolve[ResolveTemplateByStoreDocType]
+    TemplateResolve --> HtmlRender[RenderHtmlTemplate]
+    HtmlRender --> PdfEngine[HeadlessChromePdf]
+    PdfEngine --> Documents[(DocumentsSQLite)]
+    Documents --> FrontendOpen[FrontendOpenPdf]
+    FrontendOpen --> BrowserPrint[BrowserPrintAttempt]
+```
+
+**Notes:**
+- **Inputs:** Sync entity `print_templates` with payloads `PrintTemplateConfig` (id, document_type, template_body, version); store_id from sync context. Finalize/gift-receipt use receipt view-model (order_id, store/customer/totals/lines/payments, tenant, logo placeholder).
+- **Outputs:** Documents table row with `mime_type application/pdf` and base64-encoded PDF in `content`; frontend opens via Blob URL and attempts print.
+- **Template engine:** `{{key}}` substitution and `{{#each key}}...{{/each}}` for arrays; HTML template rendered to PDF via headless Chrome.
+- **Failure path:** Missing template falls back to plain-text receipt. Template render error or PDF engine failure marks document as failed and is recorded in `apex_edge_document_render_total{outcome=template_error|pdf_error}`.
+- **Metrics:** `apex_edge_document_render_total{document_type, outcome}`, `apex_edge_document_render_duration_seconds{document_type}`. Sync of `print_templates` is covered by `apex_edge_sync_ingest_batches_total{entity=print_templates}`.

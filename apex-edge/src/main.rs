@@ -44,6 +44,10 @@ fn default_sync_entities() -> Vec<SyncEntityConfig> {
             entity: "inventory".into(),
             path: "/sync/ndjson/inventory".into(),
         },
+        SyncEntityConfig {
+            entity: "print_templates".into(),
+            path: "/sync/ndjson/print_templates".into(),
+        },
     ]
 }
 

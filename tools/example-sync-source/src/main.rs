@@ -286,6 +286,30 @@ async fn ndjson_coupons(State(state): State<Arc<AppState>>) -> Response<Body> {
         .unwrap()
 }
 
+async fn ndjson_print_templates(State(_state): State<Arc<AppState>>) -> Response<Body> {
+    use apex_edge_contracts::{DocumentType, PrintTemplateConfig};
+    let customer_receipt = PrintTemplateConfig {
+        id: Uuid::parse_str("90000000-0000-0000-0000-000000000001").unwrap(),
+        document_type: DocumentType::CustomerReceipt,
+        template_body: r#"<!DOCTYPE html><html><head><meta charset="utf-8"><title>Receipt</title></head><body><h1>Receipt</h1><p>Order: {{order_id}}</p><p>Total: {{total_cents}} cents</p><table><thead><tr><th>Item</th><th>Qty</th><th>Total</th></tr></thead><tbody>{{#each lines}}<tr><td>{{name}}</td><td>{{quantity}}</td><td>{{line_total_cents}}</td></tr>{{/each}}</tbody></table><p>Subtotal: {{subtotal_cents}} | Tax: {{tax_cents}} | Discount: {{discount_cents}}</p></body></html>"#.into(),
+        version: 1,
+    };
+    let gift_receipt = PrintTemplateConfig {
+        id: Uuid::parse_str("90000000-0000-0000-0000-000000000002").unwrap(),
+        document_type: DocumentType::GiftReceipt,
+        template_body: r#"<!DOCTYPE html><html><head><meta charset="utf-8"><title>Gift Receipt</title></head><body><h1>Gift Receipt</h1><p>Order: {{order_id}}</p><p>Total: {{total_cents}} cents</p></body></html>"#.into(),
+        version: 1,
+    };
+    let lines = vec![
+        b64(&serde_json::to_vec(&customer_receipt).unwrap()),
+        b64(&serde_json::to_vec(&gift_receipt).unwrap()),
+    ];
+    Response::builder()
+        .header("content-type", "application/x-ndjson")
+        .body(ndjson_body(lines))
+        .unwrap()
+}
+
 #[tokio::main]
 async fn main() {
     let port: u16 = std::env::var("SYNC_SOURCE_PORT")
@@ -306,6 +330,7 @@ async fn main() {
         .route("/sync/ndjson/customers", get(ndjson_customers))
         .route("/sync/ndjson/coupons", get(ndjson_coupons))
         .route("/sync/ndjson/inventory", get(ndjson_inventory))
+        .route("/sync/ndjson/print_templates", get(ndjson_print_templates))
         .with_state(state);
 
     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));

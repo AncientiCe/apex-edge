@@ -160,3 +160,13 @@ pub const CATALOG_STOCK_CHECKS_TOTAL: &str = "apex_edge_catalog_stock_checks_tot
 
 /// Counter: product-by-id endpoint hits. Labels: outcome (hit, not_found, error).
 pub const CATALOG_PRODUCT_BY_ID_TOTAL: &str = "apex_edge_catalog_product_by_id_total";
+
+// ---------- Document rendering (printing) ----------
+/// Counter: document render attempts. Labels: document_type, outcome (ok, template_error, pdf_error).
+pub const DOCUMENT_RENDER_TOTAL: &str = "apex_edge_document_render_total";
+/// Histogram: render duration in seconds. Labels: document_type.
+pub const DOCUMENT_RENDER_DURATION_SECONDS: &str = "apex_edge_document_render_duration_seconds";
+
+/// outcome for document render: ok, template_error, pdf_error.
+pub const OUTCOME_TEMPLATE_ERROR: &str = "template_error";
+pub const OUTCOME_PDF_ERROR: &str = "pdf_error";

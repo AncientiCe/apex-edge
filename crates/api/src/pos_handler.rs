@@ -11,8 +11,8 @@ use apex_edge_domain::{
 };
 use apex_edge_printing::generate_document;
 use apex_edge_storage::{
-    get_catalog_item, get_customer, insert_outbox, list_price_book_entries, list_promotions,
-    list_tax_rules, load_cart, save_cart,
+    get_catalog_item, get_customer, get_print_template, insert_outbox, list_price_book_entries,
+    list_promotions, list_tax_rules, load_cart, save_cart,
 };
 use sqlx::SqlitePool;
 use uuid::Uuid;
@@ -828,7 +828,19 @@ pub async fn execute_pos_command(
                 };
             }
             let doc_id = Uuid::new_v4();
-            let template_id = Uuid::nil();
+            let (customer_name, customer_address) = match cart.customer_id {
+                Some(cid) => {
+                    if let Ok(Some(c)) = get_customer(pool, store_id, cid).await {
+                        (
+                            Some(c.name),
+                            c.email.as_ref().map(|e| format!("Email: {e}")),
+                        )
+                    } else {
+                        (None, None)
+                    }
+                }
+                None => (None, None),
+            };
             let receipt_payload = serde_json::json!({
                 "order_id": order_id.to_string(),
                 "cart_id": cart.id.to_string(),
@@ -836,12 +848,21 @@ pub async fn execute_pos_command(
                 "subtotal_cents": order.subtotal_cents,
                 "discount_cents": order.discount_cents,
                 "tax_cents": order.tax_cents,
+                "store_name": "Store",
+                "store_address": "",
+                "customer_name": customer_name.unwrap_or_default(),
+                "customer_address": customer_address.unwrap_or_default(),
+                "tenant": "Tenant",
+                "logo_placeholder": "",
+                "created_at": order.created_at.to_rfc3339(),
                 "lines": order.lines.iter().map(|l| serde_json::json!({
                     "sku": l.sku,
                     "name": l.name,
                     "quantity": l.quantity,
+                    "unit_price_cents": l.unit_price_cents,
                     "line_total_cents": l.line_total_cents,
                     "discount_cents": l.discount_cents,
+                    "tax_cents": l.tax_cents,
                 })).collect::<Vec<_>>(),
                 "payments": order.payments.iter().map(|(tender_id, amount, _)| serde_json::json!({
                     "tender_id": tender_id.to_string(),
@@ -849,16 +870,37 @@ pub async fn execute_pos_command(
                 })).collect::<Vec<_>>(),
             });
             let receipt_payload_str = receipt_payload.to_string();
+
+            let template = get_print_template(pool, store_id, "customer_receipt")
+                .await
+                .ok()
+                .flatten();
+            let (doc_type, template_id, template_body, mime_type) = if let Some(ref t) = template {
+                (
+                    "customer_receipt",
+                    t.template_id,
+                    t.template_body.as_str(),
+                    "application/pdf",
+                )
+            } else {
+                (
+                    "receipt",
+                    Uuid::nil(),
+                    "{{order_id}} Total: {{total_cents}}",
+                    "text/plain",
+                )
+            };
+
             if let Err(e) = generate_document(
                 pool,
                 doc_id,
-                "receipt",
+                doc_type,
                 Some(order_id),
                 Some(cart.id),
                 template_id,
-                "{{order_id}} Total: {{total_cents}}",
+                template_body,
                 &receipt_payload_str,
-                "text/plain",
+                mime_type,
             )
             .await
             {

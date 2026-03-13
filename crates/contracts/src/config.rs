@@ -39,12 +39,27 @@ pub struct PrintTemplateConfig {
     pub version: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum DocumentType {
     CustomerReceipt,
+    GiftReceipt,
     MerchantCopy,
     KitchenChit,
     Invoice,
     EndOfDayReport,
+}
+
+impl DocumentType {
+    /// String used in API and storage (e.g. "customer_receipt", "gift_receipt").
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            DocumentType::CustomerReceipt => "customer_receipt",
+            DocumentType::GiftReceipt => "gift_receipt",
+            DocumentType::MerchantCopy => "merchant_copy",
+            DocumentType::KitchenChit => "kitchen_chit",
+            DocumentType::Invoice => "invoice",
+            DocumentType::EndOfDayReport => "end_of_day_report",
+        }
+    }
 }

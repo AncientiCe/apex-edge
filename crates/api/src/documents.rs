@@ -108,13 +108,29 @@ pub async fn create_gift_receipt_document(
         .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
     let source = existing
         .iter()
-        .find(|d| d.document_type == "receipt")
+        .find(|d| d.document_type == "customer_receipt" || d.document_type == "receipt")
         .or_else(|| existing.first())
         .ok_or(axum::http::StatusCode::NOT_FOUND)?;
 
     let payload: serde_json::Value = serde_json::from_str(&source.payload)
         .unwrap_or_else(|_| serde_json::json!({ "order_id": order_id.to_string() }));
     let payload_json = payload.to_string();
+
+    let template =
+        apex_edge_storage::get_print_template(&state.pool, state.store_id, "gift_receipt")
+            .await
+            .ok()
+            .flatten();
+    let (template_id, template_body, mime_type) = if let Some(ref t) = template {
+        (t.template_id, t.template_body.as_str(), "application/pdf")
+    } else {
+        (
+            Uuid::nil(),
+            "Gift Receipt\nOrder: {{order_id}}\nTotal: {{total_cents}}",
+            "text/plain",
+        )
+    };
+
     let doc_id = Uuid::new_v4();
     generate_document(
         &state.pool,
@@ -122,10 +138,10 @@ pub async fn create_gift_receipt_document(
         "gift_receipt",
         Some(order_id),
         source.cart_id,
-        Uuid::nil(),
-        "Gift Receipt\nOrder: {{order_id}}\nTotal: {{total_cents}}",
+        template_id,
+        template_body,
         &payload_json,
-        "text/plain",
+        mime_type,
     )
     .await
     .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;

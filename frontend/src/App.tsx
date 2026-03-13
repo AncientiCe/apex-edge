@@ -372,13 +372,48 @@ function AppInner() {
       const doc = await getDocument(baseUrl, documentId);
       logEvent('res', `document ${documentId}`);
       const content = doc.content ?? doc.error_message ?? '(empty)';
+      const mimeType = doc.mime_type ?? 'text/plain';
+
+      if (mimeType === 'application/pdf' && content) {
+        try {
+          const binary = atob(content.trim());
+          const bytes = new Uint8Array(binary.length);
+          for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+          const blob = new Blob([bytes], { type: 'application/pdf' });
+          const url = URL.createObjectURL(blob);
+          const win = window.open(url, '_blank');
+          if (win) {
+            win.addEventListener('load', () => {
+              try {
+                win.print();
+              } catch {
+                // Print not supported or blocked; PDF is still open in tab
+              }
+            });
+            // Revoke after a delay so the new window can load the blob
+            setTimeout(() => URL.revokeObjectURL(url), 60000);
+          } else {
+            // Popup blocked: fall back to same-tab navigation
+            window.location.href = url;
+          }
+        } catch (e) {
+          pushToast('Could not open PDF');
+          const win = window.open('', '_blank');
+          if (win) {
+            win.document.write(`<pre style="font-family: ui-monospace,monospace">${content}</pre>`);
+            win.document.close();
+          }
+        }
+        return;
+      }
+
       const win = window.open('', '_blank');
       if (win) {
         win.document.write(`<pre style="font-family: ui-monospace,monospace">${content}</pre>`);
         win.document.close();
       }
     },
-    [baseUrl, logEvent]
+    [baseUrl, logEvent, pushToast]
   );
 
   const onPrint = useCallback(async () => {
@@ -388,7 +423,10 @@ function AppInner() {
       docs = await listOrderDocuments(baseUrl, saleSummary.finalize.order_id);
       setSaleSummary((prev) => (prev ? { ...prev, documents: docs } : prev));
     }
-    const doc = docs.find((d) => d.document_type === 'receipt') ?? docs[0];
+    const doc =
+      docs.find((d) => d.document_type === 'customer_receipt') ??
+      docs.find((d) => d.document_type === 'receipt') ??
+      docs[0];
     if (!doc) {
       pushToast('No printable document found');
       return;
