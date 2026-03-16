@@ -118,6 +118,17 @@ a,
   gap: 0.5rem;
 }
 
+.connection-auth-wrap {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.auth-fields .connection-url {
+  flex: 1 1 180px;
+}
+
 .connection-url {
   flex: 1 1 140px;
   min-width: 0;
@@ -177,6 +188,53 @@ a,
 
 .connection-status-pill .dot.pending {
   background: var(--orange);
+}
+
+.auth-status {
+  font-size: 0.75rem;
+  font-weight: 600;
+  border-radius: var(--radius-pill);
+  padding: 0.22rem 0.55rem;
+  background: var(--bg-search);
+  color: var(--label-secondary);
+}
+
+.auth-status.ok {
+  background: var(--green-soft);
+  color: var(--green);
+}
+
+.auth-status.pending {
+  background: rgba(255, 149, 0, 0.14);
+  color: #8a5a00;
+}
+
+.auth-error {
+  font-size: 0.78rem;
+  color: var(--red);
+}
+
+.auth-note {
+  font-size: 0.74rem;
+  color: var(--label-secondary);
+}
+
+.auth-gate {
+  background: var(--bg-secondary);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+  padding: 1rem;
+}
+
+.auth-gate h2 {
+  margin: 0 0 0.4rem;
+  font-size: 1.05rem;
+}
+
+.auth-gate p {
+  margin: 0;
+  color: var(--label-secondary);
+  font-size: 0.9rem;
 }
 
 /* ===== Bottom Tab Bar ===== */
@@ -1059,9 +1117,9 @@ button:disabled {
   }
 
   .pos-header {
-    flex-direction: row;
-    align-items: center;
-    justify-content: space-between;
+    flex-direction: column;
+    align-items: stretch;
+    justify-content: flex-start;
     padding: 0.5rem 1.5rem;
   }
 

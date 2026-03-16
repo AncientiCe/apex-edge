@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { BrowserRouter, Route, Routes, useNavigate, useParams } from 'react-router-dom';
 import {
+  configureAuthTransport,
+  createPairingCode,
+  pairDevice,
+  exchangeSession,
+  revokeSession,
+  generateMockExternalToken,
   getHealth,
   getProductById,
   getReady,
@@ -37,6 +43,7 @@ import { ProductDetailPage } from './panels/ProductDetailPage';
 const STORE_ID = '00000000-0000-0000-0000-000000000000';
 const REGISTER_ID = '00000000-0000-0000-0000-000000000000';
 const LS_CART_ID = 'apex_edge_cart_id';
+const DEFAULT_ASSOCIATE_ID = 'associate-1';
 
 export type LogEntry = { ts: string; kind: 'req' | 'res' | 'err'; text: string };
 type Stage = 'customers' | 'catalog' | 'cart' | 'pay' | 'summary' | 'sync';
@@ -96,6 +103,29 @@ function AppInner() {
   );
   const [healthStatus, setHealthStatus] = useState<string | null>(null);
   const [readyStatus, setReadyStatus] = useState<string | null>(null);
+  const [storeId, setStoreId] = useState<string>(STORE_ID);
+  const [associateId, setAssociateId] = useState<string>(DEFAULT_ASSOCIATE_ID);
+  const [deviceName, setDeviceName] = useState<string>(
+    () => import.meta.env.VITE_AUTH_DEFAULT_DEVICE_NAME ?? 'Simulator iPad'
+  );
+  const [devicePlatform, setDevicePlatform] = useState<string>('ios');
+  const [authIssuer, setAuthIssuer] = useState<string>(
+    () => import.meta.env.VITE_AUTH_EXTERNAL_ISSUER ?? 'https://issuer.example'
+  );
+  const [authAudience, setAuthAudience] = useState<string>(
+    () => import.meta.env.VITE_AUTH_EXTERNAL_AUDIENCE ?? 'mpos'
+  );
+  const [mockTokenSecret, setMockTokenSecret] = useState<string>(
+    () => import.meta.env.VITE_AUTH_EXTERNAL_HS256_SECRET ?? ''
+  );
+  const [deviceId, setDeviceId] = useState<string | null>(null);
+  const [deviceSecret, setDeviceSecret] = useState<string | null>(null);
+  const [accessToken, setAccessToken] = useState<string | null>(null);
+  const [refreshToken, setRefreshToken] = useState<string | null>(null);
+  const [expiresAt, setExpiresAt] = useState<string | null>(null);
+  const [authReady, setAuthReady] = useState<boolean>(false);
+  const [authBusy, setAuthBusy] = useState<boolean>(false);
+  const [authError, setAuthError] = useState<string | null>(null);
   const [stage, setStage] = useState<Stage>('customers');
   const [cartId, setCartId] = useState<string | null>(
     () => localStorage.getItem(LS_CART_ID)
@@ -123,6 +153,121 @@ function AppInner() {
       setToasts((prev) => prev.filter((t) => t.id !== id));
     }, 2200);
   }, []);
+
+  const clearAuthState = useCallback((reason?: string) => {
+    setDeviceId(null);
+    setDeviceSecret(null);
+    setAccessToken(null);
+    setRefreshToken(null);
+    setExpiresAt(null);
+    setAuthReady(false);
+    if (reason) {
+      setAuthError(reason);
+    }
+  }, []);
+
+  useEffect(() => {
+    configureAuthTransport({
+      getAccessToken: () => accessToken,
+      getRefreshToken: () => refreshToken,
+      onTokens: (tokens) => {
+        setAccessToken(tokens.accessToken);
+        setRefreshToken(tokens.refreshToken);
+        setExpiresAt(tokens.expiresAt);
+        setAuthReady(true);
+        setAuthError(null);
+      },
+      onAuthFailure: (reason) => {
+        clearAuthState(`Authentication lost: ${reason}`);
+        pushToast('Session expired. Sign in again.');
+      },
+    });
+    return () => configureAuthTransport(null);
+  }, [accessToken, clearAuthState, pushToast, refreshToken]);
+
+  const onPairAndSignIn = useCallback(async () => {
+    if (!baseUrl) return;
+    if (!mockTokenSecret.trim()) {
+      setAuthError('Mock token secret is required.');
+      return;
+    }
+    setAuthBusy(true);
+    setAuthError(null);
+    try {
+      logEvent('req', 'POST /auth/pairing-codes');
+      const pairing = await createPairingCode(baseUrl, {
+        store_id: storeId,
+        created_by: 'simulator',
+      });
+      logEvent('res', `pairing code id=${pairing.pairing_code_id}`);
+
+      logEvent('req', 'POST /auth/devices/pair');
+      const paired = await pairDevice(baseUrl, {
+        pairing_code: pairing.code,
+        store_id: storeId,
+        device_name: deviceName,
+        platform: devicePlatform || null,
+      });
+      setDeviceId(paired.device_id);
+      setDeviceSecret(paired.device_secret);
+      logEvent('res', `device paired id=${paired.device_id}`);
+
+      const external = await generateMockExternalToken({
+        associateId,
+        issuer: authIssuer,
+        audience: authAudience,
+        storeId,
+        secret: mockTokenSecret,
+      });
+      logEvent('req', 'POST /auth/sessions/exchange');
+      const session = await exchangeSession(baseUrl, {
+        external_token: external,
+        device_id: paired.device_id,
+        device_secret: paired.device_secret,
+      });
+      setAccessToken(session.access_token);
+      setRefreshToken(session.refresh_token);
+      setExpiresAt(session.expires_at);
+      setAuthReady(true);
+      logEvent('res', 'session exchanged');
+      pushToast('Authenticated');
+    } catch (e) {
+      const err = e as ApiError;
+      setAuthError(err.message);
+      setAuthReady(false);
+      logEvent('err', `auth: ${err.message}`);
+      pushToast(err.message);
+    } finally {
+      setAuthBusy(false);
+    }
+  }, [
+    associateId,
+    authAudience,
+    authIssuer,
+    baseUrl,
+    deviceName,
+    devicePlatform,
+    logEvent,
+    mockTokenSecret,
+    pushToast,
+    storeId,
+  ]);
+
+  const onSignOut = useCallback(async () => {
+    try {
+      if (baseUrl && accessToken) {
+        logEvent('req', 'POST /auth/sessions/revoke');
+        await revokeSession(baseUrl, accessToken);
+        logEvent('res', 'session revoked');
+      }
+    } catch (e) {
+      const err = e as ApiError;
+      logEvent('err', `revoke: ${err.message}`);
+    } finally {
+      clearAuthState();
+      pushToast('Signed out');
+    }
+  }, [accessToken, baseUrl, clearAuthState, logEvent, pushToast]);
 
   const checkHealth = useCallback(async () => {
     logEvent('req', `GET ${baseUrl}/health`);
@@ -216,7 +361,7 @@ function AppInner() {
 
   const sendPosCommand = useCallback(
     async (command: PosCommand): Promise<PosResponseEnvelope<CartState | FinalizeResult | null> | null> => {
-      const envelope = buildEnvelope(STORE_ID, REGISTER_ID, command);
+      const envelope = buildEnvelope(storeId, REGISTER_ID, command);
       logEvent('req', `POST /pos/command ${(command as { action: string }).action}`);
       try {
         const res = await postPosCommand(baseUrl, envelope);
@@ -253,7 +398,7 @@ function AppInner() {
         return null;
       }
     },
-    [baseUrl, cartState, fetchSummaryDocuments, logEvent, pushToast]
+    [baseUrl, cartState, fetchSummaryDocuments, logEvent, pushToast, storeId]
   );
 
   const ensureCart = useCallback(async (): Promise<string | null> => {
@@ -473,33 +618,36 @@ function AppInner() {
 
   // On mount: if a cart ID was saved, restore its state from the orchestrator.
   useEffect(() => {
+    if (!authReady) return;
     const savedId = localStorage.getItem(LS_CART_ID);
     if (!savedId || !baseUrl) return;
-    getCartState(baseUrl, savedId).then((state) => {
-      if (state) {
-        setCartId(state.cart_id);
-        setCartState(state);
-      } else {
-        // Cart no longer exists on the backend — clear stale session.
-        localStorage.removeItem(LS_CART_ID);
-        setCartId(null);
-      }
-    }).catch(() => {
-      // Network error on restore is non-fatal; let user start fresh.
-    });
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // intentionally runs once on mount only
+    getCartState(baseUrl, savedId)
+      .then((state) => {
+        if (state) {
+          setCartId(state.cart_id);
+          setCartState(state);
+        } else {
+          // Cart no longer exists on the backend — clear stale session.
+          localStorage.removeItem(LS_CART_ID);
+          setCartId(null);
+        }
+      })
+      .catch(() => {
+        // Network error on restore is non-fatal; let user start fresh.
+      });
+  }, [authReady, baseUrl]);
 
   useEffect(() => {
-    if (!baseUrl || cartId || stage === 'summary') {
+    if (!authReady || !baseUrl || cartId || stage === 'summary') {
       return;
     }
     void ensureCart();
-  }, [baseUrl, cartId, ensureCart, stage]);
+  }, [authReady, baseUrl, cartId, ensureCart, stage]);
 
   // Resolve the attached customer from the edge hub whenever the cart's customer_id changes.
   // Checks the already-fetched customers list first; falls back to a targeted hub lookup.
   useEffect(() => {
+    if (!authReady) return;
     const customerId = cartState?.customer_id ?? null;
     if (!customerId) {
       setAttachedCustomer(null);
@@ -514,7 +662,7 @@ function AppInner() {
     void searchCustomers(baseUrl, customerId).then((results) => {
       setAttachedCustomer(results.find((r) => r.id === customerId) ?? null);
     });
-  }, [cartState?.customer_id, baseUrl, customers, attachedCustomer]);
+  }, [authReady, cartState?.customer_id, baseUrl, customers, attachedCustomer]);
 
   const isCartTab = stage === 'cart' || stage === 'pay' || stage === 'summary';
 
@@ -533,14 +681,46 @@ function AppInner() {
           setBaseUrl={setBaseUrl}
           healthStatus={healthStatus}
           readyStatus={readyStatus}
+          storeId={storeId}
+          setStoreId={setStoreId}
+          associateId={associateId}
+          setAssociateId={setAssociateId}
+          deviceName={deviceName}
+          setDeviceName={setDeviceName}
+          devicePlatform={devicePlatform}
+          setDevicePlatform={setDevicePlatform}
+          authIssuer={authIssuer}
+          setAuthIssuer={setAuthIssuer}
+          authAudience={authAudience}
+          setAuthAudience={setAuthAudience}
+          mockTokenSecret={mockTokenSecret}
+          setMockTokenSecret={setMockTokenSecret}
+          authReady={authReady}
+          authBusy={authBusy}
+          authError={authError}
+          deviceId={deviceId}
+          hasDeviceSecret={Boolean(deviceSecret)}
+          tokenExpiresAt={expiresAt}
+          onPairAndSignIn={onPairAndSignIn}
+          onSignOut={onSignOut}
           onCheckHealth={checkHealth}
           onCheckReady={checkReady}
         />
       </header>
 
       <div className="pos-main">
+        {!authReady && (
+          <section className="auth-gate">
+            <h2>Authentication required</h2>
+            <p>
+              Pair this simulator and sign in from the header before accessing
+              protected POS routes.
+            </p>
+          </section>
+        )}
+
         {/* ── Customers ── */}
-        {stage === 'customers' && (
+        {authReady && stage === 'customers' && (
           <>
             <CustomerPanel
               onSearch={onSearchCustomers}
@@ -570,12 +750,12 @@ function AppInner() {
         )}
 
         {/* ── Sync Status ── */}
-        {stage === 'sync' && (
+        {authReady && stage === 'sync' && (
           <SyncStatusPanel baseUrl={baseUrl} disabled={!baseUrl} />
         )}
 
         {/* ── Catalog ── */}
-        {stage === 'catalog' && (
+        {authReady && stage === 'catalog' && (
           <CatalogPanel
             baseUrl={baseUrl}
             categories={categories}
@@ -588,7 +768,7 @@ function AppInner() {
         )}
 
         {/* ── Cart ── */}
-        {stage === 'cart' && (
+        {authReady && stage === 'cart' && (
           <CartPanel
             cartState={cartState}
             attachedCustomer={attachedCustomer}
@@ -600,7 +780,7 @@ function AppInner() {
         )}
 
         {/* ── Pay ── */}
-        {stage === 'pay' && (
+        {authReady && stage === 'pay' && (
           <div>
             <p className="ios-section-header">Cash Payment</p>
             <div className="ios-card">
@@ -649,7 +829,7 @@ function AppInner() {
         )}
 
         {/* ── Summary ── */}
-        {stage === 'summary' && saleSummary && (
+        {authReady && stage === 'summary' && saleSummary && (
           <div>
             <p className="ios-section-header">Sale Complete</p>
             <div className="ios-card">

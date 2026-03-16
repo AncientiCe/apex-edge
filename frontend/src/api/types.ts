@@ -206,3 +206,47 @@ export interface SyncStatusResponse {
   is_syncing: boolean;
   entities: EntitySyncStatusDto[];
 }
+
+export interface AuthCreatePairingCodeRequest {
+  store_id: string;
+  created_by: string;
+}
+
+export interface AuthCreatePairingCodeResponse {
+  pairing_code_id: string;
+  code: string;
+  expires_at: string;
+}
+
+export interface AuthDevicePairRequest {
+  pairing_code: string;
+  store_id: string;
+  device_name: string;
+  platform: string | null;
+}
+
+export interface AuthDevicePairResponse {
+  device_id: string;
+  device_secret: string;
+}
+
+export interface AuthSessionExchangeRequest {
+  external_token: string;
+  device_id: string;
+  device_secret: string;
+}
+
+export interface AuthSessionRefreshRequest {
+  refresh_token: string;
+}
+
+export interface AuthSessionExchangeResponse {
+  access_token: string;
+  refresh_token: string;
+  expires_at: string;
+  refresh_expires_at: string;
+}
+
+export interface AuthSessionRevokeResponse {
+  revoked: boolean;
+}
