@@ -1,10 +1,13 @@
 //! Reusable app bootstrap for the binary and tests (build router, no bind).
 
 use apex_edge_api::{
-    create_gift_receipt_document, get_cart_state_handler, get_document, get_product_by_id,
-    handle_pos_command, health, list_categories, list_order_documents, ready, search_customers,
-    search_products, serve_metrics, sync_status, AppState,
+    auth_middleware, create_gift_receipt_document, create_pairing_code, exchange_session,
+    get_cart_state_handler, get_document, get_product_by_id, handle_pos_command, health,
+    list_categories, list_order_documents, pair_device, ready, refresh_session, revoke_session,
+    search_customers, search_products, serve_metrics, sync_status, AppState, AuthSettings,
 };
+use axum::middleware;
+use axum::routing::post;
 use axum::{http::HeaderValue, routing::get, Router};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use uuid::Uuid;
@@ -31,7 +34,13 @@ use crate::http_metrics_layer::HttpMetricsLayer;
 ///     .connect("sqlite::memory:")
 ///     .await
 ///     .unwrap();
-/// let _app = build_router(pool, Uuid::nil(), None, vec![]);
+/// let _app = build_router(
+///     pool,
+///     Uuid::nil(),
+///     None,
+///     vec![],
+///     apex_edge_api::AuthSettings::default(),
+/// );
 /// # }
 /// ```
 pub fn build_router(
@@ -39,11 +48,13 @@ pub fn build_router(
     store_id: Uuid,
     metrics_handle: Option<apex_edge_metrics::PrometheusHandle>,
     allowed_origins: Vec<HeaderValue>,
+    auth: AuthSettings,
 ) -> Router {
     let app_state = AppState {
         store_id,
         pool,
         metrics_handle,
+        auth,
     };
     let cors_origin = if allowed_origins.is_empty() {
         AllowOrigin::any()
@@ -61,6 +72,11 @@ pub fn build_router(
     let routes = Router::new()
         .route("/health", get(health))
         .route("/ready", get(ready))
+        .route("/auth/pairing-codes", post(create_pairing_code))
+        .route("/auth/devices/pair", post(pair_device))
+        .route("/auth/sessions/exchange", post(exchange_session))
+        .route("/auth/sessions/refresh", post(refresh_session))
+        .route("/auth/sessions/revoke", post(revoke_session))
         .route("/pos/command", axum::routing::post(handle_pos_command))
         .route("/pos/cart/:cart_id", get(get_cart_state_handler))
         .route("/catalog/products", get(search_products))
@@ -75,6 +91,10 @@ pub fn build_router(
         )
         .route("/metrics", get(serve_metrics))
         .route("/sync/status", get(sync_status))
+        .route_layer(middleware::from_fn_with_state(
+            app_state.clone(),
+            auth_middleware,
+        ))
         .with_state(app_state);
     routes.layer(cors).layer(HttpMetricsLayer)
 }
@@ -82,6 +102,7 @@ pub fn build_router(
 #[cfg(test)]
 mod tests {
     use super::build_router;
+    use apex_edge_api::AuthSettings;
     use apex_edge_storage::{create_sqlite_pool, run_migrations};
     use uuid::Uuid;
 
@@ -89,7 +110,7 @@ mod tests {
     async fn router_exposes_health_and_ready_routes() {
         let pool = create_sqlite_pool("sqlite::memory:").await.expect("pool");
         run_migrations(&pool).await.expect("migrations");
-        let app = build_router(pool, Uuid::nil(), None, vec![]);
+        let app = build_router(pool, Uuid::nil(), None, vec![], AuthSettings::default());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind");
@@ -120,7 +141,13 @@ mod tests {
         let handle = apex_edge_metrics::install_recorder().expect("install recorder");
         let pool = create_sqlite_pool("sqlite::memory:").await.expect("pool");
         run_migrations(&pool).await.expect("migrations");
-        let app = build_router(pool, Uuid::nil(), Some(handle), vec![]);
+        let app = build_router(
+            pool,
+            Uuid::nil(),
+            Some(handle),
+            vec![],
+            AuthSettings::default(),
+        );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind");

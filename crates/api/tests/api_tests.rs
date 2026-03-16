@@ -30,6 +30,7 @@ async fn api_handlers_cover_health_ready_pos_and_documents() {
         store_id: Uuid::nil(),
         pool: pool.clone(),
         metrics_handle: None,
+        auth: apex_edge_api::AuthSettings::default(),
     };
 
     let h = health().await;
@@ -106,6 +107,7 @@ async fn get_document_returns_not_found_for_unknown_id() {
         store_id: Uuid::nil(),
         pool,
         metrics_handle: None,
+        auth: apex_edge_api::AuthSettings::default(),
     };
     let res = get_document(State(state), axum::extract::Path(Uuid::new_v4())).await;
     assert_eq!(
@@ -126,6 +128,7 @@ async fn create_gift_receipt_generates_new_document_for_order() {
         store_id: Uuid::nil(),
         pool: pool.clone(),
         metrics_handle: None,
+        auth: apex_edge_api::AuthSettings::default(),
     };
     let order_id = Uuid::new_v4();
     let doc_id = Uuid::new_v4();
@@ -168,6 +171,7 @@ async fn get_sync_status_returns_shape_with_last_sync_and_entities() {
         store_id: Uuid::nil(),
         pool,
         metrics_handle: None,
+        auth: apex_edge_api::AuthSettings::default(),
     };
 
     let resp = sync_status(State(state)).await.expect("sync_status");
@@ -198,6 +202,7 @@ async fn get_cart_state_returns_cart_for_known_id() {
         store_id: Uuid::nil(),
         pool: pool.clone(),
         metrics_handle: None,
+        auth: apex_edge_api::AuthSettings::default(),
     };
 
     // Create a cart via the POS command handler
@@ -237,6 +242,7 @@ async fn remove_line_item_returns_cart_not_found_for_unknown_cart() {
         store_id: Uuid::nil(),
         pool,
         metrics_handle: None,
+        auth: apex_edge_api::AuthSettings::default(),
     };
 
     let res = handle_pos_command(
@@ -271,6 +277,7 @@ async fn remove_line_item_returns_line_not_found_for_unknown_line() {
         store_id: Uuid::nil(),
         pool: pool.clone(),
         metrics_handle: None,
+        auth: apex_edge_api::AuthSettings::default(),
     };
 
     // Create a cart first
@@ -322,6 +329,7 @@ async fn get_cart_state_returns_not_found_for_unknown_id() {
         store_id: Uuid::nil(),
         pool,
         metrics_handle: None,
+        auth: apex_edge_api::AuthSettings::default(),
     };
 
     let result = get_cart_state_handler(State(state), axum::extract::Path(Uuid::new_v4())).await;
@@ -344,6 +352,7 @@ async fn metrics_endpoint_returns_404_when_recorder_not_installed() {
         store_id: Uuid::nil(),
         pool,
         metrics_handle: None,
+        auth: apex_edge_api::AuthSettings::default(),
     };
 
     let response = serve_metrics(State(state)).await.into_response();
@@ -368,6 +377,7 @@ async fn add_line_item_response_includes_applied_promo_name() {
         store_id,
         pool: pool.clone(),
         metrics_handle: None,
+        auth: apex_edge_api::AuthSettings::default(),
     };
     let item_id = Uuid::new_v4();
     insert_catalog_item(
@@ -475,6 +485,7 @@ async fn finalize_order_with_synced_template_produces_pdf_receipt() {
         store_id,
         pool: pool.clone(),
         metrics_handle: None,
+        auth: apex_edge_api::AuthSettings::default(),
     };
     let item_id = Uuid::new_v4();
     insert_catalog_item(
@@ -652,6 +663,7 @@ async fn gift_receipt_with_synced_template_produces_pdf() {
         store_id,
         pool: pool.clone(),
         metrics_handle: None,
+        auth: apex_edge_api::AuthSettings::default(),
     };
     let created = create_gift_receipt_document(State(state), axum::extract::Path(order_id))
         .await

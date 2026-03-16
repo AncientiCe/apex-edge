@@ -1,6 +1,7 @@
 //! ApexEdge: store hub orchestrator. POS <-> ApexEdge <-> HQ.
 
 use apex_edge::build_router;
+use apex_edge_api::AuthSettings;
 use apex_edge_contracts::ContractVersion;
 use apex_edge_outbox::run_dispatcher_loop;
 use apex_edge_storage::{create_sqlite_pool, seed_demo_data};
@@ -139,7 +140,47 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         tracing::warn!("CORS: allowing all origins (set APEX_EDGE_ALLOWED_ORIGINS for production)");
     }
     let metrics_handle = apex_edge_metrics::install_recorder()?;
-    let app = build_router(pool, Uuid::nil(), Some(metrics_handle), allowed_origins);
+    let external_public_key_pem = std::env::var("APEX_EDGE_AUTH_EXTERNAL_PUBLIC_KEY_PEM_PATH")
+        .ok()
+        .and_then(|path| std::fs::read_to_string(path).ok());
+    let auth_settings = AuthSettings {
+        enabled: std::env::var("APEX_EDGE_AUTH_ENABLED")
+            .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+            .unwrap_or(false),
+        external_issuer: std::env::var("APEX_EDGE_AUTH_EXTERNAL_ISSUER").unwrap_or_default(),
+        external_audience: std::env::var("APEX_EDGE_AUTH_EXTERNAL_AUDIENCE").unwrap_or_default(),
+        external_hs256_secret: std::env::var("APEX_EDGE_AUTH_EXTERNAL_HS256_SECRET").ok(),
+        external_public_key_pem,
+        session_signing_secret: std::env::var("APEX_EDGE_AUTH_SESSION_SIGNING_SECRET")
+            .unwrap_or_else(|_| "dev-hub-secret".into()),
+        access_ttl_seconds: std::env::var("APEX_EDGE_AUTH_ACCESS_TTL_SECONDS")
+            .ok()
+            .and_then(|v| v.parse::<i64>().ok())
+            .unwrap_or(300),
+        refresh_ttl_seconds: std::env::var("APEX_EDGE_AUTH_REFRESH_TTL_SECONDS")
+            .ok()
+            .and_then(|v| v.parse::<i64>().ok())
+            .unwrap_or(3600),
+        pairing_code_ttl_seconds: std::env::var("APEX_EDGE_AUTH_PAIRING_CODE_TTL_SECONDS")
+            .ok()
+            .and_then(|v| v.parse::<i64>().ok())
+            .unwrap_or(300),
+        pairing_code_length: std::env::var("APEX_EDGE_AUTH_PAIRING_CODE_LENGTH")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(6),
+        pairing_max_attempts: std::env::var("APEX_EDGE_AUTH_PAIRING_MAX_ATTEMPTS")
+            .ok()
+            .and_then(|v| v.parse::<i64>().ok())
+            .unwrap_or(3),
+    };
+    let app = build_router(
+        pool,
+        Uuid::nil(),
+        Some(metrics_handle),
+        allowed_origins,
+        auth_settings,
+    );
 
     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], 3000));
     tracing::info!("ApexEdge listening on {}", addr);

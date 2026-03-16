@@ -27,6 +27,17 @@ Related: [README](../../README.md) · [Architecture](../architecture/README.md) 
 | `APEX_EDGE_SYNC_SOURCE_URL` | No | unset | Base URL of the HQ sync source. If set, sync runs on startup and every 24 h. |
 | `APEX_EDGE_HQ_SUBMIT_URL` | No | unset | URL to POST outbox submissions to HQ. If set, the outbox dispatcher runs every 30 s. |
 | `APEX_EDGE_ALLOWED_ORIGINS` | No | unset (wildcard) | Comma-separated list of allowed CORS origins, e.g. `http://localhost:5173,https://pos.internal`. Empty = allow all (logs a warning). Always set this in non-local environments. |
+| `APEX_EDGE_AUTH_ENABLED` | No | `false` | Enable edge auth middleware and auth endpoints. When `true`, business routes require bearer access tokens. |
+| `APEX_EDGE_AUTH_EXTERNAL_ISSUER` | Yes (if auth enabled) | unset | Expected issuer (`iss`) for external associate token exchange. |
+| `APEX_EDGE_AUTH_EXTERNAL_AUDIENCE` | Yes (if auth enabled) | unset | Expected audience (`aud`) for external associate token exchange. |
+| `APEX_EDGE_AUTH_EXTERNAL_PUBLIC_KEY_PEM_PATH` | Conditional | unset | Path to PEM public key for verifying external RS256 tokens. |
+| `APEX_EDGE_AUTH_EXTERNAL_HS256_SECRET` | Conditional | unset | Shared secret for verifying external HS256 tokens (dev/test mode). |
+| `APEX_EDGE_AUTH_SESSION_SIGNING_SECRET` | Yes (if auth enabled) | `dev-hub-secret` | Secret used to sign hub access/refresh tokens. |
+| `APEX_EDGE_AUTH_ACCESS_TTL_SECONDS` | No | `300` | Access token lifetime in seconds. |
+| `APEX_EDGE_AUTH_REFRESH_TTL_SECONDS` | No | `3600` | Refresh token lifetime in seconds. |
+| `APEX_EDGE_AUTH_PAIRING_CODE_TTL_SECONDS` | No | `300` | One-time device pairing code TTL. |
+| `APEX_EDGE_AUTH_PAIRING_CODE_LENGTH` | No | `6` | Numeric pairing code length. |
+| `APEX_EDGE_AUTH_PAIRING_MAX_ATTEMPTS` | No | `3` | Max pairing attempts per code before rejection. |
 | `RUST_LOG` | No | `apex_edge=info` | Tracing log filter (e.g. `apex_edge=debug,sqlx=warn`). |
 
 ---
@@ -150,6 +161,17 @@ SQLite has a single-writer model. Under load, readers may briefly block. If pers
 `/metrics` returns 404 when no Prometheus recorder is installed. This happens in test
 setups that pass `None` for `metrics_handle`. In normal production startup,
 `install_recorder()` is called before `build_router`, so this should not occur.
+
+### Auth exchange fails with 401
+
+1. Verify `APEX_EDGE_AUTH_ENABLED=true`.
+2. Confirm external token `iss` and `aud` match `APEX_EDGE_AUTH_EXTERNAL_ISSUER` / `APEX_EDGE_AUTH_EXTERNAL_AUDIENCE`.
+3. Confirm exactly one verification mechanism is configured correctly:
+   - RS256: valid `APEX_EDGE_AUTH_EXTERNAL_PUBLIC_KEY_PEM_PATH`, or
+   - HS256: valid `APEX_EDGE_AUTH_EXTERNAL_HS256_SECRET`.
+4. Ensure device is paired first:
+   - `POST /auth/pairing-codes` -> `POST /auth/devices/pair` -> `POST /auth/sessions/exchange`.
+5. If refresh succeeds but API calls fail, verify session revoke/expiry and clock skew.
 
 ---
 

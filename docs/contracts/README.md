@@ -17,6 +17,13 @@ Related: [README](../../README.md) · [Architecture](../architecture/README.md) 
 - **Responses**: `PosResponseEnvelope<T>` with `success`, `payload`, `errors`.
 - **Cart state**: `CartState` with lines, totals, applied promos/coupons, state kind.
 
+## Edge Auth (mPOS -> ApexEdge)
+
+- **Pairing**: `AuthCreatePairingCodeRequest/Response`, `AuthDevicePairRequest/Response`.
+- **Session exchange**: `AuthSessionExchangeRequest` exchanges an external associate token + trusted device proof for hub `access_token` and `refresh_token`.
+- **Session lifecycle**: `AuthSessionRefreshRequest`, `AuthSessionRevokeResponse`.
+- **Security model**: one-time pairing code enrollment for devices; additive contracts only.
+
 ## ApexEdge -> HQ
 
 - **Order submission**: `HqOrderSubmissionEnvelope` with `submission_id`, `store_id`, `sequence_number`, `order`, `checksum`, `submitted_at`.

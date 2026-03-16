@@ -1,6 +1,7 @@
 //! Local-first persistence: catalog, prices, promos, coupons, config, carts, outbox.
 
 pub mod audit;
+pub mod auth;
 pub mod cart;
 pub mod catalog;
 pub mod categories;
@@ -18,6 +19,7 @@ pub mod sync_status;
 pub mod tax_rules;
 
 pub use audit::*;
+pub use auth::*;
 pub use cart::*;
 pub use catalog::*;
 pub use categories::*;

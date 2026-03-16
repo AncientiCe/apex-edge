@@ -1,5 +1,6 @@
 //! Northbound API: POS <-> ApexEdge (HTTP).
 
+pub mod auth;
 pub mod catalog_categories;
 pub mod catalog_search;
 pub mod customer_search;
@@ -10,6 +11,7 @@ pub mod pos;
 pub mod pos_handler;
 pub mod sync_status;
 
+pub use auth::*;
 pub use catalog_categories::*;
 pub use catalog_search::*;
 pub use customer_search::*;

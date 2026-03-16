@@ -25,6 +25,11 @@ pub fn route_label(path: &str) -> &'static str {
         | "/orders/{order_id}/documents/gift-receipt" => "orders_gift_receipt",
         "/metrics" => "metrics",
         "/sync/status" => "sync_status",
+        "/auth/pairing-codes" => "auth_pairing_codes",
+        "/auth/devices/pair" => "auth_devices_pair",
+        "/auth/sessions/exchange" => "auth_sessions_exchange",
+        "/auth/sessions/refresh" => "auth_sessions_refresh",
+        "/auth/sessions/revoke" => "auth_sessions_revoke",
         _ => "unknown",
     }
 }
@@ -54,6 +59,21 @@ pub fn request_path_to_route(path: &str) -> &'static str {
     }
     if path == "/sync/status" {
         return "sync_status";
+    }
+    if path == "/auth/pairing-codes" {
+        return "auth_pairing_codes";
+    }
+    if path == "/auth/devices/pair" {
+        return "auth_devices_pair";
+    }
+    if path == "/auth/sessions/exchange" {
+        return "auth_sessions_exchange";
+    }
+    if path == "/auth/sessions/refresh" {
+        return "auth_sessions_refresh";
+    }
+    if path == "/auth/sessions/revoke" {
+        return "auth_sessions_revoke";
     }
     if path.starts_with("/pos/cart/") && path.len() > 10 {
         return "pos_cart";
@@ -170,3 +190,13 @@ pub const DOCUMENT_RENDER_DURATION_SECONDS: &str = "apex_edge_document_render_du
 /// outcome for document render: ok, template_error, pdf_error.
 pub const OUTCOME_TEMPLATE_ERROR: &str = "template_error";
 pub const OUTCOME_PDF_ERROR: &str = "pdf_error";
+
+// ---------- Auth (api::auth) ----------
+/// Counter: auth requests by operation/outcome.
+pub const AUTH_REQUESTS_TOTAL: &str = "apex_edge_auth_requests_total";
+/// Histogram: auth request duration.
+pub const AUTH_REQUEST_DURATION_SECONDS: &str = "apex_edge_auth_request_duration_seconds";
+/// Counter: auth sessions created/refreshed/revoked outcomes.
+pub const AUTH_SESSIONS_TOTAL: &str = "apex_edge_auth_sessions_total";
+/// Counter: device pairing outcomes.
+pub const DEVICE_PAIRINGS_TOTAL: &str = "apex_edge_device_pairings_total";

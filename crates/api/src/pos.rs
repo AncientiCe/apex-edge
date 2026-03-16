@@ -110,4 +110,5 @@ pub struct AppState {
     pub pool: sqlx::SqlitePool,
     /// When present, GET /metrics returns Prometheus scrape output.
     pub metrics_handle: Option<apex_edge_metrics::PrometheusHandle>,
+    pub auth: crate::auth::AuthSettings,
 }

@@ -358,3 +358,98 @@ async fn sync_status_upsert_and_read_entity_statuses() {
     assert_eq!(catalog.percent, Some(20.0));
     assert_eq!(catalog.status, "syncing");
 }
+
+#[tokio::test]
+async fn auth_storage_pairing_device_and_session_roundtrip() {
+    let pool = test_pool().await;
+    let store_id = Uuid::from_u128(0xABC1);
+    let now = Utc::now();
+    let expires = now + chrono::Duration::minutes(5);
+
+    let pairing_id = create_device_pairing_code(&pool, store_id, "code-hash", "admin", expires, 3)
+        .await
+        .expect("create pairing code");
+    let pairing = get_pairing_code_by_hash(&pool, "code-hash")
+        .await
+        .expect("fetch pairing")
+        .expect("pairing exists");
+    assert_eq!(pairing.id, pairing_id);
+    assert_eq!(pairing.max_attempts, 3);
+
+    increment_pairing_code_attempts(&pool, pairing_id)
+        .await
+        .expect("increment attempts");
+    let pairing_after = get_pairing_code_by_hash(&pool, "code-hash")
+        .await
+        .expect("fetch pairing")
+        .expect("pairing exists");
+    assert_eq!(pairing_after.attempts, 1);
+
+    let device_id = Uuid::new_v4();
+    create_trusted_device(
+        &pool,
+        device_id,
+        store_id,
+        "iPad-1",
+        Some("ios"),
+        "device-secret-hash",
+    )
+    .await
+    .expect("create trusted device");
+    let device = get_trusted_device(&pool, device_id)
+        .await
+        .expect("get device")
+        .expect("device exists");
+    assert_eq!(device.device_name, "iPad-1");
+    assert_eq!(device.secret_hash, "device-secret-hash");
+    assert!(device.revoked_at.is_none());
+
+    consume_pairing_code(&pool, pairing_id, device_id)
+        .await
+        .expect("consume pairing");
+    let pairing_consumed = get_pairing_code_by_hash(&pool, "code-hash")
+        .await
+        .expect("fetch pairing")
+        .expect("pairing exists");
+    assert!(pairing_consumed.consumed_at.is_some());
+
+    upsert_associate_identity(
+        &pool,
+        "associate-1",
+        store_id,
+        Some("Associate One"),
+        Some("a1@example.com"),
+        r#"{"role":"cashier"}"#,
+    )
+    .await
+    .expect("upsert associate identity");
+
+    let session_id = Uuid::new_v4();
+    create_auth_session(
+        &pool,
+        session_id,
+        "associate-1",
+        store_id,
+        device_id,
+        now + chrono::Duration::minutes(5),
+        now + chrono::Duration::hours(8),
+    )
+    .await
+    .expect("create session");
+    let sess = get_auth_session(&pool, session_id)
+        .await
+        .expect("get session")
+        .expect("session exists");
+    assert_eq!(sess.associate_id, "associate-1");
+    assert_eq!(sess.device_id, device_id);
+    assert!(sess.revoked_at.is_none());
+
+    revoke_auth_session(&pool, session_id)
+        .await
+        .expect("revoke session");
+    let sess_after = get_auth_session(&pool, session_id)
+        .await
+        .expect("get session")
+        .expect("session exists");
+    assert!(sess_after.revoked_at.is_some());
+}

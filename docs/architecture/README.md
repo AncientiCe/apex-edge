@@ -494,3 +494,41 @@ flowchart LR
 - **Template engine:** `{{key}}` substitution and `{{#each key}}...{{/each}}` for arrays; HTML template rendered to PDF via headless Chrome.
 - **Failure path:** Missing template falls back to plain-text receipt. Template render error or PDF engine failure marks document as failed and is recorded in `apex_edge_document_render_total{outcome=template_error|pdf_error}`.
 - **Metrics:** `apex_edge_document_render_total{document_type, outcome}`, `apex_edge_document_render_duration_seconds{document_type}`. Sync of `print_templates` is covered by `apex_edge_sync_ingest_batches_total{entity=print_templates}`.
+
+### 15. Edge Auth and Device Trust
+
+**Purpose:** Document local hub authentication so mPOS clients can pair once, then exchange external associate identity tokens for hub sessions used to call protected northbound routes.
+
+```mermaid
+sequenceDiagram
+    participant Admin as Hub Admin
+    participant POS as mPOS Device
+    participant API as apex_edge_api(auth)
+    participant Store as apex_edge_storage(auth tables)
+    participant Ext as External IdP Token
+
+    Admin->>API: POST /auth/pairing-codes
+    API->>Store: create device_pairing_codes (hashed code, TTL, attempts)
+    API-->>Admin: one-time pairing code
+
+    POS->>API: POST /auth/devices/pair (pairing_code + device metadata)
+    API->>Store: validate/consume pairing code
+    API->>Store: create trusted_devices (hashed device secret)
+    API-->>POS: device_id + device_secret
+
+    POS->>API: POST /auth/sessions/exchange (external token + device proof)
+    API->>API: verify external token issuer/audience/signature
+    API->>Store: validate trusted device + create auth_sessions
+    API-->>POS: hub access_token + refresh_token
+
+    POS->>API: GET /catalog/products (Authorization: Bearer access_token)
+    API->>Store: validate session not revoked/expired + device active
+    API-->>POS: protected route response
+```
+
+**Notes:**
+- **Inputs:** Pairing requests (`store_id`, `created_by`), device metadata (`device_name`, optional `platform`), external associate token (`iss`, `aud`, `sub`, `store_id` claims), and bearer session tokens on protected routes.
+- **Outputs:** `trusted_devices`, `device_pairing_codes`, `auth_sessions`, and `associate_identities` persisted locally. Protected routes return `401` when session/device validation fails.
+- **Protection scope:** `/pos/*`, `/catalog/*`, `/customers`, `/documents/*`, `/orders/*`, `/sync/status` are protected when auth is enabled. `/health`, `/ready`, and auth bootstrap/session endpoints remain callable as designed.
+- **Failure path:** Invalid/expired/consumed pairing code, device mismatch, token validation failure, and revoked/expired sessions all fail closed with `401`/`400`; attempts are tracked on pairing codes.
+- **Metrics:** `apex_edge_auth_requests_total{operation,outcome}`, `apex_edge_auth_request_duration_seconds{operation}`, `apex_edge_auth_sessions_total{outcome}`, `apex_edge_device_pairings_total{outcome}`.

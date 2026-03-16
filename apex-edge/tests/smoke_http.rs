@@ -13,7 +13,13 @@ async fn app_with_ephemeral_db() -> axum::Router {
         .await
         .expect("pool");
     run_migrations(&pool).await.expect("migrations");
-    build_router(pool, Uuid::nil(), None, vec![])
+    build_router(
+        pool,
+        Uuid::nil(),
+        None,
+        vec![],
+        apex_edge_api::AuthSettings::default(),
+    )
 }
 
 #[tokio::test]

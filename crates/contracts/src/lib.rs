@@ -1,6 +1,7 @@
 //! Canonical contracts for POS <-> ApexEdge and ApexEdge <-> HQ.
 //! Schema versioning and compatibility: additive changes only; semantic version tags.
 
+pub mod auth;
 pub mod catalog;
 pub mod config;
 pub mod coupons;
@@ -12,6 +13,7 @@ pub mod printing;
 pub mod promotions;
 pub mod version;
 
+pub use auth::*;
 pub use catalog::*;
 pub use config::*;
 pub use coupons::*;

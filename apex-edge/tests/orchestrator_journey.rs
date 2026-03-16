@@ -31,7 +31,13 @@ async fn start_app() -> (u16, sqlx::SqlitePool) {
         .expect("pool");
     run_migrations(&pool).await.expect("migrations");
 
-    let app = build_router(pool.clone(), STORE_ID, None, vec![]);
+    let app = build_router(
+        pool.clone(),
+        STORE_ID,
+        None,
+        vec![],
+        apex_edge_api::AuthSettings::default(),
+    );
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let port = listener.local_addr().expect("local addr").port();
     tokio::spawn(async move {
@@ -138,7 +144,13 @@ async fn start_app_with_seed() -> (u16, sqlx::SqlitePool) {
     run_migrations(&pool).await.expect("migrations");
     seed_full_flow_data(&pool).await;
 
-    let app = build_router(pool.clone(), STORE_ID, None, vec![]);
+    let app = build_router(
+        pool.clone(),
+        STORE_ID,
+        None,
+        vec![],
+        apex_edge_api::AuthSettings::default(),
+    );
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let port = listener.local_addr().expect("local addr").port();
     tokio::spawn(async move {

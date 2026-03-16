@@ -16,7 +16,13 @@ async fn start_app() -> u16 {
 async fn start_app_with_origins(allowed_origins: Vec<HeaderValue>) -> u16 {
     let pool = create_sqlite_pool("sqlite::memory:").await.expect("pool");
     run_migrations(&pool).await.expect("migrations");
-    let app = build_router(pool, Uuid::nil(), None, allowed_origins);
+    let app = build_router(
+        pool,
+        Uuid::nil(),
+        None,
+        allowed_origins,
+        apex_edge_api::AuthSettings::default(),
+    );
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let port = listener.local_addr().expect("local addr").port();
     tokio::spawn(async move {

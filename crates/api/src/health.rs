@@ -67,6 +67,7 @@ mod tests {
             store_id: Uuid::nil(),
             pool,
             metrics_handle: None,
+            auth: crate::auth::AuthSettings::default(),
         };
         let r = ready(State(state)).await.expect("ready endpoint");
         assert_eq!(r.0.status, "ready");
