@@ -396,7 +396,7 @@ function AppInner() {
             // Popup blocked: fall back to same-tab navigation
             window.location.href = url;
           }
-        } catch (e) {
+        } catch {
           pushToast('Could not open PDF');
           const win = window.open('', '_blank');
           if (win) {

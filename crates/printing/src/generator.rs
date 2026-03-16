@@ -2,8 +2,7 @@
 
 // Metric names (must match apex_edge_metrics::schema for consistency).
 const METRIC_DOCUMENT_RENDER_TOTAL: &str = "apex_edge_document_render_total";
-const METRIC_DOCUMENT_RENDER_DURATION_SECONDS: &str =
-    "apex_edge_document_render_duration_seconds";
+const METRIC_DOCUMENT_RENDER_DURATION_SECONDS: &str = "apex_edge_document_render_duration_seconds";
 const OUTCOME_TEMPLATE_ERROR: &str = "template_error";
 const OUTCOME_PDF_ERROR: &str = "pdf_error";
 use apex_edge_storage::documents::{enqueue_document, mark_failed, mark_generated};
