@@ -52,7 +52,7 @@ checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
 name = "apex-edge"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "apex-edge-api",
  "apex-edge-contracts",
@@ -78,7 +78,7 @@ dependencies = [
 
 [[package]]
 name = "apex-edge-api"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "apex-edge-contracts",
  "apex-edge-domain",
@@ -106,7 +106,7 @@ dependencies = [
 
 [[package]]
 name = "apex-edge-contracts"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "md5",
@@ -118,7 +118,7 @@ dependencies = [
 
 [[package]]
 name = "apex-edge-domain"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "apex-edge-contracts",
  "chrono",
@@ -130,7 +130,7 @@ dependencies = [
 
 [[package]]
 name = "apex-edge-metrics"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "metrics 0.21.1",
  "metrics-exporter-prometheus",
@@ -138,7 +138,7 @@ dependencies = [
 
 [[package]]
 name = "apex-edge-outbox"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "apex-edge-contracts",
  "apex-edge-metrics",
@@ -158,7 +158,7 @@ dependencies = [
 
 [[package]]
 name = "apex-edge-printing"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "apex-edge-contracts",
  "apex-edge-storage",
@@ -176,7 +176,7 @@ dependencies = [
 
 [[package]]
 name = "apex-edge-storage"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "apex-edge-contracts",
  "apex-edge-metrics",
@@ -192,7 +192,7 @@ dependencies = [
 
 [[package]]
 name = "apex-edge-sync"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "apex-edge-contracts",
  "apex-edge-metrics",
@@ -653,7 +653,7 @@ dependencies = [
 
 [[package]]
 name = "example-sync-source"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "apex-edge-contracts",
  "axum",

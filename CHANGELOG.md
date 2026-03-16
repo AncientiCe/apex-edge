@@ -11,6 +11,60 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.3.0] — 2026-03-16
+
+Adds local hub auth with device trust and integrates the POS simulator into strict auth mode.
+
+### Added
+
+#### Runtime
+
+- **Hub auth endpoints** — added pairing/session endpoints:
+  `POST /auth/pairing-codes`, `POST /auth/devices/pair`,
+  `POST /auth/sessions/exchange`, `POST /auth/sessions/refresh`,
+  and `POST /auth/sessions/revoke`.
+- **Auth middleware and principal context** — protected northbound routes now require
+  valid hub session + trusted device when auth is enabled; principal context is attached
+  for handler use and audit events.
+- **Token exchange model** — external associate token validation and hub-issued access/refresh
+  session tokens with refresh rotation and revoke support.
+- **Device trust via pairing code** — one-time, short-lived, attempt-limited pairing flow with
+  trusted device enrollment.
+
+#### Storage
+
+- **Auth persistence schema** — added `trusted_devices`, `device_pairing_codes`,
+  `auth_sessions`, and `associate_identities` with indexed lookups for auth flows.
+
+#### Frontend Simulator
+
+- **Strict auth-only mode** — simulator blocks protected operations until pairing + sign-in completes.
+- **Auth bootstrap UI** — connection panel now supports associate/store/device inputs,
+  mock token secret, `Pair & Sign In`, auth status, and `Sign Out`.
+- **Auth transport wrapper** — protected API calls include bearer token, perform single refresh/retry on `401`,
+  and reset auth state on refresh failure.
+- **Local mock external token mode** — simulator generates HS256 external token claims
+  (`sub`, `iss`, `aud`, `store_id`, `iat`, `exp`) for `/auth/sessions/exchange` in dev/test.
+
+#### Observability
+
+- **Auth metrics** — added auth request/session/pairing counters and latency histogram:
+  `apex_edge_auth_requests_total{operation,outcome}`,
+  `apex_edge_auth_request_duration_seconds{operation}`,
+  `apex_edge_auth_sessions_total{outcome}`,
+  `apex_edge_device_pairings_total{outcome}`.
+- **Audit events** — pairing/session lifecycle and auth failure paths are emitted.
+
+#### Quality
+
+- Added endpoint/middleware behaviour tests for auth bootstrap, protection, refresh, and revoke.
+- Added simulator tests for strict auth gate and sign-in/sign-out lifecycle.
+
+#### Documentation
+
+- `docs/architecture/README.md` adds auth architecture flow section for pairing, token exchange,
+  route protection scope, failure paths, and metrics.
+
 ## [0.2.0] — 2026-03-16
 
 Adds synced print-template support with PDF receipt generation and updates release quality gates.
@@ -144,6 +198,7 @@ Internal alpha release for team-only testing in a controlled environment.
 - Mock NDJSON sync server served raw bytes for catalog items; updated to serve valid
   `CatalogItem` JSON payloads so `apply_entity_batch` deserialization succeeds in tests.
 
-[Unreleased]: https://github.com/AncientiCe/apex-edge/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/AncientiCe/apex-edge/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/AncientiCe/apex-edge/releases/tag/v0.3.0
 [0.2.0]: https://github.com/AncientiCe/apex-edge/releases/tag/v0.2.0
 [0.1.0]: https://github.com/AncientiCe/apex-edge/releases/tag/v0.1.0
