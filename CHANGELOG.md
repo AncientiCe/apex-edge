@@ -11,6 +11,55 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.2.0] — 2026-03-16
+
+Adds synced print-template support with PDF receipt generation and updates release quality gates.
+
+### Added
+
+#### Runtime
+
+- **Synced PDF document generation** — receipt and gift receipt generation now loads synced
+  templates (`customer_receipt`, `gift_receipt`) and emits `application/pdf` documents when
+  templates are available.
+- **Headless-Chrome PDF renderer** — `apex-edge-printing` includes HTML-to-PDF generation
+  via `headless_chrome` for document rendering.
+
+#### Storage
+
+- **Print template persistence** — migration `006_print_templates.sql` adds `print_templates`
+  table keyed by `(store_id, document_type)`.
+- **Template storage APIs** — new storage functions to upsert and fetch print templates.
+
+#### Observability
+
+- **Document render metrics** — `apex_edge_document_render_total{document_type,outcome}`
+  and `apex_edge_document_render_duration_seconds{document_type}` added to track render
+  outcomes and latency.
+
+#### Quality
+
+- **API behavioural coverage** — tests now validate that finalized receipts and gift receipts
+  become valid PDF payloads when synced templates exist.
+- **Storage and sync coverage** — tests cover `print_templates` upsert/fetch behavior and
+  sync entity application for print templates.
+
+#### Documentation
+
+- `docs/architecture/README.md` adds Section 14 ("Synced PDF Receipt Templates") with
+  flow diagram, inputs/outputs, failure paths, and metric references.
+
+### Changed
+
+- Receipt template lookup accepts both `customer_receipt` and legacy `receipt` document types.
+- Frontend flow updated to open generated PDFs and attempt browser print for generated documents.
+
+### Fixed
+
+- Unit/pipeline stability adjustments in printing/frontend integration ("Fix unit pipelines").
+
+---
+
 ## [0.1.0] — 2026-03-10
 
 Internal alpha release for team-only testing in a controlled environment.
@@ -95,5 +144,6 @@ Internal alpha release for team-only testing in a controlled environment.
 - Mock NDJSON sync server served raw bytes for catalog items; updated to serve valid
   `CatalogItem` JSON payloads so `apply_entity_batch` deserialization succeeds in tests.
 
-[Unreleased]: https://github.com/AncientiCe/apex-edge/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/AncientiCe/apex-edge/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/AncientiCe/apex-edge/releases/tag/v0.2.0
 [0.1.0]: https://github.com/AncientiCe/apex-edge/releases/tag/v0.1.0
