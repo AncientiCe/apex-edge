@@ -2,9 +2,10 @@
 
 use apex_edge_api::{
     auth_middleware, create_gift_receipt_document, create_pairing_code, exchange_session,
-    get_cart_state_handler, get_document, get_product_by_id, handle_pos_command, health,
-    list_categories, list_order_documents, pair_device, ready, refresh_session, revoke_session,
-    search_customers, search_products, serve_metrics, sync_status, AppState, AuthSettings,
+    get_cart_state_handler, get_document, get_prices, get_product_by_id, handle_pos_command,
+    health, list_categories, list_order_documents, pair_device, ready, refresh_session,
+    revoke_session, search_customers, search_products, serve_metrics, sync_status, AppState,
+    AuthSettings,
 };
 use axum::middleware;
 use axum::routing::post;
@@ -81,6 +82,7 @@ pub fn build_router(
         .route("/pos/cart/:cart_id", get(get_cart_state_handler))
         .route("/catalog/products", get(search_products))
         .route("/catalog/products/:id", get(get_product_by_id))
+        .route("/catalog/prices", get(get_prices))
         .route("/catalog/categories", get(list_categories))
         .route("/customers", get(search_customers))
         .route("/documents/:id", get(get_document))

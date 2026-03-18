@@ -163,6 +163,17 @@ async fn add_to_cart_blocked_when_item_is_inactive() {
         tax_category_id: tax_id,
         modifiers: vec![],
         is_active: false,
+        title: Some("Inactive Item".into()),
+        brand: None,
+        caption: None,
+        external_identifiers: None,
+        images: None,
+        is_preorder: None,
+        online_from: None,
+        serialized_inventory: None,
+        extended_attributes: None,
+        variations: None,
+        variation_attributes: None,
         version: 1,
     };
     replace_catalog_items(&pool, STORE_ID, &[inactive_item])

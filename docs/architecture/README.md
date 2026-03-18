@@ -64,7 +64,7 @@ sequenceDiagram
     end
     opt APEX_EDGE_SYNC_SOURCE_URL set
         Main->>Sync: run_sync_ndjson once on startup
-        Main->>Main: tokio::spawn daily sync loop (24h interval)
+        Main->>Main: tokio::spawn periodic sync loop (APEX_EDGE_SYNC_INTERVAL_SECONDS, default 300s)
     end
     opt APEX_EDGE_HQ_SUBMIT_URL set
         Main->>Outbox: tokio::spawn run_dispatcher_loop (30s interval)
@@ -74,13 +74,13 @@ sequenceDiagram
     Main->>App: build_router(pool, store_id, metrics_handle, allowed_origins)
     App->>App: AppState { pool, store_id, metrics_handle }
     App->>App: CorsLayer — wildcard if empty, list if set
-    App->>App: Router with /health, /ready, /pos/command, /documents, /orders, /metrics, /sync/status
+    App->>App: Router with /health, /ready, /pos/command, /catalog/products, /catalog/prices, /documents, /orders, /metrics, /sync/status
     Main->>Axum: serve(TcpListener::bind(0.0.0.0:3000), app)
     Axum-->>Main: listening
 ```
 
 **Notes:**
-- **Inputs:** Env `APEX_EDGE_DB` (default `apex_edge.db`); `APEX_EDGE_SYNC_SOURCE_URL` (optional, enables sync); `APEX_EDGE_HQ_SUBMIT_URL` (optional, enables outbox dispatch); `APEX_EDGE_SEED_DEMO` (optional, seeds demo catalog/customers/promotions); `APEX_EDGE_ALLOWED_ORIGINS` (optional, comma-separated; empty = wildcard CORS for local dev, non-empty = restricted).
+- **Inputs:** Env `APEX_EDGE_DB` (default `apex_edge.db`); `APEX_EDGE_SYNC_SOURCE_URL` (optional, enables sync); `APEX_EDGE_SYNC_INTERVAL_SECONDS` (optional, periodic sync interval in seconds; default `300`); `APEX_EDGE_HQ_SUBMIT_URL` (optional, enables outbox dispatch); `APEX_EDGE_SEED_DEMO` (optional, seeds demo catalog/customers/promotions); `APEX_EDGE_ALLOWED_ORIGINS` (optional, comma-separated; empty = wildcard CORS for local dev, non-empty = restricted).
 - **Outputs:** HTTP server on port 3000; DB migrated; optional background sync and dispatcher tasks spawned.
 - **Failure path:** Pool or migration failure exits main; server bind failure propagates. Sync and dispatcher errors are logged and retried on next cycle without stopping the process.
 
@@ -346,7 +346,7 @@ sequenceDiagram
 
 ### 10. Example Sync Source and Streamed Sync
 
-**Purpose:** Document the separate example-sync-source tool and how ApexEdge pulls sync data on startup and daily via NDJSON streaming; sync status is persisted and exposed to the frontend.
+**Purpose:** Document the separate example-sync-source tool and how ApexEdge pulls sync data on startup and periodically via NDJSON streaming; sync status is persisted and exposed to the frontend.
 
 ```mermaid
 flowchart LR
@@ -354,7 +354,7 @@ flowchart LR
         NDJSON[NDJSON Entity Endpoints]
     end
     subgraph edgeApp [ApexEdge]
-        Scheduler[Startup and Daily Scheduler]
+        Scheduler[Startup and Periodic Scheduler]
         Fetcher[NDJSON Stream Fetcher]
         Ingest[Ingest and Checkpoint]
         StatusStore[Latest Sync Status Store]
@@ -371,9 +371,9 @@ flowchart LR
 
 **Notes:**
 - **Example sync source:** Separate binary `tools/example-sync-source`; serves NDJSON per entity (first line `{"total": N}`, then N lines of base64 payload). Contract-only coupling; no app runtime dependencies. Run with `cargo run -p example-sync-source` (default port 3030; `SYNC_SOURCE_PORT` env). Entities: catalog, categories, price_book, tax_rules, promotions, customers, coupons, **inventory** (per-item availability + image URLs).
-- **ApexEdge sync:** When `APEX_EDGE_SYNC_SOURCE_URL` is set, main runs sync once on startup then spawns a 24h periodic task. `run_sync_ndjson` streams each entity (line-by-line), collects payloads per entity, ingests in batch, advances checkpoints, and updates latest sync run + per-entity status in storage.
+- **ApexEdge sync:** When `APEX_EDGE_SYNC_SOURCE_URL` is set, main runs sync once on startup then spawns a periodic task controlled by `APEX_EDGE_SYNC_INTERVAL_SECONDS` (default 300s). `inventory` is scheduled before optional entities (`coupons`, `print_templates`) so stock refresh is not delayed by optional-entity failures. `run_sync_ndjson` streams each entity (line-by-line), collects payloads per entity, ingests in batch, advances checkpoints, and updates latest sync run + per-entity status in storage.
 - **Sync status:** Stored in `sync_run` (single row) and `entity_sync_status`; exposed at `GET /sync/status`. Frontend Sync tab shows last sync time, run state (idle/syncing), and per-entity progress (current, total, percent, status).
-- **Failure path:** Sync errors are logged; latest run is marked `failed` with error message; next scheduled run proceeds after 24h.
+- **Failure path:** Sync errors are logged; latest run is marked `failed` with error message; next scheduled run proceeds on the configured interval.
 
 ### 11. Stock and Availability Sync
 
@@ -482,7 +482,7 @@ flowchart LR
     FinalizeOrder[FinalizeOrder] --> ReceiptVm[BuildReceiptViewModel]
     ReceiptVm --> TemplateResolve[ResolveTemplateByStoreDocType]
     TemplateResolve --> HtmlRender[RenderHtmlTemplate]
-    HtmlRender --> PdfEngine[HeadlessChromePdf]
+    HtmlRender --> PdfEngine[InProcessPdfRenderer]
     PdfEngine --> Documents[(DocumentsSQLite)]
     Documents --> FrontendOpen[FrontendOpenPdf]
     FrontendOpen --> BrowserPrint[BrowserPrintAttempt]
@@ -491,7 +491,7 @@ flowchart LR
 **Notes:**
 - **Inputs:** Sync entity `print_templates` with payloads `PrintTemplateConfig` (id, document_type, template_body, version); store_id from sync context. Finalize/gift-receipt use receipt view-model (order_id, store/customer/totals/lines/payments, tenant, logo placeholder).
 - **Outputs:** Documents table row with `mime_type application/pdf` and base64-encoded PDF in `content`; frontend opens via Blob URL and attempts print.
-- **Template engine:** `{{key}}` substitution and `{{#each key}}...{{/each}}` for arrays; HTML template rendered to PDF via headless Chrome.
+- **Template engine:** `{{key}}` substitution and `{{#each key}}...{{/each}}` for arrays; HTML template is rendered to a deterministic in-process PDF stream (no external browser startup).
 - **Failure path:** Missing template falls back to plain-text receipt. Template render error or PDF engine failure marks document as failed and is recorded in `apex_edge_document_render_total{outcome=template_error|pdf_error}`.
 - **Metrics:** `apex_edge_document_render_total{document_type, outcome}`, `apex_edge_document_render_duration_seconds{document_type}`. Sync of `print_templates` is covered by `apex_edge_sync_ingest_batches_total{entity=print_templates}`.
 
@@ -532,3 +532,71 @@ sequenceDiagram
 - **Protection scope:** `/pos/*`, `/catalog/*`, `/customers`, `/documents/*`, `/orders/*`, `/sync/status` are protected when auth is enabled. `/health`, `/ready`, and auth bootstrap/session endpoints remain callable as designed.
 - **Failure path:** Invalid/expired/consumed pairing code, device mismatch, token validation failure, and revoked/expired sessions all fail closed with `401`/`400`; attempts are tracked on pairing codes.
 - **Metrics:** `apex_edge_auth_requests_total{operation,outcome}`, `apex_edge_auth_request_duration_seconds{operation}`, `apex_edge_auth_sessions_total{outcome}`, `apex_edge_device_pairings_total{outcome}`.
+
+### 16. MPOS Local Normal Sale (Login Cloud, Sale Local)
+
+**Purpose:** Show the normal-sale local mode where login stays cloud-side and all sale runtime requests (catalog, customer, cart, promotions/coupons, cash payment, place order) execute on local ApexEdge.
+
+```mermaid
+sequenceDiagram
+    participant MPOS as associate-app (iOS Simulator)
+    participant Cloud as Cloud Login/Auth
+    participant Hub as local ApexEdge
+    participant DB as SQLite
+    participant HQ as HQ Sync Source
+
+    MPOS->>Cloud: Login (Auth0 / cloud identity)
+    Cloud-->>MPOS: access established
+
+    HQ->>Hub: sync catalog/customers/prices/promos
+    Hub->>DB: persist entities (incl. product payload)
+
+    MPOS->>Hub: GET /catalog/products, /catalog/products/:id, /catalog/categories
+    Hub->>DB: read synced catalog
+    Hub-->>MPOS: product/category data
+
+    MPOS->>Hub: GET /customers
+    Hub->>DB: search customers
+    Hub-->>MPOS: customer list
+
+    MPOS->>Hub: POST /pos/command (create_cart, set_customer, add_line_item, update_line_item, apply_coupon/remove_coupon)
+    Hub->>DB: save cart + rerun pricing/promotions
+    Hub-->>MPOS: cart state with totals/discounts
+
+    MPOS->>Hub: POST /pos/command (set_tendering, add_payment cash, finalize_order)
+    Hub->>DB: persist paid/finalized cart + order docs
+    Hub-->>MPOS: finalize result
+```
+
+**Notes:**
+- **Inputs:** Cloud login result, synced entities from HQ, and local sale commands from MPOS.
+- **Outputs:** All normal-sale state transitions and cart totals are produced by local ApexEdge endpoints; no post-login cloud dependency is required for the normal-sale path.
+- **Failure path:** Missing catalog/customer/cart or invalid coupon/payment returns command errors (`success=false`) from `/pos/command`; MPOS local-hub mode handles these as sale-flow errors.
+
+### 17. Documents API Canonical Types
+
+**Purpose:** Keep northbound documents contract strict for POS integrations by returning canonical document type values in both `type` and `document_type`.
+
+```mermaid
+sequenceDiagram
+    participant MPOS as associate-app
+    participant API as apex_edge_api::documents
+    participant DB as apex_edge_storage::documents
+
+    MPOS->>API: GET /orders/:order_id/documents
+    API->>DB: list_documents_for_order(order_id)
+    DB-->>API: rows(document_type=customer_receipt|receipt|gift_receipt|...)
+    API->>API: normalize type (customer_receipt/receipt -> sales_receipt, gift_receipt -> gift_receipt)
+    API-->>MPOS: [{id, type, document_type, status, ...}]
+
+    MPOS->>API: GET /documents/:id
+    API->>DB: get_document(id)
+    DB-->>API: row(document_type, content, mime_type, status)
+    API->>API: same canonical type normalization
+    API-->>MPOS: {id, type, document_type, status, content, ...}
+```
+
+**Notes:**
+- **Inputs:** Existing document rows with internal `document_type`.
+- **Outputs:** `type` and `document_type` are both canonical northbound values (`sales_receipt`, `gift_receipt`, or passthrough unknown types).
+- **Failure path:** Unknown document types are passed through unchanged; storage failures still return existing HTTP `500/404` behavior.

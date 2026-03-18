@@ -23,6 +23,8 @@ pub struct CatalogItemRow {
     pub is_available: Option<bool>,
     /// Ordered product image URLs for PDP gallery.
     pub image_urls: Vec<String>,
+    /// Full synced product payload for compatibility response shaping.
+    pub raw_product_json: Option<String>,
 }
 
 type CatalogRow = (
@@ -36,6 +38,7 @@ type CatalogRow = (
     Option<i64>,
     Option<i64>,
     Option<i64>,
+    Option<String>,
     Option<String>,
 );
 
@@ -52,6 +55,7 @@ fn map_catalog_row(row: CatalogRow) -> CatalogItemRow {
         available_qty,
         is_available_int,
         image_urls_json,
+        raw_product_json,
     ) = row;
     let image_urls: Vec<String> = image_urls_json
         .as_deref()
@@ -69,6 +73,7 @@ fn map_catalog_row(row: CatalogRow) -> CatalogItemRow {
         available_qty,
         is_available: is_available_int.map(|v| v != 0),
         image_urls,
+        raw_product_json,
     }
 }
 
@@ -97,7 +102,7 @@ impl CatalogItemRow {
 }
 
 const SELECT_CATALOG_COLS: &str =
-    "id, store_id, sku, name, category_id, tax_category_id, description, is_active, available_qty, is_available, image_urls";
+    "id, store_id, sku, name, category_id, tax_category_id, description, is_active, available_qty, is_available, image_urls, raw_product_json";
 
 pub async fn get_catalog_item(
     pool: &SqlitePool,
@@ -283,7 +288,7 @@ pub async fn replace_catalog_items(
         .await?;
     for item in items {
         sqlx::query(
-            "INSERT INTO catalog_items (id, store_id, sku, name, category_id, tax_category_id, description, is_active) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO catalog_items (id, store_id, sku, name, category_id, tax_category_id, description, is_active, raw_product_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(item.id.to_string())
         .bind(store_id.to_string())
@@ -293,6 +298,7 @@ pub async fn replace_catalog_items(
         .bind(item.tax_category_id.to_string())
         .bind(item.description.as_deref())
         .bind(item.is_active as i64)
+        .bind(serde_json::to_string(item).ok())
         .execute(&mut *tx)
         .await?;
     }

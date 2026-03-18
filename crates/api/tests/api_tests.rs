@@ -1,10 +1,11 @@
 use apex_edge_api::{
-    create_gift_receipt_document, get_cart_state_handler, get_document, handle_pos_command, health,
-    list_order_documents, ready, serve_metrics, sync_status, AppState,
+    create_gift_receipt_document, get_cart_state_handler, get_document, get_prices,
+    handle_pos_command, health, list_order_documents, ready, serve_metrics, sync_status, AppState,
 };
 use apex_edge_contracts::{
-    AddLineItemPayload, CartState, ContractVersion, CreateCartPayload, PosCommand,
-    PosRequestEnvelope, PromoAction, Promotion, PromotionType, RemoveLineItemPayload,
+    AddLineItemPayload, ApplyCouponPayload, CartState, ContractVersion, CreateCartPayload,
+    PosCommand, PosRequestEnvelope, PromoAction, PromoCondition, Promotion, PromotionType,
+    RemoveCouponPayload, RemoveLineItemPayload, UpdateLineItemPayload,
 };
 use apex_edge_storage::{
     enqueue_document, insert_catalog_item, insert_price_book_entry, insert_promotion,
@@ -12,7 +13,10 @@ use apex_edge_storage::{
     upsert_print_template,
 };
 use axum::response::IntoResponse;
-use axum::{extract::State, Json};
+use axum::{
+    extract::{Query, State},
+    Json,
+};
 use chrono::{Duration, Utc};
 use sqlx::sqlite::SqlitePoolOptions;
 use uuid::Uuid;
@@ -87,11 +91,15 @@ async fn api_handlers_cover_health_ready_pos_and_documents() {
         .await
         .expect("list docs");
     assert_eq!(listed.0.len(), 1);
+    assert_eq!(listed.0[0].type_, "sales_receipt");
+    assert_eq!(listed.0[0].document_type, "sales_receipt");
 
     let fetched = get_document(State(state), axum::extract::Path(doc_id))
         .await
         .expect("get doc");
     assert_eq!(fetched.0.status, "generated");
+    assert_eq!(fetched.0.type_, "sales_receipt");
+    assert_eq!(fetched.0.document_type, "sales_receipt");
 }
 
 #[tokio::test]
@@ -227,6 +235,54 @@ async fn get_cart_state_returns_cart_for_known_id() {
     assert!(result.is_ok(), "must return Ok for known cart_id");
     let fetched = result.unwrap().0;
     assert_eq!(fetched.cart_id, cart_id, "returned cart_id must match");
+}
+
+#[tokio::test]
+async fn get_prices_returns_base_prices_for_requested_products() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("pool");
+    run_migrations(&pool).await.expect("migrations");
+    let store_id = Uuid::nil();
+    let item_id = Uuid::new_v4();
+    let tax_category_id = Uuid::new_v4();
+    let category_id = Uuid::new_v4();
+    insert_catalog_item(
+        &pool,
+        item_id,
+        store_id,
+        "SKU-PRICE-1",
+        "Priced Item",
+        category_id,
+        tax_category_id,
+    )
+    .await
+    .expect("insert catalog item");
+    insert_price_book_entry(&pool, store_id, item_id, None, 1234, "USD")
+        .await
+        .expect("insert base price");
+
+    let state = AppState {
+        store_id,
+        pool,
+        metrics_handle: None,
+        auth: apex_edge_api::AuthSettings::default(),
+    };
+    let response = get_prices(
+        State(state),
+        Query(apex_edge_api::PriceQuery {
+            product_id: vec![item_id.to_string()],
+        }),
+    )
+    .await
+    .expect("prices response");
+
+    assert_eq!(response.0.items.len(), 1);
+    assert_eq!(response.0.items[0].product_id, item_id);
+    assert_eq!(response.0.items[0].currency_code, "USD");
+    assert!((response.0.items[0].value - 12.34).abs() < f64::EPSILON);
 }
 
 #[tokio::test]
@@ -396,7 +452,7 @@ async fn add_line_item_response_includes_applied_promo_name() {
         .expect("insert_price_book_entry");
     let promo = Promotion {
         id: Uuid::new_v4(),
-        code: Some("AUTO100".into()),
+        code: None,
         name: "Donna Dress 2 for 1".into(),
         promo_type: PromotionType::PercentageOff { percent_bps: 10000 },
         priority: 100,
@@ -448,7 +504,11 @@ async fn add_line_item_response_includes_applied_promo_name() {
     )
     .await;
 
-    assert!(add.0.success, "add line item should succeed");
+    assert!(
+        add.0.success,
+        "add line item should succeed: {:?}",
+        add.0.errors
+    );
     let state_after_add: CartState =
         serde_json::from_value(add.0.payload.expect("add payload")).expect("cart state");
     assert_eq!(state_after_add.applied_promos.len(), 1);
@@ -589,7 +649,11 @@ async fn finalize_order_with_synced_template_produces_pdf_receipt() {
         }),
     )
     .await;
-    assert!(finalize_res.0.success, "finalize should succeed");
+    assert!(
+        finalize_res.0.success,
+        "finalize should succeed: {:?}",
+        finalize_res.0.errors
+    );
     let finalize_payload: apex_edge_contracts::FinalizeResult =
         serde_json::from_value(finalize_res.0.payload.unwrap()).expect("finalize payload");
     let order_id = finalize_payload.order_id;
@@ -684,4 +748,235 @@ async fn gift_receipt_with_synced_template_produces_pdf() {
     let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, content.trim())
         .expect("base64");
     assert!(bytes.starts_with(b"%PDF-"));
+}
+
+#[tokio::test]
+async fn update_line_item_reprices_and_updates_quantity() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("pool");
+    run_migrations(&pool).await.expect("migrations");
+
+    let store_id = Uuid::nil();
+    let state = AppState {
+        store_id,
+        pool: pool.clone(),
+        metrics_handle: None,
+        auth: apex_edge_api::AuthSettings::default(),
+    };
+    let item_id = Uuid::new_v4();
+    insert_catalog_item(
+        &pool,
+        item_id,
+        store_id,
+        "UPD-001",
+        "Update Test Item",
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+    )
+    .await
+    .expect("insert catalog item");
+    insert_price_book_entry(&pool, store_id, item_id, None, 350, "USD")
+        .await
+        .expect("insert price");
+
+    let created = handle_pos_command(
+        State(state.clone()),
+        Json(PosRequestEnvelope {
+            version: ContractVersion::V1_0_0,
+            idempotency_key: Uuid::new_v4(),
+            store_id,
+            register_id: Uuid::nil(),
+            payload: PosCommand::CreateCart(CreateCartPayload { cart_id: None }),
+        }),
+    )
+    .await;
+    let created_state: CartState =
+        serde_json::from_value(created.0.payload.expect("create payload")).expect("create state");
+
+    let add = handle_pos_command(
+        State(state.clone()),
+        Json(PosRequestEnvelope {
+            version: ContractVersion::V1_0_0,
+            idempotency_key: Uuid::new_v4(),
+            store_id,
+            register_id: Uuid::nil(),
+            payload: PosCommand::AddLineItem(AddLineItemPayload {
+                cart_id: created_state.cart_id,
+                item_id,
+                modifier_option_ids: vec![],
+                quantity: 1,
+                notes: Some("initial".into()),
+                unit_price_override_cents: None,
+            }),
+        }),
+    )
+    .await;
+    assert!(add.0.success, "add line should succeed: {:?}", add.0.errors);
+    let after_add: CartState =
+        serde_json::from_value(add.0.payload.expect("add payload")).expect("add state");
+    let line = after_add.lines.first().expect("line exists");
+
+    let update = handle_pos_command(
+        State(state),
+        Json(PosRequestEnvelope {
+            version: ContractVersion::V1_0_0,
+            idempotency_key: Uuid::new_v4(),
+            store_id,
+            register_id: Uuid::nil(),
+            payload: PosCommand::UpdateLineItem(UpdateLineItemPayload {
+                cart_id: after_add.cart_id,
+                line_id: line.line_id,
+                quantity: 3,
+                notes: Some("updated".into()),
+            }),
+        }),
+    )
+    .await;
+
+    assert!(update.0.success, "update line should succeed");
+    let after_update: CartState =
+        serde_json::from_value(update.0.payload.expect("update payload")).expect("update state");
+    assert_eq!(after_update.lines.len(), 1);
+    assert_eq!(after_update.lines[0].quantity, 3);
+    assert_eq!(after_update.lines[0].line_total_cents, 1050);
+    assert_eq!(after_update.lines[0].notes.as_deref(), Some("updated"));
+}
+
+#[tokio::test]
+async fn apply_and_remove_coupon_updates_cart_coupon_state() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("pool");
+    run_migrations(&pool).await.expect("migrations");
+
+    let store_id = Uuid::nil();
+    let state = AppState {
+        store_id,
+        pool: pool.clone(),
+        metrics_handle: None,
+        auth: apex_edge_api::AuthSettings::default(),
+    };
+    let item_id = Uuid::new_v4();
+    insert_catalog_item(
+        &pool,
+        item_id,
+        store_id,
+        "COUPON-001",
+        "Coupon Test Item",
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+    )
+    .await
+    .expect("insert catalog");
+    insert_price_book_entry(&pool, store_id, item_id, None, 1000, "USD")
+        .await
+        .expect("insert price");
+
+    let promo = Promotion {
+        id: Uuid::new_v4(),
+        code: Some("SAVE200".into()),
+        name: "Save 200 cents".into(),
+        promo_type: PromotionType::FixedAmountOff { amount_cents: 200 },
+        priority: 100,
+        valid_from: Utc::now() - Duration::minutes(5),
+        valid_until: Some(Utc::now() + Duration::minutes(5)),
+        conditions: vec![PromoCondition::MinBasketAmount { amount_cents: 1 }],
+        actions: vec![PromoAction::ApplyToBasket],
+        version: 1,
+    };
+    insert_promotion(
+        &pool,
+        promo.id,
+        store_id,
+        &serde_json::to_string(&promo).expect("promo json"),
+    )
+    .await
+    .expect("insert promo");
+
+    let created = handle_pos_command(
+        State(state.clone()),
+        Json(PosRequestEnvelope {
+            version: ContractVersion::V1_0_0,
+            idempotency_key: Uuid::new_v4(),
+            store_id,
+            register_id: Uuid::nil(),
+            payload: PosCommand::CreateCart(CreateCartPayload { cart_id: None }),
+        }),
+    )
+    .await;
+    let created_state: CartState =
+        serde_json::from_value(created.0.payload.expect("create payload")).expect("create state");
+
+    let add = handle_pos_command(
+        State(state.clone()),
+        Json(PosRequestEnvelope {
+            version: ContractVersion::V1_0_0,
+            idempotency_key: Uuid::new_v4(),
+            store_id,
+            register_id: Uuid::nil(),
+            payload: PosCommand::AddLineItem(AddLineItemPayload {
+                cart_id: created_state.cart_id,
+                item_id,
+                modifier_option_ids: vec![],
+                quantity: 1,
+                notes: None,
+                unit_price_override_cents: None,
+            }),
+        }),
+    )
+    .await;
+    assert!(
+        add.0.success,
+        "add line should succeed before coupon: {:?}",
+        add.0.errors
+    );
+    let before_coupon: CartState =
+        serde_json::from_value(add.0.payload.expect("add payload")).expect("add state");
+    let total_before = before_coupon.total_cents;
+
+    let applied = handle_pos_command(
+        State(state.clone()),
+        Json(PosRequestEnvelope {
+            version: ContractVersion::V1_0_0,
+            idempotency_key: Uuid::new_v4(),
+            store_id,
+            register_id: Uuid::nil(),
+            payload: PosCommand::ApplyCoupon(ApplyCouponPayload {
+                cart_id: before_coupon.cart_id,
+                coupon_code: "SAVE200".into(),
+            }),
+        }),
+    )
+    .await;
+    assert!(applied.0.success, "apply coupon should succeed");
+    let after_apply: CartState =
+        serde_json::from_value(applied.0.payload.expect("apply payload")).expect("apply state");
+    assert_eq!(after_apply.applied_coupons.len(), 1);
+    assert_eq!(after_apply.applied_coupons[0].code, "SAVE200");
+    assert!(after_apply.total_cents < total_before);
+
+    let removed = handle_pos_command(
+        State(state),
+        Json(PosRequestEnvelope {
+            version: ContractVersion::V1_0_0,
+            idempotency_key: Uuid::new_v4(),
+            store_id,
+            register_id: Uuid::nil(),
+            payload: PosCommand::RemoveCoupon(RemoveCouponPayload {
+                cart_id: after_apply.cart_id,
+                coupon_id: after_apply.applied_coupons[0].coupon_id,
+            }),
+        }),
+    )
+    .await;
+    assert!(removed.0.success, "remove coupon should succeed");
+    let after_remove: CartState =
+        serde_json::from_value(removed.0.payload.expect("remove payload")).expect("remove state");
+    assert!(after_remove.applied_coupons.is_empty());
+    assert_eq!(after_remove.total_cents, total_before);
 }

@@ -79,6 +79,17 @@ fn demo_catalog_items() -> Vec<CatalogItem> {
             tax_category_id: tax_id,
             modifiers: vec![],
             is_active: true,
+            title: Some(format!("Example Product {n}")),
+            brand: None,
+            caption: None,
+            external_identifiers: None,
+            images: None,
+            is_preorder: None,
+            online_from: None,
+            serialized_inventory: None,
+            extended_attributes: None,
+            variations: None,
+            variation_attributes: None,
             version: 1,
         })
         .collect()

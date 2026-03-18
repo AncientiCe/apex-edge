@@ -17,6 +17,16 @@ Related: [README](../../README.md) · [Architecture](../architecture/README.md) 
 - **Responses**: `PosResponseEnvelope<T>` with `success`, `payload`, `errors`.
 - **Cart state**: `CartState` with lines, totals, applied promos/coupons, state kind.
 
+## Documents Northbound Contract
+
+- **List**: `GET /orders/:order_id/documents` returns `[{ id, type, document_type, status, mime_type, created_at, completed_at }]`.
+- **Get**: `GET /documents/:id` returns `{ id, type, document_type, status, mime_type, content, error_message }`.
+- **Canonical types**: both `type` and `document_type` return canonical POS-facing values:
+  - internal `customer_receipt` or `receipt` => `sales_receipt`
+  - internal `gift_receipt` => `gift_receipt`
+  - unknown values pass through unchanged
+- **Content**: PDF payloads are base64-encoded in `content` when `mime_type=application/pdf`.
+
 ## Edge Auth (mPOS -> ApexEdge)
 
 - **Pairing**: `AuthCreatePairingCodeRequest/Response`, `AuthDevicePairRequest/Response`.

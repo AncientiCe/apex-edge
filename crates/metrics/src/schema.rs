@@ -180,6 +180,8 @@ pub const CATALOG_STOCK_CHECKS_TOTAL: &str = "apex_edge_catalog_stock_checks_tot
 
 /// Counter: product-by-id endpoint hits. Labels: outcome (hit, not_found, error).
 pub const CATALOG_PRODUCT_BY_ID_TOTAL: &str = "apex_edge_catalog_product_by_id_total";
+/// Counter: catalog prices endpoint requests. Labels: outcome (hit, empty, error).
+pub const CATALOG_PRICES_TOTAL: &str = "apex_edge_catalog_prices_total";
 
 // ---------- Document rendering (printing) ----------
 /// Counter: document render attempts. Labels: document_type, outcome (ok, template_error, pdf_error).

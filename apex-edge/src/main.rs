@@ -10,6 +10,22 @@ use axum::http::HeaderValue;
 use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 
+const DEFAULT_SYNC_INTERVAL_SECONDS: u64 = 300;
+
+fn parse_sync_interval_seconds(raw: Option<&str>) -> u64 {
+    raw.and_then(|v| v.parse::<u64>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(DEFAULT_SYNC_INTERVAL_SECONDS)
+}
+
+fn sync_interval_seconds_from_env() -> u64 {
+    parse_sync_interval_seconds(
+        std::env::var("APEX_EDGE_SYNC_INTERVAL_SECONDS")
+            .ok()
+            .as_deref(),
+    )
+}
+
 /// Default NDJSON entity paths (matches example-sync-source tool).
 fn default_sync_entities() -> Vec<SyncEntityConfig> {
     vec![
@@ -37,13 +53,14 @@ fn default_sync_entities() -> Vec<SyncEntityConfig> {
             entity: "customers".into(),
             path: "/sync/ndjson/customers".into(),
         },
-        SyncEntityConfig {
-            entity: "coupons".into(),
-            path: "/sync/ndjson/coupons".into(),
-        },
+        // Keep inventory early so stock is refreshed even if optional entities fail later.
         SyncEntityConfig {
             entity: "inventory".into(),
             path: "/sync/ndjson/inventory".into(),
+        },
+        SyncEntityConfig {
+            entity: "coupons".into(),
+            path: "/sync/ndjson/coupons".into(),
         },
         SyncEntityConfig {
             entity: "print_templates".into(),
@@ -92,6 +109,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let sync_source_url = std::env::var("APEX_EDGE_SYNC_SOURCE_URL").ok();
     if let Some(ref base_url) = sync_source_url {
+        let sync_interval_seconds = sync_interval_seconds_from_env();
         let config = SyncSourceConfig {
             base_url: base_url.trim_end_matches('/').to_string(),
             entities: default_sync_entities(),
@@ -101,11 +119,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let pool_daily = pool.clone();
         let config_daily = config.clone();
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(24 * 3600));
+            let mut interval =
+                tokio::time::interval(std::time::Duration::from_secs(sync_interval_seconds));
             interval.tick().await;
             loop {
                 interval.tick().await;
-                tracing::info!("Running scheduled daily sync");
+                tracing::info!(
+                    "Running scheduled sync (interval={}s)",
+                    sync_interval_seconds
+                );
                 run_sync_once(&pool_daily, &config_daily).await;
             }
         });
@@ -186,4 +208,49 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tracing::info!("ApexEdge listening on {}", addr);
     axum::serve(tokio::net::TcpListener::bind(addr).await?, app).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{default_sync_entities, parse_sync_interval_seconds};
+
+    #[test]
+    fn default_entities_sync_inventory_before_optional_entities() {
+        let entities = default_sync_entities();
+        let inventory_pos = entities
+            .iter()
+            .position(|e| e.entity == "inventory")
+            .expect("inventory entity should exist");
+        let coupons_pos = entities
+            .iter()
+            .position(|e| e.entity == "coupons")
+            .expect("coupons entity should exist");
+        let print_templates_pos = entities
+            .iter()
+            .position(|e| e.entity == "print_templates")
+            .expect("print_templates entity should exist");
+
+        assert!(
+            inventory_pos < coupons_pos,
+            "inventory should run before coupons"
+        );
+        assert!(
+            inventory_pos < print_templates_pos,
+            "inventory should run before print_templates"
+        );
+    }
+
+    #[test]
+    fn sync_interval_parser_defaults_to_five_minutes() {
+        assert_eq!(parse_sync_interval_seconds(None), 300);
+        assert_eq!(parse_sync_interval_seconds(Some("")), 300);
+        assert_eq!(parse_sync_interval_seconds(Some("0")), 300);
+        assert_eq!(parse_sync_interval_seconds(Some("abc")), 300);
+    }
+
+    #[test]
+    fn sync_interval_parser_accepts_positive_seconds() {
+        assert_eq!(parse_sync_interval_seconds(Some("60")), 60);
+        assert_eq!(parse_sync_interval_seconds(Some("900")), 900);
+    }
 }

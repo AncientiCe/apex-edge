@@ -24,7 +24,8 @@ Related: [README](../../README.md) · [Architecture](../architecture/README.md) 
 |----------|----------|---------|-------------|
 | `APEX_EDGE_DB` | No | `apex_edge.db` (cwd) | Path to SQLite database file. |
 | `APEX_EDGE_SEED_DEMO` | No | unset | Set to `1` or `true` to seed demo catalog, customers, and promotions on startup. |
-| `APEX_EDGE_SYNC_SOURCE_URL` | No | unset | Base URL of the HQ sync source. If set, sync runs on startup and every 24 h. |
+| `APEX_EDGE_SYNC_SOURCE_URL` | No | unset | Base URL of the HQ sync source. If set, sync runs on startup and periodically. |
+| `APEX_EDGE_SYNC_INTERVAL_SECONDS` | No | `300` | Sync retry/schedule interval in seconds when `APEX_EDGE_SYNC_SOURCE_URL` is set. |
 | `APEX_EDGE_HQ_SUBMIT_URL` | No | unset | URL to POST outbox submissions to HQ. If set, the outbox dispatcher runs every 30 s. |
 | `APEX_EDGE_ALLOWED_ORIGINS` | No | unset (wildcard) | Comma-separated list of allowed CORS origins, e.g. `http://localhost:5173,https://pos.internal`. Empty = allow all (logs a warning). Always set this in non-local environments. |
 | `APEX_EDGE_AUTH_ENABLED` | No | `false` | Enable edge auth middleware and auth endpoints. When `true`, business routes require bearer access tokens. |
@@ -108,7 +109,7 @@ The service uses structured logging via `tracing`. Key log events:
 |-------|-------|---------|
 | `INFO` | `"ApexEdge listening on ..."` | Server started successfully. |
 | `INFO` | `"Sync completed successfully"` | Startup or scheduled sync finished. |
-| `WARN` | `"Sync failed: ..."` | Sync cycle failed; will retry on next schedule (24 h). |
+| `WARN` | `"Sync failed: ..."` | Sync cycle failed; will retry on next configured interval (`APEX_EDGE_SYNC_INTERVAL_SECONDS`). |
 | `INFO` | `"Outbox dispatcher started ..."` | Dispatcher background task spawned. |
 | `INFO` | `"outbox dispatch cycle completed dispatched=N"` | N rows sent to HQ (only logged when N > 0). |
 | `ERROR` | `"outbox dispatch cycle error ..."` | Dispatch failed; will retry in 30 s. |

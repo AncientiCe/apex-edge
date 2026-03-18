@@ -3,7 +3,7 @@
 use apex_edge_contracts::{
     build_submission_envelope, AppliedPromoInfo, CartState, ContractVersion, FinalizeResult,
     ManualDiscountInfo, ManualDiscountKind, PosCommand, PosError, PosRequestEnvelope,
-    PosResponseEnvelope, TaxRule,
+    PosResponseEnvelope, Promotion, PromotionType, TaxRule,
 };
 use apex_edge_domain::{
     apply_promos_with_attribution, base_price_cents, tax_for_line, Cart, CartLineItem,
@@ -15,9 +15,39 @@ use apex_edge_storage::{
     list_promotions, list_tax_rules, load_cart, save_cart,
 };
 use sqlx::SqlitePool;
+use std::sync::OnceLock;
+use std::time::Instant;
 use uuid::Uuid;
 
 use crate::pos::AppState;
+
+fn finalize_timing_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("APEX_EDGE_PROFILE_FINALIZE")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
+    })
+}
+
+fn log_finalize_timing(event: &str, fields: &[(&str, String)]) {
+    if !finalize_timing_enabled() {
+        return;
+    }
+    let suffix = if fields.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " {}",
+            fields
+                .iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        )
+    };
+    eprintln!("[ApexEdge][Finalize] {event}{suffix}");
+}
 
 fn cart_state_to_payload(state: &CartState) -> serde_json::Value {
     serde_json::to_value(state).unwrap_or(serde_json::Value::Null)
@@ -173,8 +203,14 @@ pub async fn run_pricing_pipeline(
     let category_by_item =
         |item_id: Uuid| *item_to_tax_category.get(&item_id).unwrap_or(&Uuid::nil());
     let subtotal = cart.subtotal_cents();
+    // Automatic promotions are promotions without a coupon code.
+    let automatic_promos: Vec<Promotion> = promos
+        .iter()
+        .filter(|p| p.code.is_none())
+        .cloned()
+        .collect();
     let (mut results, applied_promo_ids) =
-        apply_promos_with_attribution(&cart.lines, category_by_item, &promos, subtotal);
+        apply_promos_with_attribution(&cart.lines, category_by_item, &automatic_promos, subtotal);
 
     apply_tax_to_pricing_results(&mut results, &cart.lines, &category_by_item, &rules)?;
 
@@ -190,10 +226,56 @@ pub async fn run_pricing_pipeline(
 
     // Apply manual discounts (stored with reason); add to line discount_cents and recalc tax.
     apply_manual_discounts_to_lines(cart, &rules, &item_to_tax_category)?;
+    apply_coupon_discounts(cart, &promos);
     if applied_any || !cart.manual_discounts.is_empty() {
         cart.set_discounted();
     }
+    if cart.applied_coupons.iter().any(|c| c.discount_cents > 0) {
+        cart.set_discounted();
+    }
     Ok(())
+}
+
+fn coupon_discount_from_promo(promo_type: &PromotionType, basket_net_cents: u64) -> u64 {
+    match promo_type {
+        PromotionType::PercentageOff { percent_bps } => {
+            basket_net_cents.saturating_mul(*percent_bps as u64) / 10000
+        }
+        PromotionType::FixedAmountOff { amount_cents } => (*amount_cents).min(basket_net_cents),
+        PromotionType::BuyXGetY { .. } | PromotionType::PriceOverride { .. } => 0,
+    }
+}
+
+/// Recompute coupon discounts based on currently applied coupons and active code-based promotions.
+fn apply_coupon_discounts(cart: &mut Cart, promos: &[Promotion]) {
+    if cart.applied_coupons.is_empty() {
+        return;
+    }
+    let mut basket_net_cents: u64 = cart
+        .lines
+        .iter()
+        .map(|l| l.line_total_cents.saturating_sub(l.discount_cents))
+        .sum();
+
+    for coupon in &mut cart.applied_coupons {
+        coupon.discount_cents = 0;
+        let Some(promo) = promos.iter().find(|p| {
+            p.code
+                .as_deref()
+                .map(|c| c.eq_ignore_ascii_case(&coupon.code))
+                .unwrap_or(false)
+        }) else {
+            continue;
+        };
+        let now = chrono::Utc::now();
+        if now < promo.valid_from || promo.valid_until.map(|u| now > u).unwrap_or(false) {
+            continue;
+        }
+        let discount = coupon_discount_from_promo(&promo.promo_type, basket_net_cents);
+        coupon.coupon_id = promo.id;
+        coupon.discount_cents = discount.min(basket_net_cents);
+        basket_net_cents = basket_net_cents.saturating_sub(coupon.discount_cents);
+    }
 }
 
 /// Apply stored manual discounts to lines (add amount to line.discount_cents) and recalc tax.
@@ -454,6 +536,276 @@ pub async fn execute_pos_command(
                 modifier_option_ids: p.modifier_option_ids.clone(),
                 notes: p.notes.clone(),
             });
+            if let Err(errors) = run_pricing_pipeline(pool, store_id, &mut cart).await {
+                return PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors,
+                };
+            }
+            if let Err(errors) = save_cart_to_db(pool, &cart).await {
+                return PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors,
+                };
+            }
+            let state = build_cart_state(pool, store_id, &cart).await;
+            PosResponseEnvelope {
+                version: ContractVersion::V1_0_0,
+                success: true,
+                idempotency_key,
+                payload: Some(cart_state_to_payload(&state)),
+                errors: vec![],
+            }
+        }
+        PosCommand::UpdateLineItem(p) => {
+            let Some(mut cart) = load_cart_from_db(pool, p.cart_id).await.ok().flatten() else {
+                return PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors: vec![PosError {
+                        code: "CART_NOT_FOUND".into(),
+                        message: "Cart not found".into(),
+                        field: None,
+                    }],
+                };
+            };
+            if cart.ensure_can_edit().is_err() {
+                return PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors: vec![PosError {
+                        code: "INVALID_STATE".into(),
+                        message: "Cart cannot be edited".into(),
+                        field: None,
+                    }],
+                };
+            }
+            if p.quantity == 0 {
+                return PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors: vec![PosError {
+                        code: "INVALID_QUANTITY".into(),
+                        message: "Quantity must be greater than zero".into(),
+                        field: Some("quantity".into()),
+                    }],
+                };
+            }
+            let Some(line) = cart.lines.iter_mut().find(|l| l.line_id == p.line_id) else {
+                return PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors: vec![PosError {
+                        code: "LINE_NOT_FOUND".into(),
+                        message: "Line not found".into(),
+                        field: None,
+                    }],
+                };
+            };
+            line.quantity = p.quantity;
+            line.notes = p.notes.clone();
+            line.line_total_cents = line.unit_price_cents.saturating_mul(line.quantity as u64);
+
+            if let Err(errors) = run_pricing_pipeline(pool, store_id, &mut cart).await {
+                return PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors,
+                };
+            }
+            if let Err(errors) = save_cart_to_db(pool, &cart).await {
+                return PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors,
+                };
+            }
+            let state = build_cart_state(pool, store_id, &cart).await;
+            PosResponseEnvelope {
+                version: ContractVersion::V1_0_0,
+                success: true,
+                idempotency_key,
+                payload: Some(cart_state_to_payload(&state)),
+                errors: vec![],
+            }
+        }
+        PosCommand::ApplyCoupon(p) => {
+            let Some(mut cart) = load_cart_from_db(pool, p.cart_id).await.ok().flatten() else {
+                return PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors: vec![PosError {
+                        code: "CART_NOT_FOUND".into(),
+                        message: "Cart not found".into(),
+                        field: None,
+                    }],
+                };
+            };
+            if cart.ensure_can_edit().is_err() {
+                return PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors: vec![PosError {
+                        code: "INVALID_STATE".into(),
+                        message: "Cart cannot be edited".into(),
+                        field: None,
+                    }],
+                };
+            }
+            let code = p.coupon_code.trim().to_uppercase();
+            if code.is_empty() {
+                return PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors: vec![PosError {
+                        code: "INVALID_COUPON".into(),
+                        message: "Coupon code is required".into(),
+                        field: Some("coupon_code".into()),
+                    }],
+                };
+            }
+            let promos = match list_promotions(pool, store_id).await {
+                Ok(p) => p,
+                Err(e) => {
+                    return PosResponseEnvelope {
+                        version: ContractVersion::V1_0_0,
+                        success: false,
+                        idempotency_key,
+                        payload: None,
+                        errors: vec![PosError {
+                            code: "PROMOTIONS".into(),
+                            message: e.to_string(),
+                            field: None,
+                        }],
+                    };
+                }
+            };
+            let Some(promo) = promos.iter().find(|promo| {
+                promo
+                    .code
+                    .as_deref()
+                    .map(|c| c.eq_ignore_ascii_case(&code))
+                    .unwrap_or(false)
+            }) else {
+                return PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors: vec![PosError {
+                        code: "COUPON_NOT_FOUND".into(),
+                        message: "Coupon not found".into(),
+                        field: Some("coupon_code".into()),
+                    }],
+                };
+            };
+            if !cart
+                .applied_coupons
+                .iter()
+                .any(|c| c.code.eq_ignore_ascii_case(&code))
+            {
+                cart.applied_coupons
+                    .push(apex_edge_domain::cart::AppliedCouponRecord {
+                        coupon_id: promo.id,
+                        code,
+                        discount_cents: 0,
+                    });
+            }
+
+            if let Err(errors) = run_pricing_pipeline(pool, store_id, &mut cart).await {
+                return PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors,
+                };
+            }
+            if let Err(errors) = save_cart_to_db(pool, &cart).await {
+                return PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors,
+                };
+            }
+            let state = build_cart_state(pool, store_id, &cart).await;
+            PosResponseEnvelope {
+                version: ContractVersion::V1_0_0,
+                success: true,
+                idempotency_key,
+                payload: Some(cart_state_to_payload(&state)),
+                errors: vec![],
+            }
+        }
+        PosCommand::RemoveCoupon(p) => {
+            let Some(mut cart) = load_cart_from_db(pool, p.cart_id).await.ok().flatten() else {
+                return PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors: vec![PosError {
+                        code: "CART_NOT_FOUND".into(),
+                        message: "Cart not found".into(),
+                        field: None,
+                    }],
+                };
+            };
+            if cart.ensure_can_edit().is_err() {
+                return PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors: vec![PosError {
+                        code: "INVALID_STATE".into(),
+                        message: "Cart cannot be edited".into(),
+                        field: None,
+                    }],
+                };
+            }
+            let before = cart.applied_coupons.len();
+            cart.applied_coupons.retain(|c| c.coupon_id != p.coupon_id);
+            if cart.applied_coupons.len() == before {
+                return PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors: vec![PosError {
+                        code: "COUPON_NOT_FOUND".into(),
+                        message: "Coupon not found on cart".into(),
+                        field: Some("coupon_id".into()),
+                    }],
+                };
+            }
+
             if let Err(errors) = run_pricing_pipeline(pool, store_id, &mut cart).await {
                 return PosResponseEnvelope {
                     version: ContractVersion::V1_0_0,
@@ -773,6 +1125,8 @@ pub async fn execute_pos_command(
             }
         }
         PosCommand::FinalizeOrder(p) => {
+            let finalize_started_at = Instant::now();
+            log_finalize_timing("start", &[("cart_id", p.cart_id.to_string())]);
             let Some(mut cart) = load_cart_from_db(pool, p.cart_id).await.ok().flatten() else {
                 return PosResponseEnvelope {
                     version: ContractVersion::V1_0_0,
@@ -827,6 +1181,16 @@ pub async fn execute_pos_command(
                     }],
                 };
             }
+            log_finalize_timing(
+                "outbox_inserted",
+                &[
+                    (
+                        "elapsed_ms",
+                        finalize_started_at.elapsed().as_millis().to_string(),
+                    ),
+                    ("submission_id", submission_id.to_string()),
+                ],
+            );
             let doc_id = Uuid::new_v4();
             let (customer_name, customer_address) = match cart.customer_id {
                 Some(cid) => {
@@ -916,6 +1280,16 @@ pub async fn execute_pos_command(
                     }],
                 };
             }
+            log_finalize_timing(
+                "document_generated",
+                &[
+                    (
+                        "elapsed_ms",
+                        finalize_started_at.elapsed().as_millis().to_string(),
+                    ),
+                    ("doc_id", doc_id.to_string()),
+                ],
+            );
             cart.set_finalized();
             if let Err(errors) = save_cart_to_db(pool, &cart).await {
                 return PosResponseEnvelope {
@@ -926,6 +1300,13 @@ pub async fn execute_pos_command(
                     errors,
                 };
             }
+            log_finalize_timing(
+                "cart_saved",
+                &[(
+                    "elapsed_ms",
+                    finalize_started_at.elapsed().as_millis().to_string(),
+                )],
+            );
             let result = FinalizeResult {
                 order_id,
                 cart_id: cart.id,

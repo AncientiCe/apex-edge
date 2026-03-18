@@ -70,6 +70,35 @@ async fn sync_catalog_items_are_applied_to_db() {
         tax_category_id: Uuid::nil(),
         modifiers: vec![],
         is_active: true,
+        title: Some("Synced Catalog Product".into()),
+        brand: Some("Demo Brand".into()),
+        caption: Some("Demo Caption".into()),
+        external_identifiers: Some(apex_edge_contracts::ExternalIdentifiers {
+            sku: Some("SYNC-CAT-001".into()),
+            gtin: Some("1234567890123".into()),
+            upc: None,
+            ean13: None,
+            jan: None,
+            isbn: None,
+        }),
+        images: Some(vec![apex_edge_contracts::ProductImage {
+            url: "https://example.com/p1.jpg".into(),
+            title: Some("Main".into()),
+            identifier: None,
+            is_main: Some(true),
+            alt_text: None,
+            dominant_color: None,
+            width: Some(640),
+            height: Some(640),
+            aspect_ratio: Some(1.0),
+            tags: None,
+        }]),
+        is_preorder: None,
+        online_from: None,
+        serialized_inventory: None,
+        extended_attributes: None,
+        variations: None,
+        variation_attributes: None,
         version: 1,
     };
     let payload = serde_json::to_vec(&item).unwrap();
@@ -106,6 +135,13 @@ async fn sync_catalog_items_are_applied_to_db() {
     assert_eq!(total, 1, "one catalog item should be stored");
     assert_eq!(items[0].sku, "SYNC-CAT-001");
     assert_eq!(items[0].name, "Synced Catalog Product");
+    let raw = items[0]
+        .raw_product_json
+        .as_deref()
+        .expect("raw product payload should be stored");
+    let raw_json: serde_json::Value = serde_json::from_str(raw).expect("valid json");
+    assert_eq!(raw_json["brand"], "Demo Brand");
+    assert_eq!(raw_json["title"], "Synced Catalog Product");
 }
 
 #[tokio::test]
@@ -121,6 +157,17 @@ async fn sync_catalog_replaces_stale_items_for_store() {
         tax_category_id: Uuid::nil(),
         modifiers: vec![],
         is_active: true,
+        title: Some("Synced New Product".into()),
+        brand: None,
+        caption: None,
+        external_identifiers: None,
+        images: None,
+        is_preorder: None,
+        online_from: None,
+        serialized_inventory: None,
+        extended_attributes: None,
+        variations: None,
+        variation_attributes: None,
         version: 1,
     };
     let body = ndjson_body(&[serde_json::to_vec(&synced).unwrap()]);
@@ -447,6 +494,17 @@ async fn sync_catalog_persists_is_active_flag() {
         tax_category_id: Uuid::nil(),
         modifiers: vec![],
         is_active: false,
+        title: Some("Inactive Product".into()),
+        brand: None,
+        caption: None,
+        external_identifiers: None,
+        images: None,
+        is_preorder: None,
+        online_from: None,
+        serialized_inventory: None,
+        extended_attributes: None,
+        variations: None,
+        variation_attributes: None,
         version: 1,
     };
     let payload = serde_json::to_vec(&item).unwrap();

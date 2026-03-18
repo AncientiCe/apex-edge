@@ -90,6 +90,11 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), MigrationError> {
             "image_urls",
             "ALTER TABLE catalog_items ADD COLUMN image_urls TEXT NOT NULL DEFAULT '[]'",
         ),
+        (
+            "catalog_items",
+            "raw_product_json",
+            "ALTER TABLE catalog_items ADD COLUMN raw_product_json TEXT",
+        ),
     ] {
         if !column_exists(pool, table, column).await? {
             if let Err(e) = sqlx::query(ddl).execute(pool).await {

@@ -18,6 +18,8 @@ use crate::pos::AppState;
 #[derive(Debug, Serialize)]
 pub struct DocumentSummary {
     pub id: Uuid,
+    #[serde(rename = "type")]
+    pub type_: String,
     pub document_type: String,
     pub status: String,
     pub mime_type: String,
@@ -28,11 +30,21 @@ pub struct DocumentSummary {
 #[derive(Debug, Serialize)]
 pub struct DocumentResponse {
     pub id: Uuid,
+    #[serde(rename = "type")]
+    pub type_: String,
     pub document_type: String,
     pub status: String,
     pub mime_type: String,
     pub content: Option<String>,
     pub error_message: Option<String>,
+}
+
+fn map_document_type_to_client_type(document_type: &str) -> String {
+    match document_type {
+        "customer_receipt" | "receipt" => "sales_receipt".to_string(),
+        "gift_receipt" => "gift_receipt".to_string(),
+        other => other.to_string(),
+    }
 }
 
 pub async fn get_document(
@@ -47,7 +59,8 @@ pub async fn get_document(
             OUTCOME_HIT,
             Ok(Json(DocumentResponse {
                 id: doc.id,
-                document_type: doc.document_type,
+                type_: map_document_type_to_client_type(&doc.document_type),
+                document_type: map_document_type_to_client_type(&doc.document_type),
                 status: doc.status,
                 mime_type: doc.mime_type,
                 content: doc.content,
@@ -79,7 +92,8 @@ pub async fn list_order_documents(
                 docs.into_iter()
                     .map(|d| DocumentSummary {
                         id: d.id,
-                        document_type: d.document_type,
+                        type_: map_document_type_to_client_type(&d.document_type),
+                        document_type: map_document_type_to_client_type(&d.document_type),
                         status: d.status,
                         mime_type: d.mime_type,
                         created_at: d.created_at,
@@ -152,7 +166,8 @@ pub async fn create_gift_receipt_document(
         .ok_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(DocumentSummary {
         id: created.id,
-        document_type: created.document_type,
+        type_: map_document_type_to_client_type(&created.document_type),
+        document_type: map_document_type_to_client_type(&created.document_type),
         status: created.status,
         mime_type: created.mime_type,
         created_at: created.created_at,

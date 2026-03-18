@@ -144,15 +144,23 @@ async fn dispatcher_loop_dispatches_pending_rows_and_can_be_cancelled() {
         .await;
     });
 
-    // Give the loop time to dispatch (first tick fires immediately).
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    let pending_drained = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            let pending = fetch_pending_outbox(&pool, 10)
+                .await
+                .expect("pending while loop running");
+            if pending.is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .is_ok();
     handle.abort();
 
     assert!(
-        fetch_pending_outbox(&pool, 10)
-            .await
-            .expect("pending after loop")
-            .is_empty(),
+        pending_drained,
         "outbox should be empty after dispatcher loop ran"
     );
 }
