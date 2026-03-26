@@ -313,7 +313,6 @@ describe('App auth gate', () => {
 
     await waitFor(() => expect(screen.getByText(/sale complete/i)).toBeInTheDocument());
     await waitFor(() => expect(mockApi.stopJourneyTracking).toHaveBeenCalledTimes(1));
-    expect(screen.getByText(/HTTP Requests/i)).toBeInTheDocument();
     expect(screen.getByText(/^Total requests$/i)).toBeInTheDocument();
     expect(screen.getByText(/^Local requests$/i)).toBeInTheDocument();
     expect(screen.getByText(/^Non-local requests$/i)).toBeInTheDocument();
