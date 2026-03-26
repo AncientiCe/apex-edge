@@ -21,6 +21,7 @@ Store hub orchestrator: **POS/MPOS <-> ApexEdge <-> HQ**. Offline-first, contrac
 - [Testing](#testing)
 - [Contracts](#contracts)
 - [Security and operations](#security-and-operations)
+- [Observability stack](#observability-stack)
 - [Crates](#crates)
 - [Documentation](#documentation)
 - [Project policies](#project-policies)
@@ -178,6 +179,22 @@ A local-only POS simulator frontend (Vite + React + TypeScript in `frontend/`) l
 - **Observability**: Structured logging (tracing); health/ready for DB. **Prometheus metrics** are exposed at `GET /metrics` when the app is started with the default binary (recorder installed). See [Metrics](#metrics) for the catalog and usage.
 - **Vulnerability reporting**: See [SECURITY.md](SECURITY.md).
 
+### Observability stack
+
+Run ApexEdge first (for example `cargo run -p apex-edge`), then in a second terminal:
+
+```bash
+make observability-up     # starts Prometheus (:9090) and Grafana (:3001)
+make observability-down   # stops the stack
+```
+
+Default local Grafana credentials are `admin` / `admin`. Provisioned dashboards:
+- Edge System Health
+- Dependencies & Data Flows
+- Transaction Journey
+
+For full setup, validation, PromQL signals, and shutdown procedures, see [docs/runbook/README.md](docs/runbook/README.md) section 7.
+
 ### Metrics
 
 Metrics are Prometheus-style (counters, histograms, gauges) with an `apex_edge_` prefix and bounded label cardinality. Scrape `GET /metrics` (e.g. `http://localhost:3000/metrics`) and point Prometheus at this target.
@@ -194,12 +211,23 @@ Metrics are Prometheus-style (counters, histograms, gauges) with an `apex_edge_`
 | `apex_edge_outbox_dispatch_attempts_total` | counter | `outcome` | Outbox dispatch attempts (accepted, rejected, http_error, timeout) |
 | `apex_edge_outbox_dispatch_duration_seconds` | histogram | — | HQ HTTP call duration |
 | `apex_edge_outbox_dlq_total` | counter | — | Messages moved to dead-letter queue |
+| `apex_edge_outbox_dispatcher_cycles_total` | counter | `outcome` | Background dispatcher loop cycle outcomes |
 | `apex_edge_sync_ingest_batches_total` | counter | `entity`, `outcome` | Sync ingest batches by entity and outcome |
 | `apex_edge_sync_ingest_duration_seconds` | histogram | `entity` | Sync batch processing duration |
 | `apex_edge_db_operations_total` | counter | `operation`, `outcome` | DB operations (get_document, fetch_pending_outbox, etc.) |
 | `apex_edge_db_operation_duration_seconds` | histogram | `operation` | DB operation duration |
-
-**Behavior ownership**: Route/flow → owner (api/health, api/pos, api/documents, outbox/dispatcher, sync/ingest). DB and HQ call sites are instrumented in storage and outbox.
+| `apex_edge_catalog_stock_checks_total` | counter | `outcome` | Stock availability checks during add-to-cart |
+| `apex_edge_catalog_product_by_id_total` | counter | `outcome` | Product-by-id endpoint hits |
+| `apex_edge_catalog_prices_total` | counter | `outcome` | Catalog prices endpoint requests |
+| `apex_edge_catalog_product_image_selection_total` | counter | `source` | Source selected for product image URLs |
+| `apex_edge_document_render_total` | counter | `document_type`, `outcome` | Document render attempts |
+| `apex_edge_document_render_duration_seconds` | histogram | `document_type` | Document render duration |
+| `apex_edge_dependency_http_requests_total` | counter | `status_class`, `outcome` | Outbound HTTP requests to dependencies |
+| `apex_edge_dependency_http_duration_seconds` | histogram | — | Outbound dependency HTTP call duration |
+| `apex_edge_auth_requests_total` | counter | `operation`, `outcome` | Auth route requests by operation/outcome |
+| `apex_edge_auth_request_duration_seconds` | histogram | `operation` | Auth route request duration |
+| `apex_edge_auth_sessions_total` | counter | `outcome` | Session exchange/refresh/revoke outcomes |
+| `apex_edge_device_pairings_total` | counter | `outcome` | Device pairing outcomes |
 
 **Usage**: Configure Prometheus to scrape the ApexEdge instance (e.g. add to `scrape_configs`). Example alert seeds: high 5xx rate on `apex_edge_http_requests_total`, high latency on `apex_edge_http_request_duration_seconds`, non-zero `apex_edge_outbox_dlq_total`, or `apex_edge_db_operations_total` with `outcome="error"`.
 
@@ -223,7 +251,7 @@ Metrics are Prometheus-style (counters, histograms, gauges) with an `apex_edge_`
 |----------|-------------|
 | [Architecture](docs/architecture/README.md) | System context, bootstrap, routes, POS/outbox/sync/observability diagrams |
 | [Contracts](docs/contracts/README.md) | POS ↔ ApexEdge and ApexEdge → HQ message shapes |
-| [Runbook](docs/runbook/README.md) | Deployment, environment variables, health checks, troubleshooting, go/no-go checklist |
+| [Runbook](docs/runbook/README.md) | Deployment, environment variables, health checks, observability stack setup (section 7), troubleshooting, go/no-go checklist |
 | [Changelog](CHANGELOG.md) | Release history |
 
 ## Project policies

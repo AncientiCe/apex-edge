@@ -1,0 +1,116 @@
+{
+  "id": null,
+  "uid": "apex-edge-transaction-journey",
+  "title": "Transaction Journey",
+  "tags": ["apex-edge", "transaction"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "15s",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Journey Stage Throughput (RPS)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(apex_edge_pos_commands_total{operation=~\"create_cart|add_line_item|set_tendering|add_payment|finalize_order\"}[5m])) by (operation, outcome)",
+          "legendFormat": "{{operation}} {{outcome}}"
+        }
+      ],
+      "gridPos": { "h": 8, "w": 16, "x": 0, "y": 0 }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Finalize Latency p95/p99 (s)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(apex_edge_pos_command_duration_seconds_bucket{operation=\"finalize_order\"}[5m])))",
+          "legendFormat": "p95"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(apex_edge_pos_command_duration_seconds_bucket{operation=\"finalize_order\"}[5m])))",
+          "legendFormat": "p99"
+        }
+      ],
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 0 }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Create Cart -> Add Line Drop-off (%)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "100 * (1 - (sum(rate(apex_edge_pos_commands_total{operation=\"add_line_item\", outcome=\"success\"}[15m])) / clamp_min(sum(rate(apex_edge_pos_commands_total{operation=\"create_cart\", outcome=\"success\"}[15m])), 0.001)))"
+        }
+      ],
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 8 }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Tendering -> Payment Drop-off (%)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "100 * (1 - (sum(rate(apex_edge_pos_commands_total{operation=\"add_payment\", outcome=\"success\"}[15m])) / clamp_min(sum(rate(apex_edge_pos_commands_total{operation=\"set_tendering\", outcome=\"success\"}[15m])), 0.001)))"
+        }
+      ],
+      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 8 }
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Payment -> Finalize Drop-off (%)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "100 * (1 - (sum(rate(apex_edge_pos_commands_total{operation=\"finalize_order\", outcome=\"success\"}[15m])) / clamp_min(sum(rate(apex_edge_pos_commands_total{operation=\"add_payment\", outcome=\"success\"}[15m])), 0.001)))"
+        }
+      ],
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 8 }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Top Transaction Failures (RPS)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "topk(8, sum(rate(apex_edge_pos_commands_total{operation=~\"create_cart|add_line_item|set_tendering|add_payment|finalize_order\", outcome!=\"success\"}[5m])) by (operation, outcome))",
+          "legendFormat": "{{operation}} {{outcome}}"
+        }
+      ],
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Finalize Success Ratio",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(apex_edge_pos_commands_total{operation=\"finalize_order\", outcome=\"success\"}[5m])) / clamp_min(sum(rate(apex_edge_pos_commands_total{operation=\"finalize_order\"}[5m])), 0.001)",
+          "legendFormat": "success ratio"
+        }
+      ],
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 14 }
+    }
+  ]
+}

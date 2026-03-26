@@ -2,8 +2,8 @@
 //! Also exposes availability (is_active, available_qty, image_urls) from synced inventory levels.
 
 use apex_edge_metrics::{
-    CATALOG_PRICES_TOTAL, CATALOG_PRODUCT_BY_ID_TOTAL, OUTCOME_ERROR, OUTCOME_HIT,
-    OUTCOME_NOT_FOUND,
+    CATALOG_PRICES_TOTAL, CATALOG_PRODUCT_BY_ID_TOTAL, CATALOG_PRODUCT_IMAGE_SELECTION_TOTAL,
+    OUTCOME_ERROR, OUTCOME_HIT, OUTCOME_NOT_FOUND,
 };
 use axum::{
     extract::{Path, Query, State},
@@ -145,6 +145,12 @@ fn to_product_result(r: apex_edge_storage::CatalogItemRow) -> ProductSearchResul
         .raw_product_json
         .as_deref()
         .and_then(|raw| serde_json::from_str::<apex_edge_contracts::CatalogItem>(raw).ok());
+    let (image_urls, image_source) = resolve_product_image_urls(&r, synced_item.as_ref());
+    metrics::counter!(
+        CATALOG_PRODUCT_IMAGE_SELECTION_TOTAL,
+        1u64,
+        "source" => image_source
+    );
     ProductSearchResult {
         id: r.id,
         product_id: r.id,
@@ -193,7 +199,63 @@ fn to_product_result(r: apex_edge_storage::CatalogItemRow) -> ProductSearchResul
             .as_ref()
             .and_then(|item| item.variation_attributes.clone()),
         available_qty: r.available_qty,
-        image_urls: r.image_urls,
+        image_urls,
+    }
+}
+
+fn resolve_product_image_urls(
+    row: &apex_edge_storage::CatalogItemRow,
+    synced_item: Option<&apex_edge_contracts::CatalogItem>,
+) -> (Vec<String>, &'static str) {
+    if !row.image_urls.is_empty() {
+        return (row.image_urls.clone(), "inventory");
+    }
+
+    let catalog_images: Vec<String> = synced_item
+        .and_then(|item| item.images.as_ref())
+        .map(|images| {
+            images
+                .iter()
+                .map(|image| image.url.trim())
+                .filter(|url| !url.is_empty())
+                .map(|url| url.to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+    if !catalog_images.is_empty() {
+        return (catalog_images, "catalog");
+    }
+
+    (
+        vec![product_placeholder_image_url(
+            row.sku.as_str(),
+            row.name.as_str(),
+        )],
+        "placeholder",
+    )
+}
+
+fn product_placeholder_image_url(sku: &str, name: &str) -> String {
+    let fallback = if sku.trim().is_empty() { name } else { sku };
+    let text = url_placeholder_text(fallback);
+    format!("https://placehold.co/600x600/png?text={text}")
+}
+
+fn url_placeholder_text(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '.' {
+            out.push(ch);
+        } else if ch.is_whitespace() {
+            out.push('+');
+        } else {
+            out.push('-');
+        }
+    }
+    if out.is_empty() {
+        "Product".into()
+    } else {
+        out
     }
 }
 

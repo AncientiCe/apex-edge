@@ -129,7 +129,7 @@ flowchart TB
 **Notes:**
 - **Inputs:** Incoming requests to the listed paths; `/ready` and document/pos handlers use `AppState` (pool).
 - **Outputs:** JSON or Prometheus scrape; `/ready` returns 503 if DB probe fails.
-- **Ownership:** All route behaviors owned by `apex-edge-api`; health = `health` module; pos = `pos`; documents = `documents`; metrics = `metrics_handler`. See [METRICS_BEHAVIORS.md](../METRICS_BEHAVIORS.md).
+- **Ownership:** All route behaviors owned by `apex-edge-api`; health = `health` module; pos = `pos`; documents = `documents`; metrics = `metrics_handler`. See section 9 for behavior ownership and section 20 for observability mapping.
 
 ### 4. POS Command Flow
 
@@ -219,7 +219,37 @@ flowchart TB
 - **Metrics:** `apex_edge_outbox_dispatch_attempts_total{outcome}`, `apex_edge_outbox_dispatch_duration_seconds`, `apex_edge_outbox_dlq_total`, `apex_edge_outbox_dispatcher_cycles_total{outcome}`.
 - **Failure path:** Cycle-level errors (storage, network) are logged and counted; loop continues on next tick without stopping the process.
 
-### 7. Sync Ingest and Entity Application Flow
+### 7. Frontend Journey HTTP Tracker
+
+**Purpose:** Track every wire-level HTTP attempt from sign-in success until Sale Complete summary, and classify calls as local vs non-local.
+
+```mermaid
+sequenceDiagram
+    participant UI as App.tsx
+    participant Tracker as requestTracker
+    participant API as api/client.ts
+    participant Net as fetch()
+    UI->>Tracker: startJourneyTracking(login_succeeded)
+    UI->>API: user journey actions (catalog, cart, payment)
+    API->>Net: HTTP attempt
+    Net-->>API: response or error
+    API->>Tracker: recordHttpAttempt(method, url, status, outcome, latency, bucket)
+    loop each retry/refresh attempt
+        API->>Net: retry or refresh call
+        Net-->>API: response or error
+        API->>Tracker: recordHttpAttempt(...)
+    end
+    UI->>Tracker: stopJourneyTracking(sale_complete)
+    Tracker-->>UI: JourneyHttpSummary(total/local/non_local/failed/latency)
+    UI->>UI: render summary rows + console summary line
+```
+
+**Notes:**
+- **Inputs:** Start trigger is auth session exchange success; each `fetchJson` and `fetchWithAuth` network attempt reports metadata (`method`, `url`, `status`, `outcome`, `latency_ms`, timestamp).
+- **Outputs:** Frozen `JourneyHttpSummary` is shown on Sale Complete and emitted to console as a one-line summary.
+- **Failure path:** Network errors and non-2xx HTTP statuses are counted as failed requests; retries and token refresh requests are counted as separate wire-level attempts.
+
+### 8. Sync Ingest and Entity Application Flow
 
 **Purpose:** Full sync pipeline: fetch NDJSON from HQ, apply each entity to its storage table, then advance the per-entity checkpoint. All entities supported: catalog, categories, price_book, tax_rules, customers, promotions. Unknown entities advance checkpoint without storage (forward-compatibility).
 
@@ -257,7 +287,7 @@ flowchart TB
 - **price_book:** Synced with delete-and-replace semantics (atomically replaces all price book entries for the store in a transaction).
 - **inventory:** Updates `available_qty`, `is_available`, and `image_urls` on existing `catalog_items` rows. Missing item IDs are silently skipped (forward-compatible). Default `available_qty = NULL` means untracked — no stock constraint applied.
 
-### 8. Observability and Behavior Ownership
+### 9. Observability and Behavior Ownership
 
 **Purpose:** Map behavior names and crate/module ownership for metrics and health; transparency for documentation.
 
@@ -294,11 +324,11 @@ flowchart TB
 ```
 
 **Notes:**
-- **Inputs:** Route or flow (see table in [METRICS_BEHAVIORS.md](../METRICS_BEHAVIORS.md)); health/ready = liveness/readiness; `/metrics` = Prometheus scrape when metrics handle present.
+- **Inputs:** Route or flow from this section's behavior map; health/ready = liveness/readiness; `/metrics` = Prometheus scrape when metrics handle present.
 - **Outputs:** Each behavior is the unit of ownership for metrics and tracing; DB probe only in ready_check; document fetch/list via storage; outbox and sync via their crates.
-- **Transparency:** Single source of truth for route → behavior → owner is METRICS_BEHAVIORS.md; tiers (Tier 1–5) define implementation priority.
+- **Transparency:** This architecture document is the source of truth for route -> behavior -> owner mapping and behavior tiering.
 
-### 9. Local POS Simulator Frontend
+### 10. Local POS Simulator Frontend
 
 **Purpose:** Document the local-only POS simulator UI: a POS-style interface with catalog (categories, product search, pagination), customer search (name/email/code/id), cart, checkout, and documents.
 
@@ -344,7 +374,7 @@ sequenceDiagram
 - **Product Detail Page:** Clicking "View" on any catalog card navigates to `/product/:id` (URL route). PDP fetches full product via `GET /catalog/products/:id`, displays image gallery (thumbnail strip + main image), availability badge, quantity stepper, and "Add to Cart" button. After add-to-cart, navigates back to `/catalog`. Add-to-cart is disabled when item is inactive or out of stock.
 - **Availability in catalog:** Product cards show availability badge (Out of Stock / low stock / In Stock / Available). The "+ Add" button is disabled for out-of-stock or inactive items. Images (first thumbnail) shown when synced.
 
-### 10. Example Sync Source and Streamed Sync
+### 11. Example Sync Source and Streamed Sync
 
 **Purpose:** Document the separate example-sync-source tool and how ApexEdge pulls sync data on startup and periodically via NDJSON streaming; sync status is persisted and exposed to the frontend.
 
@@ -375,7 +405,7 @@ flowchart LR
 - **Sync status:** Stored in `sync_run` (single row) and `entity_sync_status`; exposed at `GET /sync/status`. Frontend Sync tab shows last sync time, run state (idle/syncing), and per-entity progress (current, total, percent, status).
 - **Failure path:** Sync errors are logged; latest run is marked `failed` with error message; next scheduled run proceeds on the configured interval.
 
-### 11. Stock and Availability Sync
+### 12. Stock and Availability Sync
 
 **Purpose:** Document how inventory levels and product availability are synced from HQ and enforced on the POS add-to-cart path and exposed in the product catalog API.
 
@@ -418,7 +448,7 @@ flowchart TB
 - **Metrics:** `apex_edge_catalog_stock_checks_total{outcome}` counts add-to-cart stock checks (ok, OUT_OF_STOCK, INSUFFICIENT_STOCK). `apex_edge_catalog_product_by_id_total{outcome}` counts product-by-id requests.
 - **Failure path:** HQ may not have inventory synced for all items — defaults to NULL (untracked), which never blocks cart. is_active defaults to 1 (active).
 
-### 12. Product Detail Page (PDP) with Image Gallery
+### 13. Product Detail Page (PDP) with Image Gallery
 
 **Purpose:** Document the URL-routed Product Detail Page in the POS simulator frontend; image gallery, quantity stepper, availability badge, and add-to-cart flow.
 
@@ -449,7 +479,7 @@ sequenceDiagram
 - **Availability enforcement:** "Add to Cart" button is disabled when `is_active=false` or `available_qty <= 0`. Quantity stepper is capped at `available_qty` when tracked.
 - **Image gallery:** Thumbnail strip shows all `image_urls`; clicking a thumbnail swaps the main image. Keyboard-accessible. Falls back to placeholder icon when no images are synced.
 
-### 13. Internal Security Baseline (CORS)
+### 14. Internal Security Baseline (CORS)
 
 **Purpose:** Document the configurable CORS posture introduced for the v0.1.0 internal-alpha security baseline. By default the hub allows all origins (suitable for local dev); a comma-separated env var locks CORS to an explicit allowlist in controlled deployments.
 
@@ -471,7 +501,7 @@ flowchart TD
 - **Failure path:** Malformed origin strings (not valid `HeaderValue`) are silently skipped; if all entries are invalid the fallback is wildcard with a warning.
 - **Tests:** `cors_restricted_trusted_origin_is_allowed` and `cors_restricted_unknown_origin_is_rejected` in `apex-edge/tests/cors_http.rs` verify both branches.
 
-### 14. Synced PDF Receipt Templates
+### 15. Synced PDF Receipt Templates
 
 **Purpose:** Document how receipt and gift-receipt documents are produced from synced HTML templates, rendered with cart/order data, and output as PDFs for the POS to open or print.
 
@@ -495,7 +525,7 @@ flowchart LR
 - **Failure path:** Missing template falls back to plain-text receipt. Template render error or PDF engine failure marks document as failed and is recorded in `apex_edge_document_render_total{outcome=template_error|pdf_error}`.
 - **Metrics:** `apex_edge_document_render_total{document_type, outcome}`, `apex_edge_document_render_duration_seconds{document_type}`. Sync of `print_templates` is covered by `apex_edge_sync_ingest_batches_total{entity=print_templates}`.
 
-### 15. Edge Auth and Device Trust
+### 16. Edge Auth and Device Trust
 
 **Purpose:** Document local hub authentication so mPOS clients can pair once, then exchange external associate identity tokens for hub sessions used to call protected northbound routes.
 
@@ -533,7 +563,7 @@ sequenceDiagram
 - **Failure path:** Invalid/expired/consumed pairing code, device mismatch, token validation failure, and revoked/expired sessions all fail closed with `401`/`400`; attempts are tracked on pairing codes.
 - **Metrics:** `apex_edge_auth_requests_total{operation,outcome}`, `apex_edge_auth_request_duration_seconds{operation}`, `apex_edge_auth_sessions_total{outcome}`, `apex_edge_device_pairings_total{outcome}`.
 
-### 16. MPOS Local Normal Sale (Login Cloud, Sale Local)
+### 17. MPOS Local Normal Sale (Login Cloud, Sale Local)
 
 **Purpose:** Show the normal-sale local mode where login stays cloud-side and all sale runtime requests (catalog, customer, cart, promotions/coupons, cash payment, place order) execute on local ApexEdge.
 
@@ -573,7 +603,7 @@ sequenceDiagram
 - **Outputs:** All normal-sale state transitions and cart totals are produced by local ApexEdge endpoints; no post-login cloud dependency is required for the normal-sale path.
 - **Failure path:** Missing catalog/customer/cart or invalid coupon/payment returns command errors (`success=false`) from `/pos/command`; MPOS local-hub mode handles these as sale-flow errors.
 
-### 17. Documents API Canonical Types
+### 18. Documents API Canonical Types
 
 **Purpose:** Keep northbound documents contract strict for POS integrations by returning canonical document type values in both `type` and `document_type`.
 
@@ -600,3 +630,78 @@ sequenceDiagram
 - **Inputs:** Existing document rows with internal `document_type`.
 - **Outputs:** `type` and `document_type` are both canonical northbound values (`sales_receipt`, `gift_receipt`, or passthrough unknown types).
 - **Failure path:** Unknown document types are passed through unchanged; storage failures still return existing HTTP `500/404` behavior.
+
+### 19. Synced Product Image Fallbacks for Frontend
+
+**Purpose:** Ensure synced catalog products always provide frontend-ready image URLs by resolving inventory images first, then catalog images, and finally a deterministic placeholder.
+
+```mermaid
+flowchart LR
+    Inventory["inventory sync\n(catalog_items.image_urls)"] --> Resolve["catalog_search::to_product_result"]
+    Catalog["catalog sync\n(raw_product_json.images)"] --> Resolve
+    Resolve --> HasInv{"inventory image_urls\nnon-empty?"}
+    HasInv -->|yes| UseInv["Use inventory image_urls"]
+    HasInv -->|no| HasCatalog{"catalog images[].url\nnon-empty?"}
+    HasCatalog -->|yes| UseCatalog["Use catalog image URLs"]
+    HasCatalog -->|no| UsePlaceholder["Use placeholder URL:\nhttps://placehold.co/600x600/png?text=<sku|name>"]
+    UseInv --> API["GET /catalog/products\nGET /catalog/products/:id"]
+    UseCatalog --> API
+    UsePlaceholder --> API
+```
+
+**Notes:**
+- **Inputs:** Synced `inventory.image_urls`, synced `catalog.images`, and product `sku`/`name` for placeholder text fallback.
+- **Outputs:** `ProductSearchResult.image_urls` is always populated, so frontend catalog cards and PDP can render without missing-image branching.
+- **Resolution order:** inventory images take precedence over catalog images (store-level override), then placeholder.
+- **Metrics:** `apex_edge_catalog_product_image_selection_total{source=inventory|catalog|placeholder}` records the selected source for observability.
+- **Failure path:** When both sync sources omit images, the API still returns a placeholder URL instead of an empty array.
+
+### 20. Local Observability Stack (Prometheus + Grafana)
+
+**Purpose:** Provide a local monitoring stack for Edge operators to inspect live metrics, dependency health, and transaction journey behavior with no manual dashboard setup.
+
+```mermaid
+flowchart LR
+    subgraph edge [ApexEdge]
+        Metrics["GET /metrics\napex_edge_*"]
+    end
+    subgraph obs [Local Observability Stack]
+        Prom["Prometheus\nscrape + recording rules"]
+        Graf["Grafana\nauto-provisioned datasource + dashboards"]
+    end
+    subgraph users [Operators]
+        Browser["Browser\nhttp://localhost:3001"]
+    end
+    Metrics -->|"scrape every 15s"| Prom
+    Prom -->|"PromQL queries"| Graf
+    Browser --> Graf
+```
+
+**Notes:**
+- **Inputs:** ApexEdge metrics endpoint (`http://host.docker.internal:3000/metrics`) scraped by Prometheus; recording rules compute traffic/error/latency and transaction funnel aggregates.
+- **Outputs:** Three provisioned dashboards: **Edge System Health**, **Dependencies & Data Flows**, and **Transaction Journey**.
+- **Failure path:** If ApexEdge is not reachable, Prometheus target state shows `DOWN`; Grafana dashboards render `No data` rather than stale metrics.
+- **Behavior map and ownership:** The observability stack dashboards and alerts use these behavior-level owners and primary metric families.
+
+| Behavior | Entry point | Owner crate/module | Primary metrics |
+|---|---|---|---|
+| `health_check` | `GET /health` | `apex_edge_api::health` | `apex_edge_http_requests_total`, `apex_edge_http_request_duration_seconds` |
+| `ready_check` | `GET /ready` | `apex_edge_api::health` | `apex_edge_http_requests_total`, `apex_edge_http_request_duration_seconds` |
+| `pos_command` | `POST /pos/command` | `apex_edge_api::pos` | `apex_edge_pos_commands_total`, `apex_edge_pos_command_duration_seconds` |
+| `get_document` | `GET /documents/:id` | `apex_edge_api::documents` | `apex_edge_document_operations_total`, `apex_edge_document_operation_duration_seconds` |
+| `list_order_documents` | `GET /orders/:order_id/documents` | `apex_edge_api::documents` | `apex_edge_document_operations_total`, `apex_edge_document_operation_duration_seconds` |
+| `outbox_dispatch` | background loop | `apex_edge_outbox::dispatcher` | `apex_edge_outbox_dispatch_attempts_total`, `apex_edge_outbox_dispatch_duration_seconds`, `apex_edge_outbox_dlq_total`, `apex_edge_outbox_dispatcher_cycles_total` |
+| `sync_ingest` | sync scheduler + ingest | `apex_edge_sync::ingest` | `apex_edge_sync_ingest_batches_total`, `apex_edge_sync_ingest_duration_seconds` |
+| `db_operations` | storage layer | `apex_edge_storage::*` | `apex_edge_db_operations_total`, `apex_edge_db_operation_duration_seconds` |
+| `auth_flows` | `/auth/*` routes | `apex_edge_api::auth` | `apex_edge_auth_requests_total`, `apex_edge_auth_request_duration_seconds`, `apex_edge_auth_sessions_total`, `apex_edge_device_pairings_total` |
+| `document_render` | order document generation | `apex_edge_printing::generator` | `apex_edge_document_render_total`, `apex_edge_document_render_duration_seconds` |
+
+- **Tiering:** Use these tiers to prioritize implementation and operational response.
+
+| Tier | Meaning |
+|---|---|
+| Tier 1 | User-path critical: transaction and checkout behavior (`pos_command`) |
+| Tier 2 | Dependency health: DB and outbound integration (`db_operations`, `outbox_dispatch`) |
+| Tier 3 | Data freshness: sync ingest and related entity outcomes (`sync_ingest`) |
+| Tier 4 | Supportability: auth and document retrieval/rendering (`auth_flows`, `get_document`, `list_order_documents`, `document_render`) |
+| Tier 5 | Platform baselines: liveness/readiness route-level telemetry (`health_check`, `ready_check`) |

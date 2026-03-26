@@ -5,6 +5,9 @@ import {
   createPairingCode,
   pairDevice,
   exchangeSession,
+  type JourneyHttpSummary,
+  startJourneyTracking,
+  stopJourneyTracking,
   revokeSession,
   generateMockExternalToken,
   getHealth,
@@ -85,6 +88,7 @@ type SaleSummary = {
   finalize: FinalizeResult;
   cartSnapshot: CartState | null;
   documents: DocumentSummary[];
+  journeyHttp: JourneyHttpSummary;
 };
 
 function useEventLog() {
@@ -229,6 +233,7 @@ function AppInner() {
       setRefreshToken(session.refresh_token);
       setExpiresAt(session.expires_at);
       setAuthReady(true);
+      startJourneyTracking('login_succeeded');
       logEvent('res', 'session exchanged');
       pushToast('Authenticated');
     } catch (e) {
@@ -368,14 +373,19 @@ function AppInner() {
         if (res.success && res.payload) {
           if ('order_id' in res.payload) {
             const finalize = res.payload as FinalizeResult;
+            const journeyHttp = stopJourneyTracking('sale_complete');
             setSaleSummary({
               finalize,
               cartSnapshot: cartState,
               documents: [],
+              journeyHttp,
             });
             setCartId(null);
             setCartState(null);
             setStage('summary');
+            console.info(
+              `[journey-http] total=${journeyHttp.totalRequests} local=${journeyHttp.localRequests} non_local=${journeyHttp.nonLocalRequests} failed=${journeyHttp.failedRequests} latency_ms=${journeyHttp.totalLatencyMs}`
+            );
             logEvent('res', `finalize order_id=${finalize.order_id}`);
             void fetchSummaryDocuments(finalize.order_id);
           } else {
@@ -443,9 +453,13 @@ function AppInner() {
       payload: { cart_id: cid, customer_id: selectedCustomerId },
     });
     if (res?.success) {
+      const selected = customers.find((c) => c.id === selectedCustomerId) ?? null;
+      if (selected) {
+        setAttachedCustomer(selected);
+      }
       pushToast('Customer applied to cart');
     }
-  }, [ensureCart, selectedCustomerId, sendPosCommand, pushToast]);
+  }, [customers, ensureCart, selectedCustomerId, sendPosCommand, pushToast]);
 
   const onRemoveLine = useCallback(
     async (lineId: string) => {
@@ -604,6 +618,7 @@ function AppInner() {
     setSelectedCustomerId(null);
     setAttachedCustomer(null);
     setStage('customers');
+    startJourneyTracking('new_sale_started');
     pushToast('Sale completed');
   }, [pushToast]);
 
@@ -650,7 +665,9 @@ function AppInner() {
     if (!authReady) return;
     const customerId = cartState?.customer_id ?? null;
     if (!customerId) {
-      setAttachedCustomer(null);
+      if (!cartState || cartState.lines.length === 0) {
+        setAttachedCustomer(null);
+      }
       return;
     }
     if (attachedCustomer?.id === customerId) return;
@@ -660,9 +677,14 @@ function AppInner() {
       return;
     }
     void searchCustomers(baseUrl, customerId).then((results) => {
-      setAttachedCustomer(results.find((r) => r.id === customerId) ?? null);
+      const matched = results.find((r) => r.id === customerId);
+      if (matched) {
+        setAttachedCustomer(matched);
+      } else {
+        setAttachedCustomer((prev) => (prev?.id === customerId ? prev : null));
+      }
     });
-  }, [authReady, cartState?.customer_id, baseUrl, customers, attachedCustomer]);
+  }, [authReady, cartState, baseUrl, customers, attachedCustomer]);
 
   const isCartTab = stage === 'cart' || stage === 'pay' || stage === 'summary';
 
@@ -862,6 +884,26 @@ function AppInner() {
                 <span className="ios-row-value">
                   ${((saleSummary.cartSnapshot?.tax_cents ?? 0) / 100).toFixed(2)}
                 </span>
+              </div>
+              <div className="ios-row">
+                <span className="ios-row-title">Total requests</span>
+                <span className="ios-row-value">{saleSummary.journeyHttp.totalRequests}</span>
+              </div>
+              <div className="ios-row">
+                <span className="ios-row-title">Local requests</span>
+                <span className="ios-row-value">{saleSummary.journeyHttp.localRequests}</span>
+              </div>
+              <div className="ios-row">
+                <span className="ios-row-title">Non-local requests</span>
+                <span className="ios-row-value">{saleSummary.journeyHttp.nonLocalRequests}</span>
+              </div>
+              <div className="ios-row">
+                <span className="ios-row-title">Failed requests</span>
+                <span className="ios-row-value">{saleSummary.journeyHttp.failedRequests}</span>
+              </div>
+              <div className="ios-row">
+                <span className="ios-row-title">Total latency</span>
+                <span className="ios-row-value">{saleSummary.journeyHttp.totalLatencyMs}ms</span>
               </div>
             </div>
             <div className="btn-stack">

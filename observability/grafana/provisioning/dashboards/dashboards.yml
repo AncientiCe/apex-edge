@@ -1,0 +1,11 @@
+apiVersion: 1
+
+providers:
+  - name: ApexEdge Observability
+    orgId: 1
+    folder: ApexEdge
+    type: file
+    disableDeletion: false
+    editable: true
+    options:
+      path: /etc/grafana/observability/grafana/dashboards

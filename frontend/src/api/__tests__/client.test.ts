@@ -7,9 +7,14 @@ import { beforeEach, describe, it, expect, vi, afterEach } from 'vitest';
 import {
   buildEnvelope,
   configureAuthTransport,
+  getHealth,
+  getJourneySummary,
   listCategories,
   postPosCommand,
+  resetJourneyTracking,
   refreshSession,
+  startJourneyTracking,
+  stopJourneyTracking,
 } from '../client';
 
 const STORE_ID = '00000000-0000-0000-0000-000000000000';
@@ -65,6 +70,7 @@ describe('auth transport', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     configureAuthTransport(null);
+    resetJourneyTracking();
   });
 
   afterEach(() => {
@@ -161,6 +167,91 @@ describe('auth transport', () => {
 
     await expect(listCategories(baseUrl)).rejects.toMatchObject({ status: 401 });
     expect(onAuthFailure).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('journey http tracker', () => {
+  const originalFetch = global.fetch;
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    configureAuthTransport(null);
+    resetJourneyTracking();
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  it('counts wire-level attempts including auth retry and refresh', async () => {
+    const baseUrl = 'http://localhost:3000';
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 401,
+        json: async () => ({ message: 'unauthorized' }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          access_token: 'new-access',
+          refresh_token: 'new-refresh',
+          expires_at: new Date(Date.now() + 60_000).toISOString(),
+          refresh_expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => [],
+      }) as unknown as typeof fetch;
+    global.fetch = fetchMock;
+
+    let access = 'old-access';
+    let refresh = 'old-refresh';
+    configureAuthTransport({
+      getAccessToken: () => access,
+      getRefreshToken: () => refresh,
+      onTokens: (tokens) => {
+        access = tokens.accessToken;
+        refresh = tokens.refreshToken;
+      },
+      onAuthFailure: () => {},
+    });
+
+    startJourneyTracking('test');
+    await listCategories(baseUrl);
+    const stopped = stopJourneyTracking('done');
+    const summary = getJourneySummary();
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(stopped.totalRequests).toBe(3);
+    expect(summary.totalRequests).toBe(3);
+    expect(summary.localRequests).toBe(3);
+    expect(summary.nonLocalRequests).toBe(0);
+    expect(summary.failedRequests).toBe(1);
+    expect(summary.totalLatencyMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it('classifies non-local requests and tracks errors', async () => {
+    const baseUrl = 'https://api.example.com';
+    const fetchMock = vi.fn(async () => ({
+      ok: false,
+      status: 404,
+      json: async () => ({ message: 'missing' }),
+    })) as unknown as typeof fetch;
+    global.fetch = fetchMock;
+
+    startJourneyTracking('test');
+    await expect(getHealth(baseUrl)).rejects.toMatchObject({ status: 404 });
+    const summary = stopJourneyTracking('done');
+
+    expect(summary.totalRequests).toBe(1);
+    expect(summary.localRequests).toBe(0);
+    expect(summary.nonLocalRequests).toBe(1);
+    expect(summary.failedRequests).toBe(1);
   });
 });
 

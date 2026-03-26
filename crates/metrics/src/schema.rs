@@ -182,6 +182,9 @@ pub const CATALOG_STOCK_CHECKS_TOTAL: &str = "apex_edge_catalog_stock_checks_tot
 pub const CATALOG_PRODUCT_BY_ID_TOTAL: &str = "apex_edge_catalog_product_by_id_total";
 /// Counter: catalog prices endpoint requests. Labels: outcome (hit, empty, error).
 pub const CATALOG_PRICES_TOTAL: &str = "apex_edge_catalog_prices_total";
+/// Counter: source used to shape product `image_urls`. Labels: source (inventory, catalog, placeholder).
+pub const CATALOG_PRODUCT_IMAGE_SELECTION_TOTAL: &str =
+    "apex_edge_catalog_product_image_selection_total";
 
 // ---------- Document rendering (printing) ----------
 /// Counter: document render attempts. Labels: document_type, outcome (ok, template_error, pdf_error).

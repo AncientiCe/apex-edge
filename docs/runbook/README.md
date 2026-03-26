@@ -178,14 +178,51 @@ setups that pass `None` for `metrics_handle`. In normal production startup,
 
 ## 7. Monitoring
 
-Expose `/metrics` to a Prometheus scraper. Key metrics to alert on:
+### Local observability stack (Prometheus + Grafana)
 
-| Metric | Type | Alert condition |
-|--------|------|-----------------|
-| `apex_edge_outbox_dispatcher_cycles_total{outcome="error"}` | Counter | Sudden increase |
-| `apex_edge_http_requests_total{status="5xx"}` | Counter | > 0 in steady state |
-| `apex_edge_http_request_duration_seconds` | Histogram | p99 > 500 ms |
-| `apex_edge_outbox_dispatcher_cycles_total{outcome="success"}` | Counter | Stops incrementing (dispatcher stalled) |
+For local transparency and live troubleshooting, run ApexEdge and the observability stack together.
+
+1. Start ApexEdge (local host process):
+   ```bash
+   cargo run -p apex-edge
+   ```
+2. In another terminal, start observability:
+   ```bash
+   make observability-up
+   ```
+3. Open:
+   - Prometheus: `http://localhost:9090`
+   - Grafana: `http://localhost:3001` (default local credentials: `admin` / `admin`)
+4. Validate wiring:
+   ```bash
+   make observability-validate
+   ```
+
+### Provisioned dashboards
+
+- **Edge System Health**: request throughput, 4xx/5xx rates, p95/p99 latency, in-flight requests, health/ready route outcomes, auth outcomes.
+- **Dependencies & Data Flows**: DB error/latency, outbox dispatch outcomes + DLQ growth + cycle health, sync ingest outcomes/latency by entity.
+- **Transaction Journey**: command funnel (`create_cart` -> `add_line_item` -> `set_tendering` -> `add_payment` -> `finalize_order`), stage outcomes, finalize latency, drop-off ratios, top failures.
+
+### What to monitor
+
+| Signal | Why it matters | Likely failure mode | Expected threshold/trend |
+|--------|----------------|---------------------|--------------------------|
+| `sum(rate(apex_edge_http_requests_total{status_class="5xx"}[5m]))` | User-facing API reliability | Handler/storage/runtime faults | Near zero in steady state |
+| `histogram_quantile(0.99, sum by (le) (rate(apex_edge_http_request_duration_seconds_bucket[5m])))` | End-user responsiveness | DB contention, sync contention, host pressure | Typically < 0.5s p99 in local dev |
+| `sum(apex_edge_http_requests_in_flight)` | Live pressure indicator | Request backlog or stuck handlers | Returns to baseline after load |
+| `sum(rate(apex_edge_db_operations_total{outcome="error"}[5m]))` | Storage correctness and reliability | SQL errors, DB lock/write pressure | Zero baseline; investigate any sustained value |
+| `sum(rate(apex_edge_outbox_dispatch_attempts_total{outcome=~"http_error|timeout|rejected"}[5m]))` | Southbound order submission health | HQ connectivity, schema rejection, timeout | Zero or brief spikes; sustained non-zero is unhealthy |
+| `sum(increase(apex_edge_outbox_dlq_total[15m]))` | Data-loss risk / manual intervention | Persistent submit failures exhausting retries | Always zero; non-zero requires immediate triage |
+| `sum(rate(apex_edge_sync_ingest_batches_total{outcome="invalid_payload"}[5m]))` | Northbound data contract integrity | Invalid HQ payload/contract drift | Always zero |
+| `sum(rate(apex_edge_pos_commands_total{operation="finalize_order",outcome="success"}[5m])) / clamp_min(sum(rate(apex_edge_pos_commands_total{operation="finalize_order"}[5m])), 0.001)` | Checkout completion quality | Pricing/payment/order finalization regressions | Close to 1.0 under normal operation |
+| `100 * (1 - (sum(rate(apex_edge_pos_commands_total{operation="finalize_order", outcome="success"}[15m])) / clamp_min(sum(rate(apex_edge_pos_commands_total{operation="add_payment", outcome="success"}[15m])), 0.001)))` | Transaction funnel drop-off after payment | Finalize path bugs, downstream write failures | Close to 0%; investigate growth trend |
+
+### Shutdown
+
+```bash
+make observability-down
+```
 
 ---
 

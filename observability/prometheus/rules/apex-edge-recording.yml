@@ -1,0 +1,87 @@
+groups:
+  - name: apex-edge-traffic
+    interval: 30s
+    rules:
+      - record: apex_edge:http_request_rate_5m
+        expr: sum(rate(apex_edge_http_requests_total[5m]))
+
+      - record: apex_edge:http_4xx_rate_5m
+        expr: sum(rate(apex_edge_http_requests_total{status_class="4xx"}[5m]))
+
+      - record: apex_edge:http_5xx_rate_5m
+        expr: sum(rate(apex_edge_http_requests_total{status_class="5xx"}[5m]))
+
+      - record: apex_edge:http_error_ratio_5m
+        expr: |
+          apex_edge:http_5xx_rate_5m
+          /
+          clamp_min(apex_edge:http_request_rate_5m, 0.001)
+
+      - record: apex_edge:http_latency_p95_5m
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (rate(apex_edge_http_request_duration_seconds_bucket[5m]))
+          )
+
+      - record: apex_edge:http_latency_p99_5m
+        expr: |
+          histogram_quantile(
+            0.99,
+            sum by (le) (rate(apex_edge_http_request_duration_seconds_bucket[5m]))
+          )
+
+      - record: apex_edge:http_in_flight
+        expr: sum(apex_edge_http_requests_in_flight)
+
+  - name: apex-edge-journey
+    interval: 30s
+    rules:
+      - record: apex_edge:transaction_stage_rate_5m
+        expr: |
+          sum by (operation, outcome) (
+            rate(apex_edge_pos_commands_total[5m])
+          )
+
+      - record: apex_edge:transaction_finalize_success_rate_5m
+        expr: |
+          sum(rate(apex_edge_pos_commands_total{operation="finalize_order", outcome="success"}[5m]))
+          /
+          clamp_min(sum(rate(apex_edge_pos_commands_total{operation="finalize_order"}[5m])), 0.001)
+
+      - record: apex_edge:transaction_finalize_latency_p95_5m
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (
+              rate(apex_edge_pos_command_duration_seconds_bucket{operation="finalize_order"}[5m])
+            )
+          )
+
+      - record: apex_edge:transaction_finalize_latency_p99_5m
+        expr: |
+          histogram_quantile(
+            0.99,
+            sum by (le) (
+              rate(apex_edge_pos_command_duration_seconds_bucket{operation="finalize_order"}[5m])
+            )
+          )
+
+  - name: apex-edge-dependencies
+    interval: 30s
+    rules:
+      - record: apex_edge:db_error_rate_5m
+        expr: sum(rate(apex_edge_db_operations_total{outcome="error"}[5m]))
+
+      - record: apex_edge:db_latency_p95_5m
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (rate(apex_edge_db_operation_duration_seconds_bucket[5m]))
+          )
+
+      - record: apex_edge:outbox_dlq_rate_5m
+        expr: sum(rate(apex_edge_outbox_dlq_total[5m]))
+
+      - record: apex_edge:sync_invalid_payload_rate_5m
+        expr: sum(rate(apex_edge_sync_ingest_batches_total{outcome="invalid_payload"}[5m]))

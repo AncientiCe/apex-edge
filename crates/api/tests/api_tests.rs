@@ -1,16 +1,17 @@
 use apex_edge_api::{
     create_gift_receipt_document, get_cart_state_handler, get_document, get_prices,
-    handle_pos_command, health, list_order_documents, ready, serve_metrics, sync_status, AppState,
+    get_product_by_id, handle_pos_command, health, list_order_documents, ready, search_products,
+    serve_metrics, sync_status, AppState, ProductSearchQuery,
 };
 use apex_edge_contracts::{
-    AddLineItemPayload, ApplyCouponPayload, CartState, ContractVersion, CreateCartPayload,
-    PosCommand, PosRequestEnvelope, PromoAction, PromoCondition, Promotion, PromotionType,
-    RemoveCouponPayload, RemoveLineItemPayload, UpdateLineItemPayload,
+    AddLineItemPayload, ApplyCouponPayload, CartState, CatalogItem, ContractVersion,
+    CreateCartPayload, PosCommand, PosRequestEnvelope, ProductImage, PromoAction, PromoCondition,
+    Promotion, PromotionType, RemoveCouponPayload, RemoveLineItemPayload, UpdateLineItemPayload,
 };
 use apex_edge_storage::{
     enqueue_document, insert_catalog_item, insert_price_book_entry, insert_promotion,
-    insert_tax_rule, list_documents_for_order, mark_generated, run_migrations,
-    upsert_print_template,
+    insert_tax_rule, list_documents_for_order, mark_generated, replace_catalog_items,
+    run_migrations, upsert_print_template,
 };
 use axum::response::IntoResponse;
 use axum::{
@@ -283,6 +284,125 @@ async fn get_prices_returns_base_prices_for_requested_products() {
     assert_eq!(response.0.items[0].product_id, item_id);
     assert_eq!(response.0.items[0].currency_code, "USD");
     assert!((response.0.items[0].value - 12.34).abs() < f64::EPSILON);
+}
+
+#[tokio::test]
+async fn search_products_uses_catalog_images_when_inventory_images_are_missing() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("pool");
+    run_migrations(&pool).await.expect("migrations");
+
+    let store_id = Uuid::nil();
+    let item_id = Uuid::new_v4();
+    let item = CatalogItem {
+        id: item_id,
+        sku: "IMG-CAT-001".into(),
+        name: "Catalog Image Product".into(),
+        description: Some("with catalog image".into()),
+        category_id: Uuid::new_v4(),
+        tax_category_id: Uuid::new_v4(),
+        modifiers: vec![],
+        is_active: true,
+        title: None,
+        brand: None,
+        caption: None,
+        external_identifiers: None,
+        images: Some(vec![
+            ProductImage {
+                url: "https://cdn.example.com/catalog/main.jpg".into(),
+                title: Some("main".into()),
+                ..ProductImage::default()
+            },
+            ProductImage {
+                url: "https://cdn.example.com/catalog/side.jpg".into(),
+                title: Some("side".into()),
+                ..ProductImage::default()
+            },
+        ]),
+        is_preorder: None,
+        online_from: None,
+        serialized_inventory: None,
+        extended_attributes: None,
+        variations: None,
+        variation_attributes: None,
+        version: 1,
+    };
+    replace_catalog_items(&pool, store_id, &[item])
+        .await
+        .expect("replace_catalog_items");
+
+    let state = AppState {
+        store_id,
+        pool,
+        metrics_handle: None,
+        auth: apex_edge_api::AuthSettings::default(),
+    };
+    let response = search_products(
+        State(state),
+        Query(ProductSearchQuery {
+            sku: Some("IMG-CAT-001".into()),
+            q: None,
+            category_id: None,
+            page: 1,
+            per_page: 24,
+        }),
+    )
+    .await
+    .expect("search_products response");
+
+    let json = serde_json::to_value(response.0).expect("serialize");
+    let arr = json.as_array().expect("sku search returns array");
+    assert_eq!(arr.len(), 1);
+    assert_eq!(
+        arr[0]["image_urls"],
+        serde_json::json!([
+            "https://cdn.example.com/catalog/main.jpg",
+            "https://cdn.example.com/catalog/side.jpg"
+        ])
+    );
+}
+
+#[tokio::test]
+async fn product_by_id_returns_placeholder_image_when_no_synced_images_exist() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("pool");
+    run_migrations(&pool).await.expect("migrations");
+
+    let store_id = Uuid::nil();
+    let item_id = Uuid::new_v4();
+    insert_catalog_item(
+        &pool,
+        item_id,
+        store_id,
+        "IMG-NONE-001",
+        "No Image Product",
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+    )
+    .await
+    .expect("insert catalog item");
+
+    let state = AppState {
+        store_id,
+        pool,
+        metrics_handle: None,
+        auth: apex_edge_api::AuthSettings::default(),
+    };
+    let response = get_product_by_id(State(state), axum::extract::Path(item_id))
+        .await
+        .expect("get_product_by_id");
+
+    assert_eq!(response.0.image_urls.len(), 1);
+    assert_eq!(
+        response.0.image_urls[0],
+        "https://placehold.co/600x600/png?text=IMG-NONE-001"
+    );
 }
 
 #[tokio::test]

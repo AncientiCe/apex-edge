@@ -25,6 +25,17 @@ import type {
   ProductSearchResult,
   SyncStatusResponse,
 } from './types';
+import { recordHttpAttempt } from './requestTracker';
+
+export {
+  getJourneySummary,
+  resetJourneyTracking,
+  startJourneyTracking,
+  stopJourneyTracking,
+  type JourneyHttpSummary,
+  type RequestBucket,
+  type TrackedHttpEvent,
+} from './requestTracker';
 
 const VERSION: ContractVersion = { major: 1, minor: 0, patch: 0 };
 
@@ -102,10 +113,57 @@ async function fetchJson<T>(
   url: string,
   init?: RequestInit
 ): Promise<T> {
-  const res = await fetch(url, init);
+  const method = init?.method ?? 'GET';
+  const startedAt = Date.now();
+  let res: Response;
+  try {
+    res = await fetch(url, init);
+  } catch (error) {
+    recordHttpAttempt({
+      method,
+      url,
+      status: null,
+      outcome: 'network_error',
+      latencyMs: Date.now() - startedAt,
+    });
+    throw error;
+  }
+  recordHttpAttempt({
+    method,
+    url,
+    status: res.status,
+    outcome: res.ok ? 'ok' : 'http_error',
+    latencyMs: Date.now() - startedAt,
+  });
   const body = await res.json().catch(() => ({}));
   if (!res.ok) throw normalizeError(res.status, body);
   return body as T;
+}
+
+async function trackedFetch(url: string, init?: RequestInit): Promise<Response> {
+  const method = init?.method ?? 'GET';
+  const startedAt = Date.now();
+  let res: Response;
+  try {
+    res = await fetch(url, init);
+  } catch (error) {
+    recordHttpAttempt({
+      method: init?.method ?? 'GET',
+      url,
+      status: null,
+      outcome: 'network_error',
+      latencyMs: Date.now() - startedAt,
+    });
+    throw error;
+  }
+  recordHttpAttempt({
+    method,
+    url,
+    status: res.status,
+    outcome: res.ok ? 'ok' : 'http_error',
+    latencyMs: Date.now() - startedAt,
+  });
+  return res;
 }
 
 async function fetchWithAuth<T>(
@@ -122,7 +180,7 @@ async function fetchWithAuth<T>(
     throw normalizeError(401, { message: 'Missing access token' });
   }
 
-  const first = await fetch(`${baseUrl}${path}`, {
+  const first = await trackedFetch(`${baseUrl}${path}`, {
     ...init,
     headers: mergeHeaders(init?.headers, accessToken),
   });
@@ -153,7 +211,7 @@ async function fetchWithAuth<T>(
     authTransport.onAuthFailure('refresh_missing_access');
     throw normalizeError(401, firstBody);
   }
-  const retry = await fetch(`${baseUrl}${path}`, {
+  const retry = await trackedFetch(`${baseUrl}${path}`, {
     ...init,
     headers: mergeHeaders(init?.headers, nextAccessToken),
   });

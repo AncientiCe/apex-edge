@@ -40,6 +40,9 @@ jobs:
       - name: Tests
         run: make test
 
+      - name: Observability compose validation
+        run: make observability-validate
+
       - name: Doc tests
         run: make doc-test
 

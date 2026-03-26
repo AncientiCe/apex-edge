@@ -10,6 +10,7 @@ use apex_edge_contracts::{
 use axum::{body::Body, extract::State, http::Response, routing::get, Router};
 use base64::Engine;
 use chrono::Utc;
+use rusqlite::Connection;
 use serde::Serialize;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -20,7 +21,10 @@ fn default_store_id() -> Uuid {
 
 #[cfg(test)]
 mod tests {
-    use super::{demo_catalog_items, demo_price_book_for_catalog};
+    use super::{
+        demo_catalog_items, demo_inventory_levels_for_catalog, demo_price_book_for_catalog,
+        parse_variant_identifiers,
+    };
 
     #[test]
     fn price_book_covers_every_catalog_item() {
@@ -38,11 +42,46 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn inventory_includes_two_distinct_placeholder_images_per_product() {
+        let items = demo_catalog_items();
+        let levels = demo_inventory_levels_for_catalog(&items);
+
+        assert_eq!(levels.len(), items.len());
+        for level in levels {
+            assert_eq!(
+                level.image_urls.len(),
+                2,
+                "expected two image URLs per product"
+            );
+            assert_ne!(
+                level.image_urls[0], level.image_urls[1],
+                "placeholder image URLs should be distinct"
+            );
+            assert!(
+                level
+                    .image_urls
+                    .iter()
+                    .all(|url| url.starts_with("https://dummyimage.com/")),
+                "placeholder URLs should use dummyimage.com"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_variant_identifiers_extracts_expected_fields() {
+        let ids = parse_variant_identifiers("ean13=8103800957016,sku=10055359980,gtin=123");
+        assert_eq!(ids.sku.as_deref(), Some("10055359980"));
+        assert_eq!(ids.ean13.as_deref(), Some("8103800957016"));
+        assert_eq!(ids.gtin.as_deref(), Some("123"));
+    }
 }
 
 /// Shared state for handlers (store_id for scoping example data).
 struct AppState {
     store_id: Uuid,
+    items: Vec<CatalogItem>,
 }
 
 #[derive(Serialize)]
@@ -95,6 +134,124 @@ fn demo_catalog_items() -> Vec<CatalogItem> {
         .collect()
 }
 
+#[derive(Debug)]
+struct SqliteProductRow {
+    product_id: String,
+    product_name: String,
+    variant_identifiers: Option<String>,
+}
+
+fn parse_variant_identifiers(value: &str) -> apex_edge_contracts::ExternalIdentifiers {
+    let mut out = apex_edge_contracts::ExternalIdentifiers::default();
+    for pair in value.split(',') {
+        let mut parts = pair.splitn(2, '=');
+        let key = parts.next().unwrap_or_default().trim();
+        let val = parts.next().unwrap_or_default().trim();
+        if key.is_empty() || val.is_empty() {
+            continue;
+        }
+        match key {
+            "sku" => out.sku = Some(val.to_string()),
+            "gtin" => out.gtin = Some(val.to_string()),
+            "upc" => out.upc = Some(val.to_string()),
+            "ean13" => out.ean13 = Some(val.to_string()),
+            "jan" => out.jan = Some(val.to_string()),
+            "isbn" => out.isbn = Some(val.to_string()),
+            _ => {}
+        }
+    }
+    out
+}
+
+fn catalog_item_from_sqlite_row(
+    row: SqliteProductRow,
+    category_id: Uuid,
+    tax_category_id: Uuid,
+) -> CatalogItem {
+    let external_identifiers = row
+        .variant_identifiers
+        .as_deref()
+        .map(parse_variant_identifiers);
+    let sku = external_identifiers
+        .as_ref()
+        .and_then(|ids| ids.sku.clone())
+        .unwrap_or_else(|| row.product_id.clone());
+    CatalogItem {
+        id: Uuid::new_v5(&Uuid::NAMESPACE_OID, row.product_id.as_bytes()),
+        sku,
+        name: row.product_name.clone(),
+        description: Some(format!("Imported from SQLite catalog ({})", row.product_id)),
+        category_id,
+        tax_category_id,
+        modifiers: vec![],
+        is_active: true,
+        title: Some(row.product_name),
+        brand: None,
+        caption: None,
+        external_identifiers,
+        images: None,
+        is_preorder: None,
+        online_from: None,
+        serialized_inventory: None,
+        extended_attributes: None,
+        variations: None,
+        variation_attributes: None,
+        version: 1,
+    }
+}
+
+fn load_catalog_items_from_sqlite(path: &str) -> Result<Vec<CatalogItem>, String> {
+    let conn = Connection::open(path).map_err(|e| format!("open sqlite at {path}: {e}"))?;
+    let mut stmt = conn
+        .prepare("SELECT productId, productName, variantIdentifiers FROM products")
+        .map_err(|e| format!("prepare products query: {e}"))?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(SqliteProductRow {
+                product_id: row.get(0)?,
+                product_name: row.get(1)?,
+                variant_identifiers: row.get(2).ok(),
+            })
+        })
+        .map_err(|e| format!("query products: {e}"))?;
+
+    let category_id = Uuid::parse_str("10000000-0000-0000-0000-000000000001").unwrap();
+    let tax_category_id = Uuid::parse_str("20000000-0000-0000-0000-000000000002").unwrap();
+    let mut items = Vec::new();
+    for row in rows {
+        let row = row.map_err(|e| format!("read product row: {e}"))?;
+        items.push(catalog_item_from_sqlite_row(
+            row,
+            category_id,
+            tax_category_id,
+        ));
+    }
+    Ok(items)
+}
+
+fn load_catalog_items() -> Vec<CatalogItem> {
+    let db_path = std::env::var("EXAMPLE_SYNC_CATALOG_DB")
+        .ok()
+        .or_else(|| std::env::var("ASSOCIATE_APP_CATALOG_DB").ok());
+    if let Some(path) = db_path {
+        match load_catalog_items_from_sqlite(path.as_str()) {
+            Ok(items) if !items.is_empty() => {
+                eprintln!("Loaded {} products from SQLite catalog export", items.len());
+                return items;
+            }
+            Ok(_) => {
+                eprintln!("SQLite catalog export had no products, falling back to demo catalog");
+            }
+            Err(err) => {
+                eprintln!(
+                    "Failed to load SQLite catalog export ({err}), falling back to demo catalog"
+                );
+            }
+        }
+    }
+    demo_catalog_items()
+}
+
 fn demo_price_book_for_catalog(items: &[CatalogItem]) -> PriceBook {
     PriceBook {
         id: Uuid::parse_str("40000000-0000-0000-0000-000000000001").unwrap(),
@@ -115,9 +272,42 @@ fn demo_price_book_for_catalog(items: &[CatalogItem]) -> PriceBook {
     }
 }
 
+fn demo_inventory_image_urls(idx: usize) -> Vec<String> {
+    const COLORS: [&str; 12] = [
+        "ef4444", "f97316", "f59e0b", "84cc16", "22c55e", "10b981", "14b8a6", "06b6d4", "0ea5e9",
+        "3b82f6", "6366f1", "ec4899",
+    ];
+    let product_num = idx + 1;
+    let a = COLORS[idx % COLORS.len()];
+    let b = COLORS[(idx * 7 + 3) % COLORS.len()];
+    let second = if b == a {
+        COLORS[(idx + 5) % COLORS.len()]
+    } else {
+        b
+    };
+    vec![
+        format!("https://dummyimage.com/600x600/{a}/ffffff.png&text=Product+{product_num}+A"),
+        format!("https://dummyimage.com/600x600/{second}/ffffff.png&text=Product+{product_num}+B"),
+    ]
+}
+
+fn demo_inventory_levels_for_catalog(items: &[CatalogItem]) -> Vec<InventoryLevel> {
+    items
+        .iter()
+        .enumerate()
+        .map(|(idx, item)| InventoryLevel {
+            item_id: item.id,
+            available_qty: ((idx % 20) as i64 + 1) * 5,
+            is_available: true,
+            image_urls: demo_inventory_image_urls(idx),
+            version: 1,
+        })
+        .collect()
+}
+
 async fn ndjson_catalog(State(state): State<Arc<AppState>>) -> Response<Body> {
     eprintln!("catalog request store_id={}", state.store_id);
-    let items = demo_catalog_items();
+    let items = &state.items;
 
     let lines: Vec<String> = items
         .iter()
@@ -151,8 +341,8 @@ async fn ndjson_categories(State(state): State<Arc<AppState>>) -> Response<Body>
 
 async fn ndjson_price_book(State(state): State<Arc<AppState>>) -> Response<Body> {
     let _ = state;
-    let items = demo_catalog_items();
-    let book = demo_price_book_for_catalog(&items);
+    let items = &state.items;
+    let book = demo_price_book_for_catalog(items);
     let lines = vec![b64(&serde_json::to_vec(&book).unwrap())];
     Response::builder()
         .header("content-type", "application/x-ndjson")
@@ -246,27 +436,8 @@ async fn ndjson_customers(State(state): State<Arc<AppState>>) -> Response<Body> 
 }
 
 async fn ndjson_inventory(State(state): State<Arc<AppState>>) -> Response<Body> {
-    let _ = state;
-    let items = demo_catalog_items();
-    let levels: Vec<InventoryLevel> = items
-        .iter()
-        .enumerate()
-        .map(|(idx, item)| InventoryLevel {
-            item_id: item.id,
-            available_qty: ((idx % 20) as i64 + 1) * 5,
-            is_available: true,
-            image_urls: vec![
-                format!(
-                    "https://via.placeholder.com/400x400?text=Product+{}",
-                    idx + 1
-                ),
-                format!(
-                    "https://via.placeholder.com/400x400/0055ff/ffffff?text=Product+{idx}+View+2"
-                ),
-            ],
-            version: 1,
-        })
-        .collect();
+    let items = &state.items;
+    let levels = demo_inventory_levels_for_catalog(items);
     let lines: Vec<String> = levels
         .iter()
         .map(|l| b64(&serde_json::to_vec(l).unwrap()))
@@ -330,6 +501,7 @@ async fn main() {
 
     let state = Arc::new(AppState {
         store_id: default_store_id(),
+        items: load_catalog_items(),
     });
 
     let app = Router::new()
