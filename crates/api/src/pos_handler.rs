@@ -1,18 +1,18 @@
 //! POS command execution: load/save cart, run pricing pipeline, return payloads.
 
 use apex_edge_contracts::{
-    build_submission_envelope, AppliedPromoInfo, CartState, ContractVersion, FinalizeResult,
-    ManualDiscountInfo, ManualDiscountKind, PosCommand, PosError, PosRequestEnvelope,
-    PosResponseEnvelope, Promotion, PromotionType, TaxRule,
+    build_submission_envelope, AppliedPromoInfo, CartState, CartStateKind, ContractVersion,
+    FinalizeResult, ManualDiscountInfo, ManualDiscountKind, PosCommand, PosError,
+    PosRequestEnvelope, PosResponseEnvelope, Promotion, PromotionType, TaxRule,
 };
 use apex_edge_domain::{
-    apply_promos_with_attribution, base_price_cents, tax_for_line, Cart, CartLineItem,
-    LinePriceResult,
+    apply_promos_with_attribution, base_price_cents, check_eligibility, tax_for_line, Cart,
+    CartLineItem, LinePriceResult,
 };
 use apex_edge_printing::generate_document;
 use apex_edge_storage::{
-    get_catalog_item, get_customer, get_print_template, insert_outbox, list_price_book_entries,
-    list_promotions, list_tax_rules, load_cart, save_cart,
+    get_catalog_item, get_coupon_definition_by_code, get_customer, get_print_template,
+    insert_outbox, list_price_book_entries, list_promotions, list_tax_rules, load_cart, save_cart,
 };
 use sqlx::SqlitePool;
 use std::sync::OnceLock;
@@ -57,6 +57,12 @@ fn cart_state_to_payload(state: &CartState) -> serde_json::Value {
 pub async fn build_cart_state(pool: &SqlitePool, store_id: Uuid, cart: &Cart) -> CartState {
     tracing::debug!(store_id = %store_id, pool_size = std::mem::size_of_val(pool), "building cart state");
     let mut state = cart.to_cart_state();
+    if let Some(customer_id) = cart.customer_id {
+        if let Ok(Some(customer)) = get_customer(pool, store_id, customer_id).await {
+            state.customer_name = Some(customer.name);
+            state.customer_code = Some(customer.code);
+        }
+    }
     if !cart.applied_promo_ids.is_empty() {
         let promo_lookup = list_promotions(pool, store_id)
             .await
@@ -209,8 +215,20 @@ pub async fn run_pricing_pipeline(
         .filter(|p| p.code.is_none())
         .cloned()
         .collect();
+    let requested_manual_promo_ids: std::collections::HashSet<Uuid> =
+        cart.applied_promo_ids.iter().copied().collect();
+    let existing_auto_ids: std::collections::HashSet<Uuid> =
+        automatic_promos.iter().map(|promo| promo.id).collect();
+    let mut promos_to_apply: Vec<Promotion> = automatic_promos;
+    promos_to_apply.extend(
+        promos
+            .iter()
+            .filter(|p| requested_manual_promo_ids.contains(&p.id))
+            .filter(|p| !existing_auto_ids.contains(&p.id))
+            .cloned(),
+    );
     let (mut results, applied_promo_ids) =
-        apply_promos_with_attribution(&cart.lines, category_by_item, &automatic_promos, subtotal);
+        apply_promos_with_attribution(&cart.lines, category_by_item, &promos_to_apply, subtotal);
 
     apply_tax_to_pricing_results(&mut results, &cart.lines, &category_by_item, &rules)?;
 
@@ -688,6 +706,23 @@ pub async fn execute_pos_command(
                     }],
                 };
             }
+            let Some(coupon_def) = get_coupon_definition_by_code(pool, store_id, &code)
+                .await
+                .ok()
+                .flatten()
+            else {
+                return PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors: vec![PosError {
+                        code: "COUPON_NOT_FOUND".into(),
+                        message: "Coupon not found".into(),
+                        field: Some("coupon_code".into()),
+                    }],
+                };
+            };
             let promos = match list_promotions(pool, store_id).await {
                 Ok(p) => p,
                 Err(e) => {
@@ -704,13 +739,7 @@ pub async fn execute_pos_command(
                     };
                 }
             };
-            let Some(promo) = promos.iter().find(|promo| {
-                promo
-                    .code
-                    .as_deref()
-                    .map(|c| c.eq_ignore_ascii_case(&code))
-                    .unwrap_or(false)
-            }) else {
+            let Some(promo) = promos.iter().find(|promo| promo.id == coupon_def.promo_id) else {
                 return PosResponseEnvelope {
                     version: ContractVersion::V1_0_0,
                     success: false,
@@ -723,6 +752,43 @@ pub async fn execute_pos_command(
                     }],
                 };
             };
+            let basket_subtotal = cart.subtotal_cents();
+            let promo_discount_cents: u64 = cart.lines.iter().map(|line| line.discount_cents).sum();
+            let eligibility = check_eligibility(
+                &coupon_def,
+                0,
+                Some(0),
+                basket_subtotal,
+                promo_discount_cents,
+            );
+            if !eligibility.valid {
+                return PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors: vec![PosError {
+                        code: "INVALID_COUPON".into(),
+                        message: eligibility
+                            .reason
+                            .unwrap_or_else(|| "Coupon is not eligible".into()),
+                        field: Some("coupon_code".into()),
+                    }],
+                };
+            }
+            let Some(promo_code) = promo.code.as_deref() else {
+                return PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors: vec![PosError {
+                        code: "INVALID_COUPON".into(),
+                        message: "Coupon promotion is missing code".into(),
+                        field: Some("coupon_code".into()),
+                    }],
+                };
+            };
             if !cart
                 .applied_coupons
                 .iter()
@@ -730,8 +796,8 @@ pub async fn execute_pos_command(
             {
                 cart.applied_coupons
                     .push(apex_edge_domain::cart::AppliedCouponRecord {
-                        coupon_id: promo.id,
-                        code,
+                        coupon_id: coupon_def.id,
+                        code: promo_code.to_string(),
                         discount_cents: 0,
                     });
             }
@@ -806,6 +872,150 @@ pub async fn execute_pos_command(
                 };
             }
 
+            if let Err(errors) = run_pricing_pipeline(pool, store_id, &mut cart).await {
+                return PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors,
+                };
+            }
+            if let Err(errors) = save_cart_to_db(pool, &cart).await {
+                return PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors,
+                };
+            }
+            let state = build_cart_state(pool, store_id, &cart).await;
+            PosResponseEnvelope {
+                version: ContractVersion::V1_0_0,
+                success: true,
+                idempotency_key,
+                payload: Some(cart_state_to_payload(&state)),
+                errors: vec![],
+            }
+        }
+        PosCommand::ApplyPromo(p) => {
+            let Some(mut cart) = load_cart_from_db(pool, p.cart_id).await.ok().flatten() else {
+                return PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors: vec![PosError {
+                        code: "CART_NOT_FOUND".into(),
+                        message: "Cart not found".into(),
+                        field: None,
+                    }],
+                };
+            };
+            if cart.ensure_can_edit().is_err() {
+                return PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors: vec![PosError {
+                        code: "INVALID_STATE".into(),
+                        message: "Cart cannot be edited".into(),
+                        field: None,
+                    }],
+                };
+            }
+            let promo_exists = list_promotions(pool, store_id)
+                .await
+                .ok()
+                .map(|promos| promos.into_iter().any(|promo| promo.id == p.promo_id))
+                .unwrap_or(false);
+            if !promo_exists {
+                return PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors: vec![PosError {
+                        code: "PROMO_NOT_FOUND".into(),
+                        message: "Promotion not found".into(),
+                        field: Some("promo_id".into()),
+                    }],
+                };
+            }
+            if !cart.applied_promo_ids.contains(&p.promo_id) {
+                cart.applied_promo_ids.push(p.promo_id);
+            }
+            if let Err(errors) = run_pricing_pipeline(pool, store_id, &mut cart).await {
+                return PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors,
+                };
+            }
+            if let Err(errors) = save_cart_to_db(pool, &cart).await {
+                return PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors,
+                };
+            }
+            let state = build_cart_state(pool, store_id, &cart).await;
+            PosResponseEnvelope {
+                version: ContractVersion::V1_0_0,
+                success: true,
+                idempotency_key,
+                payload: Some(cart_state_to_payload(&state)),
+                errors: vec![],
+            }
+        }
+        PosCommand::RemovePromo(p) => {
+            let Some(mut cart) = load_cart_from_db(pool, p.cart_id).await.ok().flatten() else {
+                return PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors: vec![PosError {
+                        code: "CART_NOT_FOUND".into(),
+                        message: "Cart not found".into(),
+                        field: None,
+                    }],
+                };
+            };
+            if cart.ensure_can_edit().is_err() {
+                return PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors: vec![PosError {
+                        code: "INVALID_STATE".into(),
+                        message: "Cart cannot be edited".into(),
+                        field: None,
+                    }],
+                };
+            }
+            let before = cart.applied_promo_ids.len();
+            cart.applied_promo_ids.retain(|id| *id != p.promo_id);
+            if cart.applied_promo_ids.len() == before {
+                return PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors: vec![PosError {
+                        code: "PROMO_NOT_FOUND".into(),
+                        message: "Promotion not applied on cart".into(),
+                        field: Some("promo_id".into()),
+                    }],
+                };
+            }
             if let Err(errors) = run_pricing_pipeline(pool, store_id, &mut cart).await {
                 return PosResponseEnvelope {
                     version: ContractVersion::V1_0_0,
@@ -1124,6 +1334,57 @@ pub async fn execute_pos_command(
                 errors: vec![],
             }
         }
+        PosCommand::VoidCart(p) => {
+            let Some(mut cart) = load_cart_from_db(pool, p.cart_id).await.ok().flatten() else {
+                return PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors: vec![PosError {
+                        code: "CART_NOT_FOUND".into(),
+                        message: "Cart not found".into(),
+                        field: None,
+                    }],
+                };
+            };
+            if matches!(cart.state, CartStateKind::Finalized | CartStateKind::Voided) {
+                return PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors: vec![PosError {
+                        code: "INVALID_STATE".into(),
+                        message: "Cart cannot be voided in current state".into(),
+                        field: None,
+                    }],
+                };
+            }
+            cart.lines.clear();
+            cart.applied_promo_ids.clear();
+            cart.applied_coupons.clear();
+            cart.manual_discounts.clear();
+            cart.payments.clear();
+            cart.set_voided();
+            if let Err(errors) = save_cart_to_db(pool, &cart).await {
+                return PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors,
+                };
+            }
+            let state = build_cart_state(pool, store_id, &cart).await;
+            PosResponseEnvelope {
+                version: ContractVersion::V1_0_0,
+                success: true,
+                idempotency_key,
+                payload: Some(cart_state_to_payload(&state)),
+                errors: vec![],
+            }
+        }
         PosCommand::FinalizeOrder(p) => {
             let finalize_started_at = Instant::now();
             log_finalize_timing("start", &[("cart_id", p.cart_id.to_string())]);
@@ -1390,17 +1651,6 @@ pub async fn execute_pos_command(
                 errors: vec![],
             }
         }
-        _ => PosResponseEnvelope {
-            version: ContractVersion::V1_0_0,
-            success: false,
-            idempotency_key,
-            payload: None,
-            errors: vec![PosError {
-                code: "UNSUPPORTED_COMMAND".into(),
-                message: "Command not yet implemented".into(),
-                field: None,
-            }],
-        },
     };
     result
 }

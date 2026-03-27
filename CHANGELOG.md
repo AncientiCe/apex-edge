@@ -11,6 +11,65 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.5.0] — 2026-03-27
+
+Completes checkout command coverage with idempotent POS command handling, manual promo lifecycle commands, synced coupon definitions, and cart-state customer enrichment.
+
+### Added
+
+#### Runtime
+
+- **Completed checkout command set** — implemented `apply_promo`, `remove_promo`, and `void_cart` handlers in `/pos/command` with full state validation and pricing recalculation.
+- **POS idempotency replay** — `/pos/command` now checks persisted idempotency responses and replays prior successful responses for repeated keys.
+- **Coupon definition validation path** — `apply_coupon` now validates synced `CouponDefinition` records and eligibility before accepting coupon application.
+- **Customer-enriched cart state** — `CartState` now includes `customer_name` and `customer_code` when a customer is attached.
+
+#### Storage
+
+- **Coupon definitions schema** — added migration `009_coupon_definitions.sql` with storage APIs to upsert and fetch coupon definitions by code.
+
+#### Sync
+
+- **Coupons ingest support** — `run_sync_ndjson` now applies `coupons` entities into local storage instead of skipping them as unknown.
+
+#### Quality
+
+- Added behavioral tests for `void_cart`, `apply_promo`/`remove_promo`, idempotency replay, coupon ingestion, coupon eligibility rejection on exhausted limits, and cart customer enrichment.
+- Added domain tests covering non-zero discount behavior for `BuyXGetY` and `PriceOverride` promotion types.
+
+#### Documentation
+
+- Updated `docs/architecture/README.md` with a new checkout command completion section and refreshed sync entity coverage to include coupons and print templates.
+
+### Changed
+
+- `BuyXGetY` and `PriceOverride` promotion types now produce real discounts in the promo engine instead of always resolving to zero.
+- Pricing pipeline now applies explicitly-selected manual promos in addition to automatic promotions.
+
+---
+
+## [0.4.0] — 2026-03-18
+
+Hardens northbound checkout/document behavior and adds production-ready observability tooling and coverage across backend and frontend.
+
+### Added
+
+#### Runtime
+
+- **Checkout and document hardening** — strengthened POS finalize/document flow and northbound contract behavior.
+- **Local observability stack** — added Prometheus + Grafana docker stack with provisioned dashboards and recording rules.
+- **Frontend request journey tracking** — added per-request journey tracing in simulator API client and UI summaries.
+
+#### Quality
+
+- Added observability stack validation test coverage and expanded frontend/backend behavioral tests.
+
+#### Documentation
+
+- Updated `README.md`, `docs/architecture/README.md`, and `docs/runbook/README.md` with observability setup, behavior ownership, and operational guidance.
+
+---
+
 ## [0.3.0] — 2026-03-16
 
 Adds local hub auth with device trust and integrates the POS simulator into strict auth mode.
@@ -198,7 +257,9 @@ Internal alpha release for team-only testing in a controlled environment.
 - Mock NDJSON sync server served raw bytes for catalog items; updated to serve valid
   `CatalogItem` JSON payloads so `apply_entity_batch` deserialization succeeds in tests.
 
-[Unreleased]: https://github.com/AncientiCe/apex-edge/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/AncientiCe/apex-edge/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/AncientiCe/apex-edge/releases/tag/v0.5.0
+[0.4.0]: https://github.com/AncientiCe/apex-edge/releases/tag/v0.4.0
 [0.3.0]: https://github.com/AncientiCe/apex-edge/releases/tag/v0.3.0
 [0.2.0]: https://github.com/AncientiCe/apex-edge/releases/tag/v0.2.0
 [0.1.0]: https://github.com/AncientiCe/apex-edge/releases/tag/v0.1.0

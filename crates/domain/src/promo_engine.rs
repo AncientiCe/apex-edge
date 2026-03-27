@@ -245,8 +245,72 @@ fn compute_promo_discount(
             (applicable_total * (*percent_bps as u64)) / 10000
         }
         PromotionType::FixedAmountOff { amount_cents } => (*amount_cents).min(applicable_total),
-        PromotionType::BuyXGetY { .. } => 0,
-        PromotionType::PriceOverride { price_cents: _ } => 0,
+        PromotionType::BuyXGetY {
+            buy_quantity,
+            get_quantity,
+        } => {
+            let bundle_size = buy_quantity.saturating_add(*get_quantity);
+            if bundle_size == 0 || *get_quantity == 0 {
+                return 0;
+            }
+            let mut eligible_units: Vec<(u64, u32)> = capped
+                .iter()
+                .filter_map(|(line, eligible_qty)| {
+                    if *eligible_qty == 0 || line.quantity == 0 {
+                        return None;
+                    }
+                    let line_total = *line_totals.get(&line.line_id).unwrap_or(&0);
+                    if line_total == 0 {
+                        return None;
+                    }
+                    let eligible_cents =
+                        line_total.saturating_mul(*eligible_qty as u64) / (line.quantity as u64);
+                    let unit_price = eligible_cents / (*eligible_qty as u64);
+                    Some((unit_price, *eligible_qty))
+                })
+                .collect();
+            let total_units: u32 = eligible_units.iter().map(|(_, qty)| *qty).sum();
+            if total_units < bundle_size {
+                return 0;
+            }
+            let mut free_units = (total_units / bundle_size).saturating_mul(*get_quantity);
+            if free_units == 0 {
+                return 0;
+            }
+            eligible_units.sort_by_key(|(unit_price, _)| *unit_price);
+            let mut discount = 0u64;
+            for (unit_price, qty) in eligible_units {
+                if free_units == 0 {
+                    break;
+                }
+                let take = qty.min(free_units);
+                discount = discount.saturating_add(unit_price.saturating_mul(take as u64));
+                free_units = free_units.saturating_sub(take);
+            }
+            discount.min(applicable_total)
+        }
+        PromotionType::PriceOverride { price_cents } => capped
+            .iter()
+            .map(|(line, eligible_qty)| {
+                if *eligible_qty == 0 || line.quantity == 0 {
+                    return 0u64;
+                }
+                let line_total = *line_totals.get(&line.line_id).unwrap_or(&0);
+                if line_total == 0 {
+                    return 0u64;
+                }
+                let eligible_cents =
+                    line_total.saturating_mul(*eligible_qty as u64) / (line.quantity as u64);
+                let current_unit = eligible_cents / (*eligible_qty as u64);
+                if current_unit <= *price_cents {
+                    return 0u64;
+                }
+                current_unit
+                    .saturating_sub(*price_cents)
+                    .saturating_mul(*eligible_qty as u64)
+            })
+            .sum::<u64>()
+            .min(applicable_total),
     }
 }
 
@@ -503,6 +567,69 @@ mod tests {
         assert_eq!(
             priced[0].discount_cents, 40,
             "discount should apply to only 2 of 3 units"
+        );
+    }
+
+    #[test]
+    fn buy_x_get_y_discount_is_applied_for_eligible_units() {
+        let item = Uuid::new_v4();
+        let lines = vec![line_with_qty(item, 100, 3)];
+        let promo = Promotion {
+            id: Uuid::new_v4(),
+            code: None,
+            name: "Buy 2 get 1".into(),
+            promo_type: PromotionType::BuyXGetY {
+                buy_quantity: 2,
+                get_quantity: 1,
+            },
+            priority: 100,
+            valid_from: Utc::now() - Duration::minutes(1),
+            valid_until: Some(Utc::now() + Duration::minutes(1)),
+            conditions: vec![PromoCondition::ItemInBasket {
+                item_id: item,
+                min_quantity: 3,
+            }],
+            actions: vec![PromoAction::ApplyToItem {
+                item_id: item,
+                max_quantity: None,
+            }],
+            version: 1,
+        };
+
+        let priced = apply_promos_to_lines(&lines, |_| Uuid::nil(), &[promo], 300);
+        assert_eq!(
+            priced[0].discount_cents, 100,
+            "one free unit expected for buy-2-get-1"
+        );
+    }
+
+    #[test]
+    fn price_override_reduces_price_for_eligible_units() {
+        let item = Uuid::new_v4();
+        let lines = vec![line_with_qty(item, 100, 2)];
+        let promo = Promotion {
+            id: Uuid::new_v4(),
+            code: None,
+            name: "Override to 60".into(),
+            promo_type: PromotionType::PriceOverride { price_cents: 60 },
+            priority: 100,
+            valid_from: Utc::now() - Duration::minutes(1),
+            valid_until: Some(Utc::now() + Duration::minutes(1)),
+            conditions: vec![PromoCondition::ItemInBasket {
+                item_id: item,
+                min_quantity: 1,
+            }],
+            actions: vec![PromoAction::ApplyToItem {
+                item_id: item,
+                max_quantity: None,
+            }],
+            version: 1,
+        };
+
+        let priced = apply_promos_to_lines(&lines, |_| Uuid::nil(), &[promo], 200);
+        assert_eq!(
+            priced[0].discount_cents, 80,
+            "override should discount each unit by 40"
         );
     }
 }

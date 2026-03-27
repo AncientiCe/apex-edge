@@ -273,6 +273,8 @@ impl Cart {
         CartState {
             cart_id: self.id,
             customer_id: self.customer_id,
+            customer_name: None,
+            customer_code: None,
             state: self.state.clone(),
             lines: self
                 .lines

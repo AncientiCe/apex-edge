@@ -4,12 +4,13 @@
 //! actually appears in the corresponding DB table — not just that checkpoints advance.
 
 use apex_edge_contracts::{
-    CatalogItem, Category, Customer, DocumentType, InventoryLevel, PriceBook, PriceBookEntry,
-    PrintTemplateConfig, TaxRule,
+    CatalogItem, Category, CouponDefinition, Customer, DocumentType, InventoryLevel, PriceBook,
+    PriceBookEntry, PrintTemplateConfig, TaxRule,
 };
 use apex_edge_storage::{
-    get_catalog_item, get_print_template, insert_catalog_item, list_catalog_items, list_categories,
-    list_price_book_entries, list_tax_rules, run_migrations, search_customers,
+    get_catalog_item, get_coupon_definition_by_code, get_print_template, insert_catalog_item,
+    list_catalog_items, list_categories, list_price_book_entries, list_tax_rules, run_migrations,
+    search_customers,
 };
 use apex_edge_sync::{run_sync_ndjson, SyncEntityConfig, SyncSourceConfig};
 use axum::body::Body;
@@ -636,6 +637,55 @@ async fn sync_gift_receipt_template_applied_to_db() {
         .expect("gift receipt template should be stored");
     assert_eq!(row.template_id, template_id);
     assert_eq!(row.document_type, "gift_receipt");
+}
+
+#[tokio::test]
+async fn sync_coupons_are_applied_to_db() {
+    let coupon = CouponDefinition {
+        id: Uuid::parse_str("c9c9c9c9-c9c9-c9c9-c9c9-c9c9c9c9c9c9").unwrap(),
+        code: "SYNC-CPN-01".into(),
+        promo_id: Uuid::new_v4(),
+        max_redemptions_total: Some(500),
+        max_redemptions_per_customer: Some(1),
+        valid_from: chrono::Utc::now() - chrono::Duration::minutes(5),
+        valid_until: Some(chrono::Utc::now() + chrono::Duration::minutes(5)),
+        version: 1,
+    };
+    let payload = serde_json::to_vec(&coupon).unwrap();
+    let body = ndjson_body(&[payload]);
+
+    let (_, base_url) = start_entity_server("coupons", body).await;
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("pool");
+    run_migrations(&pool).await.expect("migrations");
+
+    let config = SyncSourceConfig {
+        base_url,
+        entities: vec![SyncEntityConfig {
+            entity: "coupons".into(),
+            path: "/sync/ndjson/coupons".into(),
+        }],
+    };
+    run_sync_ndjson(
+        &reqwest::Client::new(),
+        &pool,
+        &config,
+        apex_edge_contracts::ContractVersion::V1_0_0,
+        STORE_ID,
+    )
+    .await
+    .expect("run_sync_ndjson");
+
+    let row = get_coupon_definition_by_code(&pool, STORE_ID, "sync-cpn-01")
+        .await
+        .expect("get coupon")
+        .expect("coupon should exist");
+    assert_eq!(row.code, "SYNC-CPN-01");
+    assert_eq!(row.max_redemptions_total, Some(500));
+    assert_eq!(row.max_redemptions_per_customer, Some(1));
 }
 
 #[tokio::test]

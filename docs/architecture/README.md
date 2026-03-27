@@ -251,7 +251,7 @@ sequenceDiagram
 
 ### 8. Sync Ingest and Entity Application Flow
 
-**Purpose:** Full sync pipeline: fetch NDJSON from HQ, apply each entity to its storage table, then advance the per-entity checkpoint. All entities supported: catalog, categories, price_book, tax_rules, customers, promotions. Unknown entities advance checkpoint without storage (forward-compatibility).
+**Purpose:** Full sync pipeline: fetch NDJSON from HQ, apply each entity to its storage table, then advance the per-entity checkpoint. All entities supported: catalog, categories, price_book, tax_rules, customers, promotions, coupons, inventory, print_templates. Unknown entities advance checkpoint without storage (forward-compatibility).
 
 ```mermaid
 flowchart TB
@@ -265,7 +265,9 @@ flowchart TB
     EntitySwitch -->|tax_rules| InsertTaxRule[insert_tax_rule per item]
     EntitySwitch -->|customers| InsertCustomer[insert_customer per item]
     EntitySwitch -->|promotions| InsertPromotion[insert_promotion per item]
+    EntitySwitch -->|coupons| UpsertCoupon[upsert_coupon_definition per item]
     EntitySwitch -->|inventory| ReplaceInventory["replace_inventory_levels\n(available_qty, is_available, image_urls)"]
+    EntitySwitch -->|print_templates| UpsertPrintTemplate[upsert_print_template per item]
     EntitySwitch -->|unknown| SkipLog[log debug skip]
     InsertCatalogItems --> Ingest[ingest_batch advance checkpoint]
     InsertCategory --> Ingest
@@ -273,14 +275,16 @@ flowchart TB
     InsertTaxRule --> Ingest
     InsertCustomer --> Ingest
     InsertPromotion --> Ingest
+    UpsertCoupon --> Ingest
     ReplaceInventory --> Ingest
+    UpsertPrintTemplate --> Ingest
     SkipLog --> Ingest
     Ingest --> ForEntity
     ForEntity --> UpdateStatus[upsert_latest_sync_run success]
 ```
 
 **Notes:**
-- **Inputs:** `pool`, `SyncSourceConfig` (base URL + entity paths), `ContractVersion`, `store_id`. Contract types: `CatalogItem`, `Category`, `PriceBook`, `TaxRule`, `Customer`, `Promotion`, `InventoryLevel`.
+- **Inputs:** `pool`, `SyncSourceConfig` (base URL + entity paths), `ContractVersion`, `store_id`. Contract types: `CatalogItem`, `Category`, `PriceBook`, `TaxRule`, `Customer`, `Promotion`, `CouponDefinition`, `InventoryLevel`, `PrintTemplateConfig`.
 - **Outputs:** Each entity's data persisted to its storage table; checkpoint advanced per entity; sync run status updated.
 - **Metrics:** `apex_edge_sync_ingest_batches_total{entity, outcome}`, `apex_edge_sync_ingest_duration_seconds{entity}`.
 - **Failure path:** Invalid JSON payload fails the entity's batch with `IngestError::InvalidPayload`; the whole sync run is marked `failed`; checkpoint does not advance for failed entities; next run retries.
@@ -367,7 +371,7 @@ sequenceDiagram
 - **Inputs:** Backend base URL; catalog filters (search q, category, page); customer search q (name, email, code, or id); cart actions and checkout.
 - **Outputs:** Categories and paginated product list; customer search results; cart state and finalize result; document list and content.
 - **API:** `GET /catalog/categories`, `GET /catalog/products?q=&category_id=&page=&per_page=`, `GET /customers?q=` (and legacy `?code=` for exact code). Products support search by SKU, name, or description; customers by code, name, email, or id.
-- **POS commands:** `create_cart`, `add_line_item` (optional `unit_price_override_cents` for positive price override), `remove_line_item` (removes a line by `line_id`; re-runs pricing pipeline on remaining lines; transitions cart back to Open when last line is removed), `set_customer`, `apply_manual_discount` (reason mandatory; kinds: percent_cart, percent_item, fixed_cart, fixed_item), `set_tendering`, `add_payment`, `finalize_order`. Promotions (coupons and automatic) are seeded and applied in pipeline; manual discounts applied after promos and included in order metadata to HQ.
+- **POS commands:** `create_cart`, `add_line_item` (optional `unit_price_override_cents` for positive price override), `update_line_item`, `remove_line_item` (removes a line by `line_id`; re-runs pricing pipeline on remaining lines; transitions cart back to Open when last line is removed), `set_customer`, `apply_promo`, `remove_promo`, `apply_coupon`, `remove_coupon`, `apply_manual_discount` (reason mandatory; kinds: percent_cart, percent_item, fixed_cart, fixed_item), `set_tendering`, `add_payment`, `void_cart`, `finalize_order`. Promotions (automatic + manually applied) and coupons are applied in pipeline; manual discounts are applied after promos and included in order metadata to HQ.
 - **Customer on cart:** When `set_customer` succeeds, the API handler looks up the customer record and populates `customer_name` and `customer_code` in `CartState`. Every subsequent command that returns `CartState` also enriches these fields. The cart panel shows a banner with the customer name and code whenever a customer is attached.
 - **Layout:** Mobile-first, app-like UI: fixed bottom tab bar (Customers / Catalog / Sync / Cart) with safe-area insets; 44px minimum touch targets; full viewport height (`100dvh`). At 768px+ nav moves to header; at 1024px (e.g. iPad landscape) content is constrained with larger catalog grid. Event log shown from 768px only.
 - **Scope:** Simulator runs as a separate dev server (e.g. Vite on port 5173); CORS enabled. Local use only.
@@ -705,3 +709,76 @@ flowchart LR
 | Tier 3 | Data freshness: sync ingest and related entity outcomes (`sync_ingest`) |
 | Tier 4 | Supportability: auth and document retrieval/rendering (`auth_flows`, `get_document`, `list_order_documents`, `document_render`) |
 | Tier 5 | Platform baselines: liveness/readiness route-level telemetry (`health_check`, `ready_check`) |
+
+### 21. Checkout Command Completion (v0.5.0)
+
+**Purpose:** Document the completed cart command set for retail checkout: idempotent POS command handling, explicit promo lifecycle (`apply_promo`, `remove_promo`), coupon definition validation, and cart voiding (`void_cart`).
+
+```mermaid
+flowchart TD
+    PosClient[POSClient] -->|"POST /pos/command"| VersionGate
+    VersionGate -->|unsupported| UnsupportedVersion[UNSUPPORTED_VERSION]
+    VersionGate -->|supported| IdempotencyCheck[Check idempotency table]
+    IdempotencyCheck -->|replay| ReplayResponse[Return stored response]
+    IdempotencyCheck -->|new key| Dispatch[execute_pos_command]
+
+    Dispatch -->|apply_promo| ApplyPromoCmd[Validate promo_id and rerun pricing]
+    Dispatch -->|remove_promo| RemovePromoCmd[Remove promo_id and rerun pricing]
+    Dispatch -->|apply_coupon| ApplyCouponCmd[Load coupon_definition and validate eligibility]
+    Dispatch -->|void_cart| VoidCartCmd[Clear mutable cart state and set Voided]
+    Dispatch -->|other commands| ExistingFlow[Existing command handlers]
+
+    ApplyCouponCmd --> CouponDefs[(coupon_definitions table)]
+    ApplyPromoCmd --> Promotions[(promotions table)]
+    RemovePromoCmd --> Promotions
+
+    ApplyPromoCmd --> PersistCart[save_cart]
+    RemovePromoCmd --> PersistCart
+    ApplyCouponCmd --> PersistCart
+    VoidCartCmd --> PersistCart
+    ExistingFlow --> PersistCart
+
+    PersistCart --> BuildCartState[build_cart_state with customer_name/customer_code]
+    BuildCartState --> StoreIdem[Persist response by idempotency key]
+    StoreIdem --> PosClient
+```
+
+**Notes:**
+- **Inputs:** `PosRequestEnvelope` with `idempotency_key`; synced `promotions` and `coupon_definitions`; cart state in `carts`.
+- **Outputs:** Deterministic replay for repeated idempotency keys, explicit promo/coupon command outcomes, and `CartState` enriched with `customer_name` and `customer_code`.
+- **Failure path:** Unknown/invalid promo or coupon returns `success=false` with domain error (`PROMO_NOT_FOUND`, `COUPON_NOT_FOUND`, `INVALID_COUPON`, `INVALID_STATE`) without partial mutation.
+- **Metrics:** Existing POS command counters/histograms continue to track these command paths (`apex_edge_pos_commands_total`, `apex_edge_pos_command_duration_seconds`).
+
+### 22. Fake HQ for Local OMS Demos
+
+**Purpose:** Provide a local HQ replacement for demos and integration testing that accepts outbox order submissions, persists them in SQLite, serves sync NDJSON endpoints, and exposes OMS-style listing/detail pages.
+
+```mermaid
+sequenceDiagram
+    participant POS as POS_MPOS
+    participant Edge as ApexEdge
+    participant Outbox as OutboxDispatcher
+    participant FakeHQ as FakeHQ_Axum
+    participant FakeDB as FakeHQ_SQLite
+
+    POS->>Edge: POST /pos/command finalize_order
+    Edge->>Outbox: enqueue HqOrderSubmissionEnvelope
+    Outbox->>FakeHQ: POST /api/orders
+    FakeHQ->>FakeDB: upsert by submission_id
+    FakeDB-->>FakeHQ: inserted or duplicate
+    FakeHQ-->>Outbox: HqOrderSubmissionResponse accepted=true
+
+    Edge->>FakeHQ: GET /sync/ndjson/:entity?since=0
+    FakeHQ-->>Edge: NDJSON stream total + base64 payload lines
+
+    Browser->>FakeHQ: GET /
+    FakeHQ-->>Browser: paginated order table
+    Browser->>FakeHQ: GET /orders/:submission_id
+    FakeHQ-->>Browser: order detail page + API payload
+```
+
+**Notes:**
+- **Inputs:** `HqOrderSubmissionEnvelope` via `POST /api/orders`, and sync pulls from ApexEdge using `/sync/ndjson/*`.
+- **Outputs:** idempotent `HqOrderSubmissionResponse`, paginated `/api/orders` listing, `/api/orders/:submission_id` details, and demo UI pages for OMS workflows.
+- **Failure path:** invalid payloads return HTTP `422`; unknown order IDs return `404`; duplicate `submission_id` is treated as accepted idempotent replay.
+- **Metrics:** Fake HQ emits local counters/histogram for ingest observability (`fake_hq_orders_received_total`, `fake_hq_orders_duplicate_total`, `fake_hq_order_receive_duration_seconds`).

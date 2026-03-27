@@ -1,4 +1,4 @@
-use apex_edge_contracts::InventoryLevel;
+use apex_edge_contracts::{CouponDefinition, InventoryLevel};
 use apex_edge_storage::*;
 use chrono::Utc;
 use sqlx::sqlite::SqlitePoolOptions;
@@ -463,4 +463,32 @@ async fn auth_storage_pairing_device_and_session_roundtrip() {
         .expect("get session")
         .expect("session exists");
     assert!(sess_after.revoked_at.is_some());
+}
+
+#[tokio::test]
+async fn coupon_definition_upsert_and_lookup_by_code() {
+    let pool = test_pool().await;
+    let store_id = Uuid::from_u128(0xCA01);
+    let coupon = CouponDefinition {
+        id: Uuid::new_v4(),
+        code: "SAVE50".into(),
+        promo_id: Uuid::new_v4(),
+        max_redemptions_total: Some(100),
+        max_redemptions_per_customer: Some(2),
+        valid_from: Utc::now() - chrono::Duration::minutes(5),
+        valid_until: Some(Utc::now() + chrono::Duration::minutes(5)),
+        version: 1,
+    };
+
+    upsert_coupon_definition(&pool, store_id, &coupon)
+        .await
+        .expect("upsert coupon");
+    let fetched = get_coupon_definition_by_code(&pool, store_id, "save50")
+        .await
+        .expect("get coupon")
+        .expect("coupon exists");
+    assert_eq!(fetched.id, coupon.id);
+    assert_eq!(fetched.code, "SAVE50");
+    assert_eq!(fetched.max_redemptions_total, Some(100));
+    assert_eq!(fetched.max_redemptions_per_customer, Some(2));
 }

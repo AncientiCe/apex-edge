@@ -169,6 +169,8 @@ pub struct PosError {
 pub struct CartState {
     pub cart_id: Uuid,
     pub customer_id: Option<Uuid>,
+    pub customer_name: Option<String>,
+    pub customer_code: Option<String>,
     pub state: CartStateKind,
     pub lines: Vec<CartLine>,
     pub applied_promos: Vec<AppliedPromoInfo>,

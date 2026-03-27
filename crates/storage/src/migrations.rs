@@ -9,6 +9,7 @@ const MIGRATION_003: &str = include_str!("../migrations/003_categories_and_searc
 const MIGRATION_004: &str = include_str!("../migrations/004_sync_status.sql");
 const MIGRATION_006: &str = include_str!("../migrations/006_print_templates.sql");
 const MIGRATION_007: &str = include_str!("../migrations/007_auth.sql");
+const MIGRATION_009: &str = include_str!("../migrations/009_coupon_definitions.sql");
 
 fn strip_sql_comment_lines(sql: &str) -> String {
     sql.lines()
@@ -104,7 +105,7 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), MigrationError> {
             }
         }
     }
-    for sql in &[MIGRATION_006, MIGRATION_007] {
+    for sql in &[MIGRATION_006, MIGRATION_007, MIGRATION_009] {
         let sql_no_comments = strip_sql_comment_lines(sql);
         for stmt in sql_no_comments.split(';').filter(|s| !s.trim().is_empty()) {
             let stmt = stmt.trim();

@@ -4,14 +4,15 @@ use apex_edge_api::{
     serve_metrics, sync_status, AppState, ProductSearchQuery,
 };
 use apex_edge_contracts::{
-    AddLineItemPayload, ApplyCouponPayload, CartState, CatalogItem, ContractVersion,
-    CreateCartPayload, PosCommand, PosRequestEnvelope, ProductImage, PromoAction, PromoCondition,
-    Promotion, PromotionType, RemoveCouponPayload, RemoveLineItemPayload, UpdateLineItemPayload,
+    AddLineItemPayload, ApplyCouponPayload, ApplyPromoPayload, CartState, CatalogItem,
+    ContractVersion, CouponDefinition, CreateCartPayload, PosCommand, PosRequestEnvelope,
+    ProductImage, PromoAction, PromoCondition, Promotion, PromotionType, RemoveCouponPayload,
+    RemoveLineItemPayload, RemovePromoPayload, UpdateLineItemPayload, VoidCartPayload,
 };
 use apex_edge_storage::{
-    enqueue_document, insert_catalog_item, insert_price_book_entry, insert_promotion,
-    insert_tax_rule, list_documents_for_order, mark_generated, replace_catalog_items,
-    run_migrations, upsert_print_template,
+    enqueue_document, insert_catalog_item, insert_customer, insert_price_book_entry,
+    insert_promotion, insert_tax_rule, list_documents_for_order, mark_generated,
+    replace_catalog_items, run_migrations, upsert_coupon_definition, upsert_print_template,
 };
 use axum::response::IntoResponse;
 use axum::{
@@ -1017,6 +1018,22 @@ async fn apply_and_remove_coupon_updates_cart_coupon_state() {
     )
     .await
     .expect("insert promo");
+    upsert_coupon_definition(
+        &pool,
+        store_id,
+        &CouponDefinition {
+            id: Uuid::new_v4(),
+            code: "SAVE200".into(),
+            promo_id: promo.id,
+            max_redemptions_total: Some(1000),
+            max_redemptions_per_customer: Some(10),
+            valid_from: Utc::now() - Duration::minutes(5),
+            valid_until: Some(Utc::now() + Duration::minutes(5)),
+            version: 1,
+        },
+    )
+    .await
+    .expect("upsert coupon definition");
 
     let created = handle_pos_command(
         State(state.clone()),
@@ -1099,4 +1116,444 @@ async fn apply_and_remove_coupon_updates_cart_coupon_state() {
         serde_json::from_value(removed.0.payload.expect("remove payload")).expect("remove state");
     assert!(after_remove.applied_coupons.is_empty());
     assert_eq!(after_remove.total_cents, total_before);
+}
+
+#[tokio::test]
+async fn void_cart_marks_cart_voided_and_blocks_future_edits() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("pool");
+    run_migrations(&pool).await.expect("migrations");
+
+    let store_id = Uuid::nil();
+    let state = AppState {
+        store_id,
+        pool: pool.clone(),
+        metrics_handle: None,
+        auth: apex_edge_api::AuthSettings::default(),
+    };
+    let item_id = Uuid::new_v4();
+    insert_catalog_item(
+        &pool,
+        item_id,
+        store_id,
+        "VOID-001",
+        "Void Test Item",
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+    )
+    .await
+    .expect("insert catalog");
+    insert_price_book_entry(&pool, store_id, item_id, None, 500, "USD")
+        .await
+        .expect("insert price");
+
+    let created = handle_pos_command(
+        State(state.clone()),
+        Json(PosRequestEnvelope {
+            version: ContractVersion::V1_0_0,
+            idempotency_key: Uuid::new_v4(),
+            store_id,
+            register_id: Uuid::nil(),
+            payload: PosCommand::CreateCart(CreateCartPayload { cart_id: None }),
+        }),
+    )
+    .await;
+    let created_state: CartState =
+        serde_json::from_value(created.0.payload.expect("create payload")).expect("create state");
+
+    let voided = handle_pos_command(
+        State(state.clone()),
+        Json(PosRequestEnvelope {
+            version: ContractVersion::V1_0_0,
+            idempotency_key: Uuid::new_v4(),
+            store_id,
+            register_id: Uuid::nil(),
+            payload: PosCommand::VoidCart(VoidCartPayload {
+                cart_id: created_state.cart_id,
+                reason: Some("customer_cancelled".into()),
+            }),
+        }),
+    )
+    .await;
+    assert!(
+        voided.0.success,
+        "void should succeed: {:?}",
+        voided.0.errors
+    );
+    let after_void: CartState =
+        serde_json::from_value(voided.0.payload.expect("void payload")).expect("void state");
+    assert_eq!(after_void.state, apex_edge_contracts::CartStateKind::Voided);
+
+    let add_after_void = handle_pos_command(
+        State(state),
+        Json(PosRequestEnvelope {
+            version: ContractVersion::V1_0_0,
+            idempotency_key: Uuid::new_v4(),
+            store_id,
+            register_id: Uuid::nil(),
+            payload: PosCommand::AddLineItem(AddLineItemPayload {
+                cart_id: after_void.cart_id,
+                item_id,
+                modifier_option_ids: vec![],
+                quantity: 1,
+                notes: None,
+                unit_price_override_cents: None,
+            }),
+        }),
+    )
+    .await;
+    assert!(!add_after_void.0.success);
+    assert_eq!(add_after_void.0.errors[0].code, "INVALID_STATE");
+}
+
+#[tokio::test]
+async fn apply_and_remove_promo_updates_discount_and_applied_promos() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("pool");
+    run_migrations(&pool).await.expect("migrations");
+
+    let store_id = Uuid::nil();
+    let state = AppState {
+        store_id,
+        pool: pool.clone(),
+        metrics_handle: None,
+        auth: apex_edge_api::AuthSettings::default(),
+    };
+    let item_id = Uuid::new_v4();
+    insert_catalog_item(
+        &pool,
+        item_id,
+        store_id,
+        "PROMO-CMD-001",
+        "Promo Command Test Item",
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+    )
+    .await
+    .expect("insert catalog");
+    insert_price_book_entry(&pool, store_id, item_id, None, 1000, "USD")
+        .await
+        .expect("insert price");
+    let promo = Promotion {
+        id: Uuid::new_v4(),
+        code: Some("MANUALPROMO".into()),
+        name: "Manual 20%".into(),
+        promo_type: PromotionType::PercentageOff { percent_bps: 2000 },
+        priority: 100,
+        valid_from: Utc::now() - Duration::minutes(5),
+        valid_until: Some(Utc::now() + Duration::minutes(5)),
+        conditions: vec![PromoCondition::MinBasketAmount { amount_cents: 1 }],
+        actions: vec![PromoAction::ApplyToBasket],
+        version: 1,
+    };
+    insert_promotion(
+        &pool,
+        promo.id,
+        store_id,
+        &serde_json::to_string(&promo).expect("promo json"),
+    )
+    .await
+    .expect("insert promo");
+
+    let created = handle_pos_command(
+        State(state.clone()),
+        Json(PosRequestEnvelope {
+            version: ContractVersion::V1_0_0,
+            idempotency_key: Uuid::new_v4(),
+            store_id,
+            register_id: Uuid::nil(),
+            payload: PosCommand::CreateCart(CreateCartPayload { cart_id: None }),
+        }),
+    )
+    .await;
+    let created_state: CartState =
+        serde_json::from_value(created.0.payload.expect("create payload")).expect("create state");
+    let add = handle_pos_command(
+        State(state.clone()),
+        Json(PosRequestEnvelope {
+            version: ContractVersion::V1_0_0,
+            idempotency_key: Uuid::new_v4(),
+            store_id,
+            register_id: Uuid::nil(),
+            payload: PosCommand::AddLineItem(AddLineItemPayload {
+                cart_id: created_state.cart_id,
+                item_id,
+                modifier_option_ids: vec![],
+                quantity: 1,
+                notes: None,
+                unit_price_override_cents: None,
+            }),
+        }),
+    )
+    .await;
+    let before: CartState =
+        serde_json::from_value(add.0.payload.expect("add payload")).expect("add state");
+    assert_eq!(before.discount_cents, 0);
+
+    let applied = handle_pos_command(
+        State(state.clone()),
+        Json(PosRequestEnvelope {
+            version: ContractVersion::V1_0_0,
+            idempotency_key: Uuid::new_v4(),
+            store_id,
+            register_id: Uuid::nil(),
+            payload: PosCommand::ApplyPromo(ApplyPromoPayload {
+                cart_id: before.cart_id,
+                promo_id: promo.id,
+            }),
+        }),
+    )
+    .await;
+    assert!(
+        applied.0.success,
+        "apply promo should succeed: {:?}",
+        applied.0.errors
+    );
+    let after_apply: CartState =
+        serde_json::from_value(applied.0.payload.expect("apply payload")).expect("apply state");
+    assert_eq!(after_apply.applied_promos.len(), 1);
+    assert_eq!(after_apply.applied_promos[0].promo_id, promo.id);
+    assert!(after_apply.discount_cents > 0);
+
+    let removed = handle_pos_command(
+        State(state),
+        Json(PosRequestEnvelope {
+            version: ContractVersion::V1_0_0,
+            idempotency_key: Uuid::new_v4(),
+            store_id,
+            register_id: Uuid::nil(),
+            payload: PosCommand::RemovePromo(RemovePromoPayload {
+                cart_id: after_apply.cart_id,
+                promo_id: promo.id,
+            }),
+        }),
+    )
+    .await;
+    assert!(
+        removed.0.success,
+        "remove promo should succeed: {:?}",
+        removed.0.errors
+    );
+    let after_remove: CartState =
+        serde_json::from_value(removed.0.payload.expect("remove payload")).expect("remove state");
+    assert!(after_remove.applied_promos.is_empty());
+    assert_eq!(after_remove.discount_cents, 0);
+}
+
+#[tokio::test]
+async fn apply_coupon_rejects_when_redemption_limit_reached() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("pool");
+    run_migrations(&pool).await.expect("migrations");
+
+    let store_id = Uuid::nil();
+    let state = AppState {
+        store_id,
+        pool: pool.clone(),
+        metrics_handle: None,
+        auth: apex_edge_api::AuthSettings::default(),
+    };
+    let item_id = Uuid::new_v4();
+    insert_catalog_item(
+        &pool,
+        item_id,
+        store_id,
+        "CPN-LIMIT-001",
+        "Coupon Limit Item",
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+    )
+    .await
+    .expect("insert catalog");
+    insert_price_book_entry(&pool, store_id, item_id, None, 1000, "USD")
+        .await
+        .expect("insert price");
+    let promo = Promotion {
+        id: Uuid::new_v4(),
+        code: Some("LIMITED".into()),
+        name: "Limited coupon promo".into(),
+        promo_type: PromotionType::FixedAmountOff { amount_cents: 200 },
+        priority: 100,
+        valid_from: Utc::now() - Duration::minutes(5),
+        valid_until: Some(Utc::now() + Duration::minutes(5)),
+        conditions: vec![PromoCondition::MinBasketAmount { amount_cents: 1 }],
+        actions: vec![PromoAction::ApplyToBasket],
+        version: 1,
+    };
+    insert_promotion(
+        &pool,
+        promo.id,
+        store_id,
+        &serde_json::to_string(&promo).expect("promo json"),
+    )
+    .await
+    .expect("insert promo");
+    let coupon_def = CouponDefinition {
+        id: Uuid::new_v4(),
+        code: "LIMITED".into(),
+        promo_id: promo.id,
+        max_redemptions_total: Some(0),
+        max_redemptions_per_customer: None,
+        valid_from: Utc::now() - Duration::minutes(5),
+        valid_until: Some(Utc::now() + Duration::minutes(5)),
+        version: 1,
+    };
+    upsert_coupon_definition(&pool, store_id, &coupon_def)
+        .await
+        .expect("upsert coupon");
+
+    let created = handle_pos_command(
+        State(state.clone()),
+        Json(PosRequestEnvelope {
+            version: ContractVersion::V1_0_0,
+            idempotency_key: Uuid::new_v4(),
+            store_id,
+            register_id: Uuid::nil(),
+            payload: PosCommand::CreateCart(CreateCartPayload { cart_id: None }),
+        }),
+    )
+    .await;
+    let created_state: CartState =
+        serde_json::from_value(created.0.payload.expect("create payload")).expect("create state");
+    let add = handle_pos_command(
+        State(state.clone()),
+        Json(PosRequestEnvelope {
+            version: ContractVersion::V1_0_0,
+            idempotency_key: Uuid::new_v4(),
+            store_id,
+            register_id: Uuid::nil(),
+            payload: PosCommand::AddLineItem(AddLineItemPayload {
+                cart_id: created_state.cart_id,
+                item_id,
+                modifier_option_ids: vec![],
+                quantity: 1,
+                notes: None,
+                unit_price_override_cents: None,
+            }),
+        }),
+    )
+    .await;
+    assert!(add.0.success, "add line should succeed");
+
+    let applied = handle_pos_command(
+        State(state),
+        Json(PosRequestEnvelope {
+            version: ContractVersion::V1_0_0,
+            idempotency_key: Uuid::new_v4(),
+            store_id,
+            register_id: Uuid::nil(),
+            payload: PosCommand::ApplyCoupon(ApplyCouponPayload {
+                cart_id: created_state.cart_id,
+                coupon_code: "LIMITED".into(),
+            }),
+        }),
+    )
+    .await;
+    assert!(!applied.0.success, "coupon should be rejected");
+    assert_eq!(applied.0.errors[0].code, "INVALID_COUPON");
+}
+
+#[tokio::test]
+async fn repeated_idempotency_key_replays_same_response() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("pool");
+    run_migrations(&pool).await.expect("migrations");
+
+    let state = AppState {
+        store_id: Uuid::nil(),
+        pool,
+        metrics_handle: None,
+        auth: apex_edge_api::AuthSettings::default(),
+    };
+    let idem = Uuid::new_v4();
+    let req = PosRequestEnvelope {
+        version: ContractVersion::V1_0_0,
+        idempotency_key: idem,
+        store_id: Uuid::nil(),
+        register_id: Uuid::nil(),
+        payload: PosCommand::CreateCart(CreateCartPayload { cart_id: None }),
+    };
+
+    let first = handle_pos_command(State(state.clone()), Json(req.clone())).await;
+    let second = handle_pos_command(State(state), Json(req)).await;
+
+    assert!(first.0.success);
+    assert!(second.0.success);
+    assert_eq!(
+        first.0.payload, second.0.payload,
+        "idempotency replay should return original payload"
+    );
+}
+
+#[tokio::test]
+async fn set_customer_enriches_cart_state_with_customer_name_and_code() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("pool");
+    run_migrations(&pool).await.expect("migrations");
+    let store_id = Uuid::nil();
+    let customer_id = Uuid::new_v4();
+    insert_customer(
+        &pool,
+        customer_id,
+        store_id,
+        "CUST-001",
+        "Alice Smith",
+        Some("alice@example.com"),
+    )
+    .await
+    .expect("insert customer");
+
+    let state = AppState {
+        store_id,
+        pool,
+        metrics_handle: None,
+        auth: apex_edge_api::AuthSettings::default(),
+    };
+    let created = handle_pos_command(
+        State(state.clone()),
+        Json(PosRequestEnvelope {
+            version: ContractVersion::V1_0_0,
+            idempotency_key: Uuid::new_v4(),
+            store_id,
+            register_id: Uuid::nil(),
+            payload: PosCommand::CreateCart(CreateCartPayload { cart_id: None }),
+        }),
+    )
+    .await;
+    let created_state: CartState =
+        serde_json::from_value(created.0.payload.expect("create payload")).expect("create state");
+
+    let set_customer = handle_pos_command(
+        State(state),
+        Json(PosRequestEnvelope {
+            version: ContractVersion::V1_0_0,
+            idempotency_key: Uuid::new_v4(),
+            store_id,
+            register_id: Uuid::nil(),
+            payload: PosCommand::SetCustomer(apex_edge_contracts::SetCustomerPayload {
+                cart_id: created_state.cart_id,
+                customer_id,
+            }),
+        }),
+    )
+    .await;
+    assert!(set_customer.0.success);
+    let payload: serde_json::Value = set_customer.0.payload.expect("set customer payload");
+    assert_eq!(payload["customer_name"], serde_json::json!("Alice Smith"));
+    assert_eq!(payload["customer_code"], serde_json::json!("CUST-001"));
 }

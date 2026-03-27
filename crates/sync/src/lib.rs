@@ -244,6 +244,17 @@ async fn apply_entity_batch(
                 .map_err(RunSyncError::Ingest)?;
             }
         }
+        "coupons" => {
+            use apex_edge_contracts::CouponDefinition;
+            for payload in batch {
+                let coupon: CouponDefinition = serde_json::from_slice(payload)
+                    .map_err(|_| crate::ingest::IngestError::InvalidPayload)?;
+                apex_edge_storage::upsert_coupon_definition(pool, store_id, &coupon)
+                    .await
+                    .map_err(crate::ingest::IngestError::Storage)
+                    .map_err(RunSyncError::Ingest)?;
+            }
+        }
         _ => {
             // Unknown entity: checkpoint advances but no data is stored.
             // This is intentional for forward-compatibility with future HQ entity types.

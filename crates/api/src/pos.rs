@@ -65,7 +65,38 @@ pub async fn handle_pos_command(
             }],
         })
     } else {
+        if let Ok(Some(stored_response)) =
+            apex_edge_storage::get_response(&app.pool, envelope.idempotency_key).await
+        {
+            if let Ok(replayed) =
+                serde_json::from_str::<PosResponseEnvelope<serde_json::Value>>(&stored_response)
+            {
+                metrics::counter!(
+                    POS_COMMANDS_TOTAL,
+                    1u64,
+                    "operation" => operation,
+                    "outcome" => OUTCOME_SUCCESS
+                );
+                metrics::histogram!(
+                    POS_COMMAND_DURATION_SECONDS,
+                    start.elapsed().as_secs_f64(),
+                    "operation" => operation
+                );
+                drop(guard);
+                return Json(replayed);
+            }
+        }
         let response = crate::pos_handler::execute_pos_command(&app, envelope).await;
+        if response.success {
+            if let Ok(serialized) = serde_json::to_string(&response) {
+                let _ = apex_edge_storage::set_response(
+                    &app.pool,
+                    response.idempotency_key,
+                    &serialized,
+                )
+                .await;
+            }
+        }
         metrics::counter!(
             POS_COMMANDS_TOTAL,
             1u64,

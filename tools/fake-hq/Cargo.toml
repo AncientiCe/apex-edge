@@ -1,0 +1,26 @@
+[package]
+name = "fake-hq"
+version = "0.1.0"
+edition = "2021"
+description = "Local demo HQ for ApexEdge order ingest and sync."
+
+[[bin]]
+name = "fake-hq"
+path = "src/main.rs"
+
+[dependencies]
+apex-edge-contracts = { path = "../../crates/contracts" }
+axum = { version = "0.7", features = ["json"] }
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+metrics = "0.21"
+metrics-exporter-prometheus = "0.15"
+rusqlite = { version = "0.32", features = ["bundled", "chrono"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.5", features = ["trace"] }
+uuid = { version = "1.0", features = ["v4", "v5", "serde"] }
+
+[dev-dependencies]
+tower = "0.5"
