@@ -174,7 +174,10 @@ fn effective_max_units(
             })
             .map(|line| line.quantity)
             .sum();
-        matching_units.checked_div(trigger_units).unwrap_or(1).max(1)
+        matching_units
+            .checked_div(trigger_units)
+            .unwrap_or(1)
+            .max(1)
     } else {
         1
     };
