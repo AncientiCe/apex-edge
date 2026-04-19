@@ -161,24 +161,20 @@ fn effective_max_units(
     });
     let base_max_units = action_max_quantity.or(condition_min_quantity)?;
     let repeat_groups = if let Some(trigger_units) = condition_min_quantity {
-        if trigger_units == 0 {
-            1
-        } else {
-            let matching_units: u32 = lines
-                .iter()
-                .filter(|line| {
-                    item_target
-                        .map(|item_id| line.item_id == item_id)
-                        .or_else(|| {
-                            category_target
-                                .map(|category_id| category_by_item(line.item_id) == category_id)
-                        })
-                        .unwrap_or(false)
-                })
-                .map(|line| line.quantity)
-                .sum();
-            (matching_units / trigger_units).max(1)
-        }
+        let matching_units: u32 = lines
+            .iter()
+            .filter(|line| {
+                item_target
+                    .map(|item_id| line.item_id == item_id)
+                    .or_else(|| {
+                        category_target
+                            .map(|category_id| category_by_item(line.item_id) == category_id)
+                    })
+                    .unwrap_or(false)
+            })
+            .map(|line| line.quantity)
+            .sum();
+        matching_units.checked_div(trigger_units).unwrap_or(1).max(1)
     } else {
         1
     };
