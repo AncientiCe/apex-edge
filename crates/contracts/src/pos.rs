@@ -39,6 +39,116 @@ pub enum PosCommand {
     AddPayment(AddPaymentPayload),
     FinalizeOrder(FinalizeOrderPayload),
     VoidCart(VoidCartPayload),
+    // --- v0.6.0 Returns & Refunds ---
+    StartReturn(StartReturnPayload),
+    ReturnLineItem(ReturnLineItemPayload),
+    RefundTender(RefundTenderPayload),
+    FinalizeReturn(FinalizeReturnPayload),
+    VoidReturn(VoidReturnPayload),
+    // --- v0.6.0 Till & Shift ---
+    OpenTill(OpenTillPayload),
+    PaidIn(PaidInPayload),
+    PaidOut(PaidOutPayload),
+    NoSale(NoSalePayload),
+    CashCount(CashCountPayload),
+    GetXReport(GetXReportPayload),
+    CloseTill(CloseTillPayload),
+}
+
+// --- Returns & Refunds payloads ---
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StartReturnPayload {
+    pub return_id: Option<Uuid>,
+    pub original_order_id: Option<Uuid>,
+    pub reason_code: Option<String>,
+    /// If the return is blind (no original_order_id), a prior approval id gated on a
+    /// supervisor grant must be provided.
+    pub approval_id: Option<Uuid>,
+    pub shift_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReturnLineItemPayload {
+    pub return_id: Uuid,
+    pub sku: String,
+    pub name: Option<String>,
+    pub quantity: u32,
+    /// Unit price in cents to credit back to the customer; for receipted returns this is
+    /// typically the original line's unit price.
+    pub unit_price_cents: u64,
+    pub tax_cents: u64,
+    /// Optional link to the original order line (receipted returns).
+    pub original_line_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RefundTenderPayload {
+    pub return_id: Uuid,
+    pub tender_type: String,
+    pub amount_cents: u64,
+    pub external_reference: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FinalizeReturnPayload {
+    pub return_id: Uuid,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VoidReturnPayload {
+    pub return_id: Uuid,
+    pub reason: Option<String>,
+}
+
+// --- Till & Shift payloads ---
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenTillPayload {
+    pub register_id: Option<Uuid>,
+    pub associate_id: Option<String>,
+    pub opening_float_cents: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PaidInPayload {
+    pub shift_id: Uuid,
+    pub amount_cents: u64,
+    pub reason: String,
+    pub approval_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PaidOutPayload {
+    pub shift_id: Uuid,
+    pub amount_cents: u64,
+    pub reason: String,
+    pub approval_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NoSalePayload {
+    pub shift_id: Uuid,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CashCountPayload {
+    pub shift_id: Uuid,
+    pub counted_cents: u64,
+    pub denominations: std::collections::BTreeMap<String, u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetXReportPayload {
+    pub shift_id: Uuid,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CloseTillPayload {
+    pub shift_id: Uuid,
+    pub counted_cents: u64,
+    pub approval_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -10,6 +10,15 @@ const MIGRATION_004: &str = include_str!("../migrations/004_sync_status.sql");
 const MIGRATION_006: &str = include_str!("../migrations/006_print_templates.sql");
 const MIGRATION_007: &str = include_str!("../migrations/007_auth.sql");
 const MIGRATION_009: &str = include_str!("../migrations/009_coupon_definitions.sql");
+const MIGRATION_012: &str = include_str!("../migrations/012_audit_chain.sql");
+const MIGRATION_013: &str = include_str!("../migrations/013_approvals.sql");
+const MIGRATION_010: &str = include_str!("../migrations/010_returns.sql");
+const MIGRATION_011: &str = include_str!("../migrations/011_shifts.sql");
+
+const DOWN_010: &str = include_str!("../migrations/010_returns.down.sql");
+const DOWN_011: &str = include_str!("../migrations/011_shifts.down.sql");
+const DOWN_012: &str = include_str!("../migrations/012_audit_chain.down.sql");
+const DOWN_013: &str = include_str!("../migrations/013_approvals.down.sql");
 
 fn strip_sql_comment_lines(sql: &str) -> String {
     sql.lines()
@@ -106,6 +115,66 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), MigrationError> {
         }
     }
     for sql in &[MIGRATION_006, MIGRATION_007, MIGRATION_009] {
+        let sql_no_comments = strip_sql_comment_lines(sql);
+        for stmt in sql_no_comments.split(';').filter(|s| !s.trim().is_empty()) {
+            let stmt = stmt.trim();
+            if stmt.is_empty() {
+                continue;
+            }
+            sqlx::query(stmt).execute(pool).await?;
+        }
+    }
+    // Migration 012: audit-log hash chain columns (additive, idempotent).
+    for (table, column, ddl) in &[
+        (
+            "audit_log",
+            "prev_hash",
+            "ALTER TABLE audit_log ADD COLUMN prev_hash TEXT NOT NULL DEFAULT ''",
+        ),
+        (
+            "audit_log",
+            "hash",
+            "ALTER TABLE audit_log ADD COLUMN hash TEXT NOT NULL DEFAULT ''",
+        ),
+        (
+            "audit_log",
+            "hub_key_id",
+            "ALTER TABLE audit_log ADD COLUMN hub_key_id TEXT NOT NULL DEFAULT ''",
+        ),
+    ] {
+        if !column_exists(pool, table, column).await? {
+            if let Err(e) = sqlx::query(ddl).execute(pool).await {
+                if !e.to_string().contains("duplicate column name") {
+                    return Err(e.into());
+                }
+            }
+        }
+    }
+    for sql in &[MIGRATION_010, MIGRATION_011, MIGRATION_012, MIGRATION_013] {
+        let sql_no_comments = strip_sql_comment_lines(sql);
+        for stmt in sql_no_comments.split(';').filter(|s| !s.trim().is_empty()) {
+            let stmt = stmt.trim();
+            if stmt.is_empty() {
+                continue;
+            }
+            sqlx::query(stmt).execute(pool).await?;
+        }
+    }
+    Ok(())
+}
+
+/// Roll back the v0.6.0 additive migrations (010, 011, 012, 013) in reverse order.
+///
+/// This is intended for operators who need to downgrade from v0.6.0 → v0.5.x, and for
+/// the `migration_rollback_matrix` integration test that verifies every v0.6.0
+/// migration can cleanly round-trip: `up → down → up` without leaking data or
+/// leaving the schema in an inconsistent state.
+///
+/// Note: SQLite cannot drop columns, so the audit_log hash columns added by 012 are
+/// retained (harmless defaults). The `run_migrations` function's additive column
+/// check is idempotent when those columns already exist.
+pub async fn run_down_v0_6_0(pool: &SqlitePool) -> Result<(), MigrationError> {
+    for sql in &[DOWN_013, DOWN_012, DOWN_011, DOWN_010] {
         let sql_no_comments = strip_sql_comment_lines(sql);
         for stmt in sql_no_comments.split(';').filter(|s| !s.trim().is_empty()) {
             let stmt = stmt.trim();

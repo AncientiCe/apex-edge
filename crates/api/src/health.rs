@@ -68,6 +68,8 @@ mod tests {
             pool,
             metrics_handle: None,
             auth: crate::auth::AuthSettings::default(),
+            stream: crate::stream::StreamHub::new(),
+            role: crate::role::HubRole::Primary,
         };
         let r = ready(State(state)).await.expect("ready endpoint");
         assert_eq!(r.0.status, "ready");

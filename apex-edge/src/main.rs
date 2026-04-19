@@ -4,13 +4,26 @@ use apex_edge::build_router;
 use apex_edge_api::AuthSettings;
 use apex_edge_contracts::ContractVersion;
 use apex_edge_outbox::run_dispatcher_loop;
-use apex_edge_storage::{create_sqlite_pool, seed_demo_data};
+use apex_edge_storage::{create_sqlite_pool, seed_demo_data, set_audit_key, AuditKey};
 use apex_edge_sync::{run_sync_ndjson, SyncEntityConfig, SyncSourceConfig};
 use axum::http::HeaderValue;
 use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 
 const DEFAULT_SYNC_INTERVAL_SECONDS: u64 = 300;
+
+fn rand_bytes() -> [u8; 32] {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let mut out = [0u8; 32];
+    for (i, b) in out.iter_mut().enumerate() {
+        *b = ((nanos >> (i % 16)) as u8) ^ ((i as u8).wrapping_mul(31));
+    }
+    out
+}
 
 fn parse_sync_interval_seconds(raw: Option<&str>) -> u64 {
     raw.and_then(|v| v.parse::<u64>().ok())
@@ -92,6 +105,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     });
     let pool = create_sqlite_pool(&db_path).await?;
     apex_edge_storage::run_migrations(&pool).await?;
+
+    let audit_key_id = std::env::var("APEX_EDGE_AUDIT_KEY_ID")
+        .unwrap_or_else(|_| format!("hub-{}", Uuid::new_v4()));
+    let audit_secret = match std::env::var("APEX_EDGE_AUDIT_KEY_PATH").ok() {
+        Some(path) => std::fs::read(&path).unwrap_or_else(|_| {
+            let generated: [u8; 32] = rand_bytes();
+            if let Some(parent) = std::path::Path::new(&path).parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let _ = std::fs::write(&path, generated);
+            generated.to_vec()
+        }),
+        None => std::env::var("APEX_EDGE_AUDIT_KEY_SECRET")
+            .ok()
+            .map(|s| s.into_bytes())
+            .unwrap_or_else(|| rand_bytes().to_vec()),
+    };
+    set_audit_key(AuditKey::new(audit_key_id.clone(), audit_secret));
+    tracing::info!("Audit chain signing key loaded (id={})", audit_key_id);
     let seed_flag = std::env::args().any(|a| a == "--seed-demo")
         || std::env::var("APEX_EDGE_SEED_DEMO")
             .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))

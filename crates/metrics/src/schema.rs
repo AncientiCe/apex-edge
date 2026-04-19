@@ -196,6 +196,54 @@ pub const DOCUMENT_RENDER_DURATION_SECONDS: &str = "apex_edge_document_render_du
 pub const OUTCOME_TEMPLATE_ERROR: &str = "template_error";
 pub const OUTCOME_PDF_ERROR: &str = "pdf_error";
 
+// ---------- Audit chain (storage::audit + api::audit) ----------
+/// Counter: audit chain verifications. Labels: outcome (ok, broken, error).
+pub const AUDIT_CHAIN_VERIFICATIONS_TOTAL: &str = "apex_edge_audit_chain_verifications_total";
+/// Gauge: current audit chain length (rows verified last).
+pub const AUDIT_CHAIN_LENGTH: &str = "apex_edge_audit_chain_length";
+/// Counter: audit records appended. Labels: outcome (success, error).
+pub const AUDIT_RECORDS_TOTAL: &str = "apex_edge_audit_records_total";
+
+// ---------- Approvals (api::approvals) ----------
+/// Counter: supervisor approval events. Labels: action, outcome (requested, granted, denied, expired).
+pub const APPROVALS_TOTAL: &str = "apex_edge_approvals_total";
+/// Histogram: time between request and grant/deny in seconds.
+pub const APPROVAL_WAIT_DURATION_SECONDS: &str = "apex_edge_approval_wait_duration_seconds";
+
+// ---------- Real-time POS stream (api::stream) ----------
+/// Gauge: active WS/SSE connections.
+pub const STREAM_CONNECTIONS: &str = "apex_edge_stream_connections";
+/// Counter: messages broadcast. Labels: kind.
+pub const STREAM_MESSAGES_TOTAL: &str = "apex_edge_stream_messages_total";
+
+// ---------- Returns & Refunds (api::returns) ----------
+/// Counter: completed/attempted returns. Labels: outcome (success, rejected, error).
+pub const RETURNS_TOTAL: &str = "apex_edge_returns_total";
+/// Histogram: return handler duration in seconds.
+pub const RETURN_DURATION_SECONDS: &str = "apex_edge_return_duration_seconds";
+/// Counter: refund tender events. Labels: tender_type, outcome.
+pub const REFUND_TENDER_TOTAL: &str = "apex_edge_refund_tender_total";
+
+// ---------- Till & Shifts (api::shifts) ----------
+/// Counter: shift lifecycle events. Labels: outcome (opened, closed, rejected, error).
+pub const SHIFTS_TOTAL: &str = "apex_edge_shifts_total";
+/// Histogram: cash-count variance in cents (absolute).
+pub const SHIFT_VARIANCE_CENTS: &str = "apex_edge_shift_variance_cents";
+/// Counter: cash drawer movements. Labels: kind, outcome.
+pub const CASH_MOVEMENTS_TOTAL: &str = "apex_edge_cash_movements_total";
+
+// ---------- Role / HA ----------
+/// Gauge: current hub role (1 = role-active). Labels: role (primary, standby).
+pub const ROLE_GAUGE: &str = "apex_edge_role";
+/// Gauge: WAL replication lag (seconds), reported by Litestream sidecar or a probe.
+pub const WAL_REPLICATION_LAG_SECONDS: &str = "apex_edge_wal_replication_lag_seconds";
+
+// ---------- Synthetic journey (make smoke-loop) ----------
+/// Counter: synthetic journey runs. Labels: outcome.
+pub const SYNTHETIC_JOURNEY_TOTAL: &str = "apex_edge_synthetic_journey_total";
+/// Histogram: synthetic journey duration in seconds.
+pub const SYNTHETIC_JOURNEY_DURATION_SECONDS: &str = "apex_edge_synthetic_journey_duration_seconds";
+
 // ---------- Auth (api::auth) ----------
 /// Counter: auth requests by operation/outcome.
 pub const AUTH_REQUESTS_TOTAL: &str = "apex_edge_auth_requests_total";

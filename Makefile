@@ -59,6 +59,12 @@ check: fmt clippy test doc-test audit frontend-check observability-validate
 setup:
 	cargo install cargo-audit 2>/dev/null || true
 
+# Continuous synthetic probe against a running hub. Exposes its own /metrics at
+# 0.0.0.0:9999 so Prometheus can scrape the SLO counters.
+# Usage: APEX_EDGE_URL=http://hub:3000 APEX_EDGE_INTERVAL=15 make smoke-loop
+smoke-loop:
+	cargo run -p synthetic-journey
+
 # Run only the example sync source (default: http://127.0.0.1:3030).
 run-example-sync:
 	cargo run -p example-sync-source

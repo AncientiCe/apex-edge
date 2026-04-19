@@ -1,0 +1,269 @@
+{
+  "id": null,
+  "uid": "apex-edge-slo",
+  "title": "ApexEdge SLOs & Synthetic Journey",
+  "tags": ["apex-edge", "slo", "synthetic"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-24h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "role",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "query": "label_values(apex_edge_role, role)",
+        "refresh": 2,
+        "includeAll": true
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Synthetic Journey Success Ratio (24h)",
+      "description": "SLO: ≥ 99.9% of end-to-end synthetic journeys succeed over 24h.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(apex_edge_synthetic_journey_total{step=\"end_to_end\",outcome=\"success\"}[24h])) / sum(rate(apex_edge_synthetic_journey_total{step=\"end_to_end\"}[24h]))"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 0.99 },
+              { "color": "green", "value": 0.999 }
+            ]
+          }
+        }
+      },
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 0 }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Error Budget Remaining (28d)",
+      "description": "SLO budget: 0.1% failures. Below 20% → stop shipping.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "1 - ((1 - (sum(rate(apex_edge_synthetic_journey_total{step=\"end_to_end\",outcome=\"success\"}[28d])) / sum(rate(apex_edge_synthetic_journey_total{step=\"end_to_end\"}[28d])))) / 0.001)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 0.2 },
+              { "color": "green", "value": 0.5 }
+            ]
+          }
+        }
+      },
+      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 0 }
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Synthetic journey latency (p50 / p95 / p99)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "p50",
+          "legendFormat": "p50",
+          "expr": "histogram_quantile(0.50, sum(rate(apex_edge_synthetic_journey_duration_seconds_bucket{step=\"end_to_end\"}[5m])) by (le))"
+        },
+        {
+          "refId": "p95",
+          "legendFormat": "p95",
+          "expr": "histogram_quantile(0.95, sum(rate(apex_edge_synthetic_journey_duration_seconds_bucket{step=\"end_to_end\"}[5m])) by (le))"
+        },
+        {
+          "refId": "p99",
+          "legendFormat": "p99",
+          "expr": "histogram_quantile(0.99, sum(rate(apex_edge_synthetic_journey_duration_seconds_bucket{step=\"end_to_end\"}[5m])) by (le))"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.5 },
+              { "color": "red", "value": 1.5 }
+            ]
+          }
+        }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Hub role",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "legendFormat": "{{role}}",
+          "expr": "apex_edge_role"
+        }
+      ],
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 6 }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Litestream WAL replication lag (seconds)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "legendFormat": "lag",
+          "expr": "apex_edge_wal_replication_lag_seconds"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 5 },
+              { "color": "red", "value": 30 }
+            ]
+          }
+        }
+      },
+      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 6 }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Audit chain verifications",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "legendFormat": "{{outcome}}",
+          "expr": "sum by (outcome) (rate(apex_edge_audit_chain_verifications_total[5m]))"
+        }
+      ],
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 12 }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Returns & refunds",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "legendFormat": "returns {{result}}",
+          "expr": "sum by (result) (rate(apex_edge_returns_total[5m]))"
+        },
+        {
+          "refId": "B",
+          "legendFormat": "refund tender {{tender_type}}",
+          "expr": "sum by (tender_type) (rate(apex_edge_refund_tender_total[5m]))"
+        }
+      ],
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 6 }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Shifts & cash variance",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "legendFormat": "shifts {{event}}",
+          "expr": "sum by (event) (rate(apex_edge_shifts_total[5m]))"
+        },
+        {
+          "refId": "B",
+          "legendFormat": "variance cents p95",
+          "expr": "histogram_quantile(0.95, sum(rate(apex_edge_shift_variance_cents_bucket[15m])) by (le))"
+        }
+      ],
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 12 }
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Approvals throughput & wait time",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "legendFormat": "{{decision}}",
+          "expr": "sum by (decision) (rate(apex_edge_approvals_total[5m]))"
+        },
+        {
+          "refId": "B",
+          "legendFormat": "p95 wait",
+          "expr": "histogram_quantile(0.95, sum(rate(apex_edge_approval_wait_duration_seconds_bucket[15m])) by (le))"
+        }
+      ],
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 18 }
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Real-time stream connections & messages",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "legendFormat": "connections",
+          "expr": "apex_edge_stream_connections"
+        },
+        {
+          "refId": "B",
+          "legendFormat": "messages {{kind}}",
+          "expr": "sum by (kind) (rate(apex_edge_stream_messages_total[5m]))"
+        }
+      ],
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 18 }
+    },
+    {
+      "id": 11,
+      "type": "table",
+      "title": "Synthetic step breakdown (success rate 5m)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "instant": true,
+          "expr": "sum by (step) (rate(apex_edge_synthetic_journey_total{outcome=\"success\"}[5m])) / sum by (step) (rate(apex_edge_synthetic_journey_total[5m]))"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "percentunit" }
+      },
+      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 24 }
+    }
+  ]
+}

@@ -11,6 +11,84 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.6.0] — 2026-04-19
+
+"Retail complete". Turns ApexEdge from a checkout-focused hub into a full day-of-store
+back-office: returns & refunds, till & shift management, supervisor approvals,
+tamper-evident audit, real-time push to POS, HA-ready topology, and first-class
+OpenAPI + SLO observability. All features are offline-first and gated by the
+existing outbox.
+
+### Added
+
+#### Flagship features
+
+- **Returns & refunds** (`crates/domain/src/returns.rs`, `crates/storage/src/returns.rs`, `crates/api/src/returns_handler.rs`)
+  - Receipted and blind return paths with a dedicated state machine.
+  - New `PosCommand`s: `start_return`, `return_line_item`, `refund_tender`, `finalize_return`, `void_return`.
+  - Blind returns gated by the new supervisor-approval primitive.
+  - `HqReturnSubmissionEnvelope` pushed through the existing outbox with deterministic checksum.
+  - Metrics: `apex_edge_returns_total`, `apex_edge_return_duration_seconds`, `apex_edge_refund_tender_total`.
+  - Migration `010_returns.sql` (+ rollback).
+- **Till & shift management** (`crates/domain/src/shifts.rs`, `crates/storage/src/shifts.rs`, `crates/api/src/shifts_handler.rs`)
+  - One open shift per register (unique partial index). Open till, paid-in, paid-out, no-sale, cash count, X-report, close-till.
+  - Approvals required for high-value cash movements and large close-of-drawer variance.
+  - `HqShiftSubmissionEnvelope` (Z-report) flows through the outbox.
+  - Metrics: `apex_edge_shifts_total`, `apex_edge_shift_variance_cents`, `apex_edge_cash_movements_total`.
+  - Migration `011_shifts.sql` (+ rollback).
+- **Supervisor approvals** (`crates/storage/src/approvals.rs`, `crates/api/src/approvals.rs`)
+  - `POST /approvals`, `GET /approvals/:id`, `POST /approvals/:id/grant|deny`.
+  - Expiring pending approvals; wired into returns, voids, cash movements, manual discounts.
+  - Metrics: `apex_edge_approvals_total`, `apex_edge_approval_wait_duration_seconds`.
+  - Migration `013_approvals.sql` (+ rollback).
+- **Tamper-evident audit log** (`crates/storage/src/audit.rs`)
+  - Hash-chained via HMAC-SHA256 keyed by per-hub `AUDIT_KEY`.
+  - `GET /audit/verify` re-walks the chain and returns `{ok, checked, first_bad_id, reason}`.
+  - Metrics: `apex_edge_audit_chain_verifications_total`, `apex_edge_audit_chain_length`, `apex_edge_audit_records_total`.
+  - Migration `012_audit_chain.sql` (columns applied idempotently in Rust).
+- **Real-time POS push** (`crates/api/src/stream.rs`)
+  - `GET /pos/stream` (WebSocket) with SSE fallback at `GET /pos/events`.
+  - Per-store broadcast fanout with monotonically-sequenced envelopes.
+  - Event kinds: `cart_updated`, `approval_requested`, `return_updated`, `shift_updated`, `document_ready`, `sync_progress`, `price_updated`.
+
+#### HA & operations
+
+- **Standby mode** (`crates/api/src/role.rs`)
+  - `APEX_EDGE_STANDBY=1` flips the hub into read-only mode.
+  - `standby_guard_middleware` rejects writes with `503 + Retry-After: 30 + X-ApexEdge-Role: standby`.
+  - Every response is now tagged with `X-ApexEdge-Role`.
+  - Metric: `apex_edge_role{role=...}`.
+- **Failover / DR runbook** (`docs/runbook/failover.md`)
+  - Three operator playbooks: box recovery, disaster recovery (Litestream restore from object store), optional on-LAN standby for high-volume stores.
+  - Deployment-agnostic: runs on whatever the store already uses (bare metal, VM, container, systemd).
+- **Migration rollback matrix** (`crates/storage/migrations/*.down.sql`, `crates/storage/tests/migration_rollback_matrix.rs`)
+  - Every v0.6.0 migration has a `.down.sql` and a forward→back→forward integration test.
+
+#### Developer experience
+
+- **OpenAPI 3.1 + Swagger UI** — `GET /openapi.json` and `GET /docs`.
+- **SLO dashboard** — `observability/grafana/dashboards/slo-synthetic.json` with success ratio, error budget, synthetic latency, role, replication lag, returns/shifts/approvals breakdowns.
+- **Continuous synthetic probe** — `tools/synthetic-journey` runs a read-only golden path against any hub on a fixed cadence, exposing `apex_edge_synthetic_journey_*` metrics. Run with `make smoke-loop`.
+- **Crash-recovery proptest** — `crates/storage/tests/crash_recovery_proptest.rs` randomly SIGKILLs between outbox + audit operations and asserts post-replay invariants (idempotent inserts, delivered-stays-delivered, chain verifies).
+
+### Changed
+
+- `AppState` gained `stream: StreamHub` and `role: HubRole`; both are wired through the router and all tests.
+- `audit::record` now transactional, prepending `prev_hash`, `hash`, `hub_key_id` to every entry.
+- Main bootstrap loads the audit signing key from `APEX_EDGE_AUDIT_KEY_PATH` or `APEX_EDGE_AUDIT_KEY_SECRET`, or generates one and persists it.
+
+### Migrations
+
+- `010_returns.sql`, `011_shifts.sql`, `012_audit_chain.sql`, `013_approvals.sql` — all additive, idempotent, and ship with `.down.sql` rollbacks.
+
+### Upgrade notes
+
+- Set `APEX_EDGE_AUDIT_KEY_PATH=/data/audit.key` (recommended) or `APEX_EDGE_AUDIT_KEY_SECRET`. On first boot the hub will generate one.
+- POS clients should handle `503 + X-ApexEdge-Role: standby` and show a maintenance banner during failover.
+- For disaster recovery, run a WAL-shipping sidecar (Litestream is the reference impl) against the existing SQLite file; see `docs/runbook/failover.md`.
+
+---
+
 ## [0.5.0] — 2026-03-27
 
 Completes checkout command coverage with idempotent POS command handling, manual promo lifecycle commands, synced coupon definitions, and cart-state customer enrichment.

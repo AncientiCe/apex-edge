@@ -1,11 +1,13 @@
 //! Reusable app bootstrap for the binary and tests (build router, no bind).
 
 use apex_edge_api::{
-    auth_middleware, create_gift_receipt_document, create_pairing_code, exchange_session,
-    get_cart_state_handler, get_document, get_prices, get_product_by_id, handle_pos_command,
-    health, list_categories, list_order_documents, pair_device, ready, refresh_session,
-    revoke_session, search_customers, search_products, serve_metrics, sync_status, AppState,
-    AuthSettings,
+    auth_middleware, create_approval, create_gift_receipt_document, create_pairing_code,
+    deny_approval_handler, exchange_session, get_approval_handler, get_cart_state_handler,
+    get_document, get_prices, get_product_by_id, grant_approval_handler, handle_pos_command,
+    health, list_categories, list_order_documents, openapi_handler, openapi_ui_handler,
+    pair_device, pos_stream_sse, pos_stream_ws, ready, refresh_session, revoke_session,
+    role::standby_guard_middleware, search_customers, search_products, serve_metrics, sync_status,
+    verify_audit_chain, AppState, AuthSettings,
 };
 use axum::middleware;
 use axum::routing::post;
@@ -56,7 +58,10 @@ pub fn build_router(
         pool,
         metrics_handle,
         auth,
+        stream: apex_edge_api::StreamHub::new(),
+        role: apex_edge_api::HubRole::from_env(),
     };
+    apex_edge_api::report_role(app_state.role);
     let cors_origin = if allowed_origins.is_empty() {
         AllowOrigin::any()
     } else {
@@ -93,9 +98,22 @@ pub fn build_router(
         )
         .route("/metrics", get(serve_metrics))
         .route("/sync/status", get(sync_status))
+        .route("/audit/verify", get(verify_audit_chain))
+        .route("/approvals", post(create_approval))
+        .route("/approvals/:id", get(get_approval_handler))
+        .route("/approvals/:id/grant", post(grant_approval_handler))
+        .route("/approvals/:id/deny", post(deny_approval_handler))
+        .route("/pos/stream", get(pos_stream_ws))
+        .route("/pos/events", get(pos_stream_sse))
+        .route("/openapi.json", get(openapi_handler))
+        .route("/docs", get(openapi_ui_handler))
         .route_layer(middleware::from_fn_with_state(
             app_state.clone(),
             auth_middleware,
+        ))
+        .route_layer(middleware::from_fn_with_state(
+            app_state.clone(),
+            standby_guard_middleware,
         ))
         .with_state(app_state);
     routes.layer(cors).layer(HttpMetricsLayer)

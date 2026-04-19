@@ -6,6 +6,8 @@ pub mod errors;
 pub mod order;
 pub mod pricing;
 pub mod promo_engine;
+pub mod returns;
+pub mod shifts;
 
 pub use cart::*;
 pub use coupon_engine::*;
@@ -13,3 +15,5 @@ pub use errors::*;
 pub use order::*;
 pub use pricing::*;
 pub use promo_engine::*;
+pub use returns::*;
+pub use shifts::*;

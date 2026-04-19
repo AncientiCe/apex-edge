@@ -120,3 +120,145 @@ pub struct HqError {
     pub code: String,
     pub message: String,
 }
+
+// ---------- Returns submission ----------
+
+pub fn build_return_submission_envelope(
+    submission_id: Uuid,
+    store_id: Uuid,
+    register_id: Uuid,
+    sequence_number: u64,
+    ret: HqReturnPayload,
+) -> HqReturnSubmissionEnvelope {
+    let submitted_at = Utc::now();
+    let payload_json = serde_json::to_string(&ret).unwrap_or_default();
+    let checksum = format!(
+        "{:x}",
+        md5::compute(format!(
+            "{}:{}:{}:{}:{}",
+            submission_id, store_id, register_id, sequence_number, payload_json
+        ))
+    );
+    HqReturnSubmissionEnvelope {
+        version: ContractVersion::V1_0_0,
+        submission_id,
+        store_id,
+        register_id,
+        sequence_number,
+        ret,
+        checksum,
+        submitted_at,
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HqReturnSubmissionEnvelope {
+    pub version: ContractVersion,
+    pub submission_id: Uuid,
+    pub store_id: Uuid,
+    pub register_id: Uuid,
+    pub sequence_number: u64,
+    pub ret: HqReturnPayload,
+    pub checksum: String,
+    pub submitted_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HqReturnPayload {
+    pub return_id: Uuid,
+    pub original_order_id: Option<Uuid>,
+    pub reason_code: Option<String>,
+    pub approval_id: Option<Uuid>,
+    pub shift_id: Option<Uuid>,
+    pub created_at: DateTime<Utc>,
+    pub lines: Vec<HqReturnLine>,
+    pub refunds: Vec<HqRefund>,
+    pub total_cents: u64,
+    pub tax_cents: u64,
+    pub refunded_cents: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HqReturnLine {
+    pub line_id: Uuid,
+    pub original_line_id: Option<Uuid>,
+    pub sku: String,
+    pub name: String,
+    pub quantity: u32,
+    pub unit_price_cents: u64,
+    pub line_total_cents: u64,
+    pub tax_cents: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HqRefund {
+    pub refund_id: Uuid,
+    pub tender_type: String,
+    pub amount_cents: u64,
+    pub external_reference: Option<String>,
+}
+
+// ---------- Shift submission (Z report) ----------
+
+pub fn build_shift_submission_envelope(
+    submission_id: Uuid,
+    store_id: Uuid,
+    register_id: Uuid,
+    sequence_number: u64,
+    shift: HqShiftPayload,
+) -> HqShiftSubmissionEnvelope {
+    let submitted_at = Utc::now();
+    let payload_json = serde_json::to_string(&shift).unwrap_or_default();
+    let checksum = format!(
+        "{:x}",
+        md5::compute(format!(
+            "{}:{}:{}:{}:{}",
+            submission_id, store_id, register_id, sequence_number, payload_json
+        ))
+    );
+    HqShiftSubmissionEnvelope {
+        version: ContractVersion::V1_0_0,
+        submission_id,
+        store_id,
+        register_id,
+        sequence_number,
+        shift,
+        checksum,
+        submitted_at,
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HqShiftSubmissionEnvelope {
+    pub version: ContractVersion,
+    pub submission_id: Uuid,
+    pub store_id: Uuid,
+    pub register_id: Uuid,
+    pub sequence_number: u64,
+    pub shift: HqShiftPayload,
+    pub checksum: String,
+    pub submitted_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HqShiftPayload {
+    pub shift_id: Uuid,
+    pub associate_id: Option<String>,
+    pub opened_at: DateTime<Utc>,
+    pub closed_at: Option<DateTime<Utc>>,
+    pub opening_float_cents: u64,
+    pub expected_cents: i64,
+    pub counted_cents: i64,
+    pub variance_cents: i64,
+    pub cash_sales_cents: u64,
+    pub cash_refunds_cents: u64,
+    pub movements: Vec<HqShiftMovement>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HqShiftMovement {
+    pub id: Uuid,
+    pub kind: String,
+    pub amount_cents: u64,
+    pub reason: Option<String>,
+}

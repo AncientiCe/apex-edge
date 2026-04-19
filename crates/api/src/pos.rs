@@ -29,6 +29,18 @@ fn pos_operation_label(cmd: &PosCommand) -> &'static str {
         PosCommand::AddPayment(_) => "add_payment",
         PosCommand::FinalizeOrder(_) => "finalize_order",
         PosCommand::VoidCart(_) => "void_cart",
+        PosCommand::StartReturn(_) => "start_return",
+        PosCommand::ReturnLineItem(_) => "return_line_item",
+        PosCommand::RefundTender(_) => "refund_tender",
+        PosCommand::FinalizeReturn(_) => "finalize_return",
+        PosCommand::VoidReturn(_) => "void_return",
+        PosCommand::OpenTill(_) => "open_till",
+        PosCommand::PaidIn(_) => "paid_in",
+        PosCommand::PaidOut(_) => "paid_out",
+        PosCommand::NoSale(_) => "no_sale",
+        PosCommand::CashCount(_) => "cash_count",
+        PosCommand::GetXReport(_) => "get_x_report",
+        PosCommand::CloseTill(_) => "close_till",
     }
 }
 
@@ -142,4 +154,8 @@ pub struct AppState {
     /// When present, GET /metrics returns Prometheus scrape output.
     pub metrics_handle: Option<apex_edge_metrics::PrometheusHandle>,
     pub auth: crate::auth::AuthSettings,
+    /// Per-store real-time broadcast hub for POS WebSocket / SSE clients.
+    pub stream: crate::stream::StreamHub,
+    /// Role of this hub instance (primary or standby) for HA deployments.
+    pub role: crate::role::HubRole,
 }

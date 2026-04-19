@@ -1582,6 +1582,71 @@ pub async fn execute_pos_command(
                 errors: vec![],
             }
         }
+        PosCommand::StartReturn(p) => {
+            return crate::returns_handler::start_return(
+                app,
+                store_id,
+                register_id,
+                idempotency_key,
+                p,
+            )
+            .await;
+        }
+        PosCommand::ReturnLineItem(p) => {
+            return crate::returns_handler::return_line_item(app, store_id, idempotency_key, p)
+                .await;
+        }
+        PosCommand::RefundTender(p) => {
+            return crate::returns_handler::refund_tender(app, store_id, idempotency_key, p).await;
+        }
+        PosCommand::FinalizeReturn(p) => {
+            return crate::returns_handler::finalize_return(
+                app,
+                store_id,
+                register_id,
+                idempotency_key,
+                p,
+            )
+            .await;
+        }
+        PosCommand::VoidReturn(p) => {
+            return crate::returns_handler::void_return(app, store_id, idempotency_key, p).await;
+        }
+        PosCommand::OpenTill(p) => {
+            return crate::shifts_handler::open_till(
+                app,
+                store_id,
+                register_id,
+                idempotency_key,
+                p,
+            )
+            .await;
+        }
+        PosCommand::PaidIn(p) => {
+            return crate::shifts_handler::paid_in(app, store_id, idempotency_key, p).await;
+        }
+        PosCommand::PaidOut(p) => {
+            return crate::shifts_handler::paid_out(app, store_id, idempotency_key, p).await;
+        }
+        PosCommand::NoSale(p) => {
+            return crate::shifts_handler::no_sale(app, store_id, idempotency_key, p).await;
+        }
+        PosCommand::CashCount(p) => {
+            return crate::shifts_handler::cash_count(app, store_id, idempotency_key, p).await;
+        }
+        PosCommand::GetXReport(p) => {
+            return crate::shifts_handler::get_x_report(app, store_id, idempotency_key, p).await;
+        }
+        PosCommand::CloseTill(p) => {
+            return crate::shifts_handler::close_till(
+                app,
+                store_id,
+                register_id,
+                idempotency_key,
+                p,
+            )
+            .await;
+        }
         PosCommand::RemoveLineItem(p) => {
             let Some(mut cart) = load_cart_from_db(pool, p.cart_id).await.ok().flatten() else {
                 return PosResponseEnvelope {

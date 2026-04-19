@@ -37,6 +37,8 @@ async fn api_handlers_cover_health_ready_pos_and_documents() {
         pool: pool.clone(),
         metrics_handle: None,
         auth: apex_edge_api::AuthSettings::default(),
+        stream: apex_edge_api::StreamHub::new(),
+        role: apex_edge_api::HubRole::Primary,
     };
 
     let h = health().await;
@@ -118,6 +120,8 @@ async fn get_document_returns_not_found_for_unknown_id() {
         pool,
         metrics_handle: None,
         auth: apex_edge_api::AuthSettings::default(),
+        stream: apex_edge_api::StreamHub::new(),
+        role: apex_edge_api::HubRole::Primary,
     };
     let res = get_document(State(state), axum::extract::Path(Uuid::new_v4())).await;
     assert_eq!(
@@ -139,6 +143,8 @@ async fn create_gift_receipt_generates_new_document_for_order() {
         pool: pool.clone(),
         metrics_handle: None,
         auth: apex_edge_api::AuthSettings::default(),
+        stream: apex_edge_api::StreamHub::new(),
+        role: apex_edge_api::HubRole::Primary,
     };
     let order_id = Uuid::new_v4();
     let doc_id = Uuid::new_v4();
@@ -182,6 +188,8 @@ async fn get_sync_status_returns_shape_with_last_sync_and_entities() {
         pool,
         metrics_handle: None,
         auth: apex_edge_api::AuthSettings::default(),
+        stream: apex_edge_api::StreamHub::new(),
+        role: apex_edge_api::HubRole::Primary,
     };
 
     let resp = sync_status(State(state)).await.expect("sync_status");
@@ -213,6 +221,8 @@ async fn get_cart_state_returns_cart_for_known_id() {
         pool: pool.clone(),
         metrics_handle: None,
         auth: apex_edge_api::AuthSettings::default(),
+        stream: apex_edge_api::StreamHub::new(),
+        role: apex_edge_api::HubRole::Primary,
     };
 
     // Create a cart via the POS command handler
@@ -271,6 +281,8 @@ async fn get_prices_returns_base_prices_for_requested_products() {
         pool,
         metrics_handle: None,
         auth: apex_edge_api::AuthSettings::default(),
+        stream: apex_edge_api::StreamHub::new(),
+        role: apex_edge_api::HubRole::Primary,
     };
     let response = get_prices(
         State(state),
@@ -340,6 +352,8 @@ async fn search_products_uses_catalog_images_when_inventory_images_are_missing()
         pool,
         metrics_handle: None,
         auth: apex_edge_api::AuthSettings::default(),
+        stream: apex_edge_api::StreamHub::new(),
+        role: apex_edge_api::HubRole::Primary,
     };
     let response = search_products(
         State(state),
@@ -394,6 +408,8 @@ async fn product_by_id_returns_placeholder_image_when_no_synced_images_exist() {
         pool,
         metrics_handle: None,
         auth: apex_edge_api::AuthSettings::default(),
+        stream: apex_edge_api::StreamHub::new(),
+        role: apex_edge_api::HubRole::Primary,
     };
     let response = get_product_by_id(State(state), axum::extract::Path(item_id))
         .await
@@ -420,6 +436,8 @@ async fn remove_line_item_returns_cart_not_found_for_unknown_cart() {
         pool,
         metrics_handle: None,
         auth: apex_edge_api::AuthSettings::default(),
+        stream: apex_edge_api::StreamHub::new(),
+        role: apex_edge_api::HubRole::Primary,
     };
 
     let res = handle_pos_command(
@@ -455,6 +473,8 @@ async fn remove_line_item_returns_line_not_found_for_unknown_line() {
         pool: pool.clone(),
         metrics_handle: None,
         auth: apex_edge_api::AuthSettings::default(),
+        stream: apex_edge_api::StreamHub::new(),
+        role: apex_edge_api::HubRole::Primary,
     };
 
     // Create a cart first
@@ -507,6 +527,8 @@ async fn get_cart_state_returns_not_found_for_unknown_id() {
         pool,
         metrics_handle: None,
         auth: apex_edge_api::AuthSettings::default(),
+        stream: apex_edge_api::StreamHub::new(),
+        role: apex_edge_api::HubRole::Primary,
     };
 
     let result = get_cart_state_handler(State(state), axum::extract::Path(Uuid::new_v4())).await;
@@ -530,6 +552,8 @@ async fn metrics_endpoint_returns_404_when_recorder_not_installed() {
         pool,
         metrics_handle: None,
         auth: apex_edge_api::AuthSettings::default(),
+        stream: apex_edge_api::StreamHub::new(),
+        role: apex_edge_api::HubRole::Primary,
     };
 
     let response = serve_metrics(State(state)).await.into_response();
@@ -555,6 +579,8 @@ async fn add_line_item_response_includes_applied_promo_name() {
         pool: pool.clone(),
         metrics_handle: None,
         auth: apex_edge_api::AuthSettings::default(),
+        stream: apex_edge_api::StreamHub::new(),
+        role: apex_edge_api::HubRole::Primary,
     };
     let item_id = Uuid::new_v4();
     insert_catalog_item(
@@ -667,6 +693,8 @@ async fn finalize_order_with_synced_template_produces_pdf_receipt() {
         pool: pool.clone(),
         metrics_handle: None,
         auth: apex_edge_api::AuthSettings::default(),
+        stream: apex_edge_api::StreamHub::new(),
+        role: apex_edge_api::HubRole::Primary,
     };
     let item_id = Uuid::new_v4();
     insert_catalog_item(
@@ -849,6 +877,8 @@ async fn gift_receipt_with_synced_template_produces_pdf() {
         pool: pool.clone(),
         metrics_handle: None,
         auth: apex_edge_api::AuthSettings::default(),
+        stream: apex_edge_api::StreamHub::new(),
+        role: apex_edge_api::HubRole::Primary,
     };
     let created = create_gift_receipt_document(State(state), axum::extract::Path(order_id))
         .await
@@ -886,6 +916,8 @@ async fn update_line_item_reprices_and_updates_quantity() {
         pool: pool.clone(),
         metrics_handle: None,
         auth: apex_edge_api::AuthSettings::default(),
+        stream: apex_edge_api::StreamHub::new(),
+        role: apex_edge_api::HubRole::Primary,
     };
     let item_id = Uuid::new_v4();
     insert_catalog_item(
@@ -981,6 +1013,8 @@ async fn apply_and_remove_coupon_updates_cart_coupon_state() {
         pool: pool.clone(),
         metrics_handle: None,
         auth: apex_edge_api::AuthSettings::default(),
+        stream: apex_edge_api::StreamHub::new(),
+        role: apex_edge_api::HubRole::Primary,
     };
     let item_id = Uuid::new_v4();
     insert_catalog_item(
@@ -1133,6 +1167,8 @@ async fn void_cart_marks_cart_voided_and_blocks_future_edits() {
         pool: pool.clone(),
         metrics_handle: None,
         auth: apex_edge_api::AuthSettings::default(),
+        stream: apex_edge_api::StreamHub::new(),
+        role: apex_edge_api::HubRole::Primary,
     };
     let item_id = Uuid::new_v4();
     insert_catalog_item(
@@ -1224,6 +1260,8 @@ async fn apply_and_remove_promo_updates_discount_and_applied_promos() {
         pool: pool.clone(),
         metrics_handle: None,
         auth: apex_edge_api::AuthSettings::default(),
+        stream: apex_edge_api::StreamHub::new(),
+        role: apex_edge_api::HubRole::Primary,
     };
     let item_id = Uuid::new_v4();
     insert_catalog_item(
@@ -1361,6 +1399,8 @@ async fn apply_coupon_rejects_when_redemption_limit_reached() {
         pool: pool.clone(),
         metrics_handle: None,
         auth: apex_edge_api::AuthSettings::default(),
+        stream: apex_edge_api::StreamHub::new(),
+        role: apex_edge_api::HubRole::Primary,
     };
     let item_id = Uuid::new_v4();
     insert_catalog_item(
@@ -1476,6 +1516,8 @@ async fn repeated_idempotency_key_replays_same_response() {
         pool,
         metrics_handle: None,
         auth: apex_edge_api::AuthSettings::default(),
+        stream: apex_edge_api::StreamHub::new(),
+        role: apex_edge_api::HubRole::Primary,
     };
     let idem = Uuid::new_v4();
     let req = PosRequestEnvelope {
@@ -1523,6 +1565,8 @@ async fn set_customer_enriches_cart_state_with_customer_name_and_code() {
         pool,
         metrics_handle: None,
         auth: apex_edge_api::AuthSettings::default(),
+        stream: apex_edge_api::StreamHub::new(),
+        role: apex_edge_api::HubRole::Primary,
     };
     let created = handle_pos_command(
         State(state.clone()),

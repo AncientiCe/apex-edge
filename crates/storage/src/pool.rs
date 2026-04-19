@@ -9,6 +9,8 @@ use thiserror::Error;
 pub enum PoolError {
     #[error("connection: {0}")]
     Connection(#[from] sqlx::Error),
+    #[error("{0}")]
+    Other(String),
 }
 
 /// Create a SQLite pool from either:
