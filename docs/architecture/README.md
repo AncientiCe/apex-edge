@@ -93,43 +93,58 @@ flowchart TB
     subgraph routes [HTTP Routes]
         R1["GET /health"]
         R2["GET /ready"]
-        R3["POST /pos/command"]
-        R4["GET /catalog/products"]
-        R4b["GET /catalog/products/:id"]
-        R5["GET /catalog/categories"]
-        R6["GET /customers"]
-        R7["GET /documents/:id"]
-        R8["GET /orders/:order_id/documents"]
-        R9["GET /metrics"]
-        R10["GET /sync/status"]
+        Auth["POST /auth/*"]
+        PosCommand["POST /pos/command"]
+        PosCart["GET /pos/cart/:cart_id"]
+        PosStream["GET /pos/stream and /pos/events"]
+        Catalog["GET /catalog/products, /catalog/products/:id, /catalog/prices, /catalog/categories"]
+        Customers["GET /customers"]
+        Docs["GET /documents/:id and /orders/:order_id/documents"]
+        GiftDocs["POST /orders/:order_id/documents/gift-receipt"]
+        Orders["GET /orders and /orders/:id"]
+        Audit["GET /audit/verify"]
+        Approvals["POST/GET /approvals*"]
+        Ops["GET /metrics, /sync/status, /openapi.json, /docs"]
     end
     subgraph api [apex_edge_api]
         H[health]
+        A[auth]
         P[pos]
+        S[stream]
         C[catalog_search]
         CC[catalog_categories]
         CS[customer_search]
         D[documents]
+        O[orders]
+        AU[audit]
+        AP[approvals]
         M[metrics_handler]
         SS[sync_status]
+        OA[openapi]
     end
     R1 --> H
     R2 --> H
-    R3 --> P
-    R4 --> C
-    R4b --> C
-    R5 --> CC
-    R6 --> CS
-    R7 --> D
-    R8 --> D
-    R9 --> M
-    R10 --> SS
+    Auth --> A
+    PosCommand --> P
+    PosCart --> P
+    PosStream --> S
+    Catalog --> C
+    Catalog --> CC
+    Customers --> CS
+    Docs --> D
+    GiftDocs --> D
+    Orders --> O
+    Audit --> AU
+    Approvals --> AP
+    Ops --> M
+    Ops --> SS
+    Ops --> OA
 ```
 
 **Notes:**
-- **Inputs:** Incoming requests to the listed paths; `/ready` and document/pos handlers use `AppState` (pool).
-- **Outputs:** JSON or Prometheus scrape; `/ready` returns 503 if DB probe fails.
-- **Ownership:** All route behaviors owned by `apex-edge-api`; health = `health` module; pos = `pos`; documents = `documents`; metrics = `metrics_handler`. See section 9 for behavior ownership and section 20 for observability mapping.
+- **Inputs:** Incoming requests to the listed paths; most handlers use `AppState` for the store id, SQLite pool, auth settings, stream hub, and hub role.
+- **Outputs:** JSON, Prometheus scrape, WebSocket/SSE streams, or docs HTML; `/ready` returns 503 if DB probe fails.
+- **Ownership:** All route behaviors are owned by `apex-edge-api`; the router in `apex-edge/src/app.rs` remains the ground truth. See section 9 for behavior ownership and section 20 for observability mapping.
 
 ### 4. POS Command Flow
 
@@ -782,3 +797,32 @@ sequenceDiagram
 - **Outputs:** idempotent `HqOrderSubmissionResponse`, paginated `/api/orders` listing, `/api/orders/:submission_id` details, and demo UI pages for OMS workflows.
 - **Failure path:** invalid payloads return HTTP `422`; unknown order IDs return `404`; duplicate `submission_id` is treated as accepted idempotent replay.
 - **Metrics:** Fake HQ emits local counters/histogram for ingest observability (`fake_hq_orders_received_total`, `fake_hq_orders_duplicate_total`, `fake_hq_order_receive_duration_seconds`).
+
+### 23. Order Ledger and Shift Cash Accounting (v0.7.0)
+
+**Purpose:** Persist finalized sales as durable local order facts, expose read-only order lookup APIs, and compute X/Z report expected cash from ledger sales plus finalized cash refunds.
+
+```mermaid
+flowchart TB
+    POS[POS_MPOS] -->|"finalize_order"| PosCommand[POST /pos/command]
+    PosCommand --> Cart[Cart Aggregate]
+    Cart --> Ledger[(orders, order_lines, order_payments)]
+    PosCommand --> Outbox[(outbox)]
+    PosCommand --> Docs[(documents)]
+    Outbox --> HQ[HQ]
+
+    Returns[Returns Flow] --> ReturnTables[(returns and refunds)]
+    Ledger --> ShiftMath[Shift Expected Cash]
+    ReturnTables --> ShiftMath
+    Movements[(shift_movements)] --> ShiftMath
+    ShiftMath --> XReport[GetXReport]
+    ShiftMath --> ZReport[CloseTill]
+    XReport --> POS
+    ZReport --> POS
+```
+
+**Notes:**
+- **Inputs:** paid carts finalized through `FinalizeOrder`, optional open shift for `(store_id, register_id)`, cash payments identified by payment tender metadata, finalized returns/refunds linked by `shift_id`, and drawer movements.
+- **Outputs:** `GET /orders` and `GET /orders/:id` read from the local ledger; X/Z reports include `cash_sales_cents`, `cash_refunds_cents`, `expected_cents`, and variance; HQ shift submissions include the same cash sales/refunds totals.
+- **Failure path:** order ledger write failure returns `ORDER_LEDGER_FAILED` before outbox/document work; missing order lookup returns 404; shift accounting falls back to zero for unavailable ledger aggregates rather than blocking close.
+- **Metrics:** order finalization and lookup use `apex_edge_orders_finalized_total`, `apex_edge_orders_lookup_total`, and `apex_edge_orders_ledger_write_duration_seconds`; HTTP metrics label the order routes explicitly.

@@ -9,6 +9,24 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-04-29
+
+### Added
+
+- Durable order ledger tables (`orders`, `order_lines`, `order_payments`) with rollback migration and storage/API tests.
+- Read-only order APIs: `GET /orders` and `GET /orders/:id`.
+- Order finalization metrics: `apex_edge_orders_finalized_total`, `apex_edge_orders_lookup_total`, and `apex_edge_orders_ledger_write_duration_seconds`.
+
+### Changed
+
+- Finalized sales are persisted locally before outbox/document work.
+- X-report, cash count, close-till responses, and HQ shift submissions now compute cash sales/refunds from ledger facts instead of reporting movement-only cash.
+- OpenAPI, HTTP route labels, metrics docs, and architecture route ownership were refreshed for the expanded surface.
+
+### Migrations
+
+- `014_order_ledger.sql` and `014_order_ledger.down.sql`.
+
 ---
 
 ## [0.6.0] — 2026-04-19

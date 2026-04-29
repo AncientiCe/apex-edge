@@ -17,14 +17,26 @@ pub fn route_label(path: &str) -> &'static str {
         "/pos/cart/:cart_id" | "/pos/cart/{cart_id}" => "pos_cart",
         "/catalog/products" => "catalog_products",
         "/catalog/products/:id" | "/catalog/products/{id}" => "catalog_product_id",
+        "/catalog/prices" => "catalog_prices",
         "/catalog/categories" => "catalog_categories",
         "/customers" => "customers",
         "/documents/:id" | "/documents/{id}" => "documents_id",
+        "/orders" => "orders",
+        "/orders/:id" | "/orders/{id}" => "orders_id",
         "/orders/:order_id/documents" | "/orders/{order_id}/documents" => "orders_documents",
         "/orders/:order_id/documents/gift-receipt"
         | "/orders/{order_id}/documents/gift-receipt" => "orders_gift_receipt",
         "/metrics" => "metrics",
         "/sync/status" => "sync_status",
+        "/audit/verify" => "audit_verify",
+        "/approvals" => "approvals",
+        "/approvals/:id" | "/approvals/{id}" => "approvals_id",
+        "/approvals/:id/grant" | "/approvals/{id}/grant" => "approvals_grant",
+        "/approvals/:id/deny" | "/approvals/{id}/deny" => "approvals_deny",
+        "/pos/stream" => "pos_stream",
+        "/pos/events" => "pos_events",
+        "/openapi.json" => "openapi_json",
+        "/docs" => "docs",
         "/auth/pairing-codes" => "auth_pairing_codes",
         "/auth/devices/pair" => "auth_devices_pair",
         "/auth/sessions/exchange" => "auth_sessions_exchange",
@@ -51,14 +63,38 @@ pub fn request_path_to_route(path: &str) -> &'static str {
     if path == "/catalog/products" {
         return "catalog_products";
     }
+    if path == "/catalog/prices" {
+        return "catalog_prices";
+    }
     if path == "/catalog/categories" {
         return "catalog_categories";
     }
     if path == "/customers" {
         return "customers";
     }
+    if path == "/orders" {
+        return "orders";
+    }
     if path == "/sync/status" {
         return "sync_status";
+    }
+    if path == "/audit/verify" {
+        return "audit_verify";
+    }
+    if path == "/approvals" {
+        return "approvals";
+    }
+    if path == "/pos/stream" {
+        return "pos_stream";
+    }
+    if path == "/pos/events" {
+        return "pos_events";
+    }
+    if path == "/openapi.json" {
+        return "openapi_json";
+    }
+    if path == "/docs" {
+        return "docs";
     }
     if path == "/auth/pairing-codes" {
         return "auth_pairing_codes";
@@ -84,11 +120,23 @@ pub fn request_path_to_route(path: &str) -> &'static str {
     if path.starts_with("/catalog/products/") && path.len() > 18 {
         return "catalog_product_id";
     }
+    if path.starts_with("/approvals/") && path.ends_with("/grant") {
+        return "approvals_grant";
+    }
+    if path.starts_with("/approvals/") && path.ends_with("/deny") {
+        return "approvals_deny";
+    }
+    if path.starts_with("/approvals/") && path.len() > 11 {
+        return "approvals_id";
+    }
     if path.starts_with("/orders/") && path.ends_with("/documents/gift-receipt") {
         return "orders_gift_receipt";
     }
     if path.starts_with("/orders/") && path.ends_with("/documents") {
         return "orders_documents";
+    }
+    if path.starts_with("/orders/") && path.len() > 8 {
+        return "orders_id";
     }
     "unknown"
 }
@@ -232,6 +280,15 @@ pub const SHIFT_VARIANCE_CENTS: &str = "apex_edge_shift_variance_cents";
 /// Counter: cash drawer movements. Labels: kind, outcome.
 pub const CASH_MOVEMENTS_TOTAL: &str = "apex_edge_cash_movements_total";
 
+// ---------- Order ledger (api::orders / api::pos_handler) ----------
+/// Counter: finalized order ledger writes. Labels: outcome (success, error).
+pub const ORDERS_FINALIZED_TOTAL: &str = "apex_edge_orders_finalized_total";
+/// Counter: order lookup/list requests. Labels: operation, outcome (hit, not_found, error).
+pub const ORDERS_LOOKUP_TOTAL: &str = "apex_edge_orders_lookup_total";
+/// Histogram: order ledger write duration in seconds.
+pub const ORDERS_LEDGER_WRITE_DURATION_SECONDS: &str =
+    "apex_edge_orders_ledger_write_duration_seconds";
+
 // ---------- Role / HA ----------
 /// Gauge: current hub role (1 = role-active). Labels: role (primary, standby).
 pub const ROLE_GAUGE: &str = "apex_edge_role";
@@ -253,3 +310,33 @@ pub const AUTH_REQUEST_DURATION_SECONDS: &str = "apex_edge_auth_request_duration
 pub const AUTH_SESSIONS_TOTAL: &str = "apex_edge_auth_sessions_total";
 /// Counter: device pairing outcomes.
 pub const DEVICE_PAIRINGS_TOTAL: &str = "apex_edge_device_pairings_total";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn first_class_routes_have_bounded_labels() {
+        for (path, expected) in [
+            ("/catalog/prices", "catalog_prices"),
+            ("/audit/verify", "audit_verify"),
+            ("/approvals", "approvals"),
+            (
+                "/approvals/550e8400-e29b-41d4-a716-446655440000",
+                "approvals_id",
+            ),
+            (
+                "/approvals/550e8400-e29b-41d4-a716-446655440000/grant",
+                "approvals_grant",
+            ),
+            ("/pos/stream", "pos_stream"),
+            ("/pos/events", "pos_events"),
+            ("/orders", "orders"),
+            ("/orders/550e8400-e29b-41d4-a716-446655440000", "orders_id"),
+            ("/openapi.json", "openapi_json"),
+            ("/docs", "docs"),
+        ] {
+            assert_eq!(request_path_to_route(path), expected);
+        }
+    }
+}

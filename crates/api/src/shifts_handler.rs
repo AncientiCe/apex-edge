@@ -19,8 +19,9 @@ use apex_edge_metrics::{
     CASH_MOVEMENTS_TOTAL, OUTCOME_ERROR, OUTCOME_SUCCESS, SHIFTS_TOTAL, SHIFT_VARIANCE_CENTS,
 };
 use apex_edge_storage::{
-    close_shift, fetch_approval, fetch_open_shift, fetch_shift, insert_outbox,
-    insert_shift_movement, list_shift_movements, open_shift, record, ApprovalState,
+    cash_refunds_cents_for_shift, cash_sales_cents_for_shift, close_shift, fetch_approval,
+    fetch_open_shift, fetch_shift, insert_outbox, insert_shift_movement, list_shift_movements,
+    open_shift, record, ApprovalState,
 };
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
@@ -272,7 +273,7 @@ async fn movements_and_expected(
     app: &AppState,
     shift_id: Uuid,
     opening_float_cents: u64,
-) -> (Vec<CashMovement>, i64) {
+) -> (Vec<CashMovement>, i64, u64, u64) {
     let movements = list_shift_movements(&app.pool, shift_id)
         .await
         .unwrap_or_default()
@@ -288,12 +289,14 @@ async fn movements_and_expected(
             })
         })
         .collect::<Vec<_>>();
-    // Cash sales / refunds are not yet attributed to shifts in this repo's existing
-    // order tables; v0.6.1 will compute them from orders+returns joined by shift_id.
-    // For v0.6.0 we report "expected" as opening + movements only, which is still the
-    // invariant "drawer should equal this at close-time" for cashless tills.
-    let expected = expected_cash_cents(opening_float_cents, 0, 0, &movements);
-    (movements, expected)
+    let cash_sales = cash_sales_cents_for_shift(&app.pool, shift_id)
+        .await
+        .unwrap_or_default();
+    let cash_refunds = cash_refunds_cents_for_shift(&app.pool, shift_id)
+        .await
+        .unwrap_or_default();
+    let expected = expected_cash_cents(opening_float_cents, cash_sales, cash_refunds, &movements);
+    (movements, expected, cash_sales, cash_refunds)
 }
 
 pub async fn cash_count(
@@ -307,7 +310,7 @@ pub async fn cash_count(
         Ok(None) => return fail(idempotency_key, err("SHIFT_NOT_FOUND", "shift not found")),
         Err(e) => return fail(idempotency_key, err("SHIFT_LOAD_FAILED", e.to_string())),
     };
-    let (_movements, expected) =
+    let (_movements, expected, cash_sales, cash_refunds) =
         movements_and_expected(app, shift.id, shift.opening_float_cents).await;
     let variance = variance_cents(payload.counted_cents as i64, expected);
     metrics::histogram!(SHIFT_VARIANCE_CENTS, variance.unsigned_abs() as f64);
@@ -315,6 +318,8 @@ pub async fn cash_count(
         "shift_id": shift.id,
         "counted_cents": payload.counted_cents,
         "expected_cents": expected,
+        "cash_sales_cents": cash_sales,
+        "cash_refunds_cents": cash_refunds,
         "variance_cents": variance,
         "denominations": payload.denominations,
     });
@@ -339,7 +344,7 @@ pub async fn get_x_report(
         Ok(None) => return fail(idempotency_key, err("SHIFT_NOT_FOUND", "shift not found")),
         Err(e) => return fail(idempotency_key, err("SHIFT_LOAD_FAILED", e.to_string())),
     };
-    let (movements, expected) =
+    let (movements, expected, cash_sales, cash_refunds) =
         movements_and_expected(app, shift.id, shift.opening_float_cents).await;
     let report = serde_json::json!({
         "shift_id": shift.id,
@@ -348,6 +353,8 @@ pub async fn get_x_report(
         "opened_at": shift.opened_at,
         "opening_float_cents": shift.opening_float_cents,
         "expected_cents": expected,
+        "cash_sales_cents": cash_sales,
+        "cash_refunds_cents": cash_refunds,
         "movements": movements.iter().map(|m| serde_json::json!({
             "id": m.id,
             "kind": m.kind.as_str(),
@@ -383,7 +390,7 @@ pub async fn close_till(
             err("SHIFT_NOT_OPEN", "shift already closed"),
         );
     }
-    let (movements, expected) =
+    let (movements, expected, cash_sales, cash_refunds) =
         movements_and_expected(app, shift.id, shift.opening_float_cents).await;
     let variance = variance_cents(payload.counted_cents as i64, expected);
     // Large variance requires a granted approval.
@@ -426,8 +433,8 @@ pub async fn close_till(
         expected_cents: expected,
         counted_cents: payload.counted_cents as i64,
         variance_cents: variance,
-        cash_sales_cents: 0,
-        cash_refunds_cents: 0,
+        cash_sales_cents: cash_sales,
+        cash_refunds_cents: cash_refunds,
         movements: movements
             .iter()
             .map(|m| HqShiftMovement {
@@ -452,6 +459,8 @@ pub async fn close_till(
     let response = serde_json::json!({
         "shift_id": shift.id,
         "expected_cents": expected,
+        "cash_sales_cents": cash_sales,
+        "cash_refunds_cents": cash_refunds,
         "counted_cents": payload.counted_cents,
         "variance_cents": variance,
         "state": "closed",

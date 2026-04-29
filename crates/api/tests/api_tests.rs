@@ -1,7 +1,8 @@
 use apex_edge_api::{
-    create_gift_receipt_document, get_cart_state_handler, get_document, get_prices,
-    get_product_by_id, handle_pos_command, health, list_order_documents, ready, search_products,
-    serve_metrics, sync_status, AppState, ProductSearchQuery,
+    create_gift_receipt_document, get_cart_state_handler, get_document, get_order_handler,
+    get_prices, get_product_by_id, handle_pos_command, health, list_order_documents,
+    list_orders_handler, ready, search_products, serve_metrics, sync_status, AppState,
+    OrderListQuery, ProductSearchQuery,
 };
 use apex_edge_contracts::{
     AddLineItemPayload, ApplyCouponPayload, ApplyPromoPayload, CartState, CatalogItem,
@@ -830,6 +831,162 @@ async fn finalize_order_with_synced_template_produces_pdf_receipt() {
         bytes.starts_with(b"%PDF-"),
         "decoded content must be PDF (starts with %PDF-)"
     );
+}
+
+#[tokio::test]
+async fn finalize_persists_order_ledger_and_order_read_apis_return_it() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("pool");
+    run_migrations(&pool).await.expect("migrations");
+    let store_id = Uuid::nil();
+    let register_id = Uuid::new_v4();
+    let item_id = Uuid::new_v4();
+    insert_catalog_item(
+        &pool,
+        item_id,
+        store_id,
+        "ORD-001",
+        "Order Ledger Item",
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+    )
+    .await
+    .expect("insert_catalog_item");
+    insert_price_book_entry(&pool, store_id, item_id, None, 750, "USD")
+        .await
+        .expect("insert_price_book_entry");
+
+    let state = AppState {
+        store_id,
+        pool: pool.clone(),
+        metrics_handle: None,
+        auth: apex_edge_api::AuthSettings::default(),
+        stream: apex_edge_api::StreamHub::new(),
+        role: apex_edge_api::HubRole::Primary,
+    };
+
+    let opened = handle_pos_command(
+        State(state.clone()),
+        Json(PosRequestEnvelope {
+            version: ContractVersion::V1_0_0,
+            idempotency_key: Uuid::new_v4(),
+            store_id,
+            register_id,
+            payload: PosCommand::OpenTill(apex_edge_contracts::OpenTillPayload {
+                register_id: Some(register_id),
+                associate_id: Some("cashier-1".into()),
+                opening_float_cents: 2_000,
+            }),
+        }),
+    )
+    .await;
+    assert!(opened.0.success);
+    let shift_id: Uuid =
+        serde_json::from_value(opened.0.payload.unwrap()["shift_id"].clone()).unwrap();
+
+    let created = handle_pos_command(
+        State(state.clone()),
+        Json(PosRequestEnvelope {
+            version: ContractVersion::V1_0_0,
+            idempotency_key: Uuid::new_v4(),
+            store_id,
+            register_id,
+            payload: PosCommand::CreateCart(CreateCartPayload { cart_id: None }),
+        }),
+    )
+    .await;
+    let cart_state: CartState =
+        serde_json::from_value(created.0.payload.unwrap()).expect("cart state");
+
+    let _ = handle_pos_command(
+        State(state.clone()),
+        Json(PosRequestEnvelope {
+            version: ContractVersion::V1_0_0,
+            idempotency_key: Uuid::new_v4(),
+            store_id,
+            register_id,
+            payload: PosCommand::AddLineItem(AddLineItemPayload {
+                cart_id: cart_state.cart_id,
+                item_id,
+                modifier_option_ids: vec![],
+                quantity: 2,
+                notes: None,
+                unit_price_override_cents: None,
+            }),
+        }),
+    )
+    .await;
+    let _ = handle_pos_command(
+        State(state.clone()),
+        Json(PosRequestEnvelope {
+            version: ContractVersion::V1_0_0,
+            idempotency_key: Uuid::new_v4(),
+            store_id,
+            register_id,
+            payload: PosCommand::SetTendering(apex_edge_contracts::SetTenderingPayload {
+                cart_id: cart_state.cart_id,
+            }),
+        }),
+    )
+    .await;
+    let _ = handle_pos_command(
+        State(state.clone()),
+        Json(PosRequestEnvelope {
+            version: ContractVersion::V1_0_0,
+            idempotency_key: Uuid::new_v4(),
+            store_id,
+            register_id,
+            payload: PosCommand::AddPayment(apex_edge_contracts::AddPaymentPayload {
+                cart_id: cart_state.cart_id,
+                tender_id: Uuid::new_v4(),
+                amount_cents: 1_500,
+                external_reference: Some("cash".into()),
+            }),
+        }),
+    )
+    .await;
+
+    let finalized = handle_pos_command(
+        State(state.clone()),
+        Json(PosRequestEnvelope {
+            version: ContractVersion::V1_0_0,
+            idempotency_key: Uuid::new_v4(),
+            store_id,
+            register_id,
+            payload: PosCommand::FinalizeOrder(apex_edge_contracts::FinalizeOrderPayload {
+                cart_id: cart_state.cart_id,
+            }),
+        }),
+    )
+    .await;
+    assert!(finalized.0.success, "errors: {:?}", finalized.0.errors);
+    let finalize_payload: apex_edge_contracts::FinalizeResult =
+        serde_json::from_value(finalized.0.payload.unwrap()).expect("finalize payload");
+
+    let fetched = get_order_handler(
+        State(state.clone()),
+        axum::extract::Path(finalize_payload.order_id),
+    )
+    .await
+    .expect("get order");
+    assert_eq!(fetched.0.order_id, finalize_payload.order_id);
+    assert_eq!(fetched.0.shift_id, Some(shift_id));
+    assert_eq!(fetched.0.lines.len(), 1);
+    assert_eq!(fetched.0.payments[0].tender_type, "cash");
+
+    let listed = list_orders_handler(
+        State(state),
+        Query(OrderListQuery {
+            shift_id: Some(shift_id),
+        }),
+    )
+    .await
+    .expect("list orders");
+    assert_eq!(listed.0.len(), 1);
+    assert_eq!(listed.0[0].order_id, finalize_payload.order_id);
 }
 
 /// When a gift_receipt template is synced, create_gift_receipt_document must produce a document

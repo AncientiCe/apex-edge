@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 //! Northbound API: POS <-> ApexEdge (HTTP).
 
 pub mod approvals;
@@ -10,6 +12,7 @@ pub mod documents;
 pub mod health;
 pub mod metrics_handler;
 pub mod openapi;
+pub mod orders;
 pub mod pos;
 pub mod pos_handler;
 pub mod returns_handler;
@@ -28,6 +31,7 @@ pub use documents::*;
 pub use health::*;
 pub use metrics_handler::serve_metrics;
 pub use openapi::*;
+pub use orders::*;
 pub use pos::{get_cart_state_handler, handle_pos_command, AppState};
 pub use role::*;
 pub use stream::{pos_stream_sse, pos_stream_ws, stream_broadcast, StreamHub, StreamKind};

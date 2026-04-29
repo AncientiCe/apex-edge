@@ -14,11 +14,13 @@ const MIGRATION_012: &str = include_str!("../migrations/012_audit_chain.sql");
 const MIGRATION_013: &str = include_str!("../migrations/013_approvals.sql");
 const MIGRATION_010: &str = include_str!("../migrations/010_returns.sql");
 const MIGRATION_011: &str = include_str!("../migrations/011_shifts.sql");
+const MIGRATION_014: &str = include_str!("../migrations/014_order_ledger.sql");
 
 const DOWN_010: &str = include_str!("../migrations/010_returns.down.sql");
 const DOWN_011: &str = include_str!("../migrations/011_shifts.down.sql");
 const DOWN_012: &str = include_str!("../migrations/012_audit_chain.down.sql");
 const DOWN_013: &str = include_str!("../migrations/013_approvals.down.sql");
+const DOWN_014: &str = include_str!("../migrations/014_order_ledger.down.sql");
 
 fn strip_sql_comment_lines(sql: &str) -> String {
     sql.lines()
@@ -150,7 +152,13 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), MigrationError> {
             }
         }
     }
-    for sql in &[MIGRATION_010, MIGRATION_011, MIGRATION_012, MIGRATION_013] {
+    for sql in &[
+        MIGRATION_010,
+        MIGRATION_011,
+        MIGRATION_012,
+        MIGRATION_013,
+        MIGRATION_014,
+    ] {
         let sql_no_comments = strip_sql_comment_lines(sql);
         for stmt in sql_no_comments.split(';').filter(|s| !s.trim().is_empty()) {
             let stmt = stmt.trim();
@@ -163,10 +171,10 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), MigrationError> {
     Ok(())
 }
 
-/// Roll back the v0.6.0 additive migrations (010, 011, 012, 013) in reverse order.
+/// Roll back the additive feature migrations (010, 011, 012, 013, 014) in reverse order.
 ///
-/// This is intended for operators who need to downgrade from v0.6.0 → v0.5.x, and for
-/// the `migration_rollback_matrix` integration test that verifies every v0.6.0
+/// This is intended for operators who need to downgrade after an incident, and for
+/// the `migration_rollback_matrix` integration test that verifies every additive
 /// migration can cleanly round-trip: `up → down → up` without leaking data or
 /// leaving the schema in an inconsistent state.
 ///
@@ -174,7 +182,7 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), MigrationError> {
 /// retained (harmless defaults). The `run_migrations` function's additive column
 /// check is idempotent when those columns already exist.
 pub async fn run_down_v0_6_0(pool: &SqlitePool) -> Result<(), MigrationError> {
-    for sql in &[DOWN_013, DOWN_012, DOWN_011, DOWN_010] {
+    for sql in &[DOWN_014, DOWN_013, DOWN_012, DOWN_011, DOWN_010] {
         let sql_no_comments = strip_sql_comment_lines(sql);
         for stmt in sql_no_comments.split(';').filter(|s| !s.trim().is_empty()) {
             let stmt = stmt.trim();

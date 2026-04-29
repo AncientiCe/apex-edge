@@ -101,6 +101,77 @@ async fn storage_roundtrip_for_core_tables() {
 }
 
 #[tokio::test]
+async fn order_ledger_roundtrips_lines_payments_and_shift_cash_totals() {
+    let pool = test_pool().await;
+    let store_id = Uuid::new_v4();
+    let register_id = Uuid::new_v4();
+    let shift_id = Uuid::new_v4();
+    let order_id = Uuid::new_v4();
+    let cart_id = Uuid::new_v4();
+    let item_id = Uuid::new_v4();
+    let line_id = Uuid::new_v4();
+    let tender_id = Uuid::new_v4();
+    let submission_id = Uuid::new_v4();
+
+    insert_order_ledger_entry(
+        &pool,
+        &NewOrderLedgerEntry {
+            order_id,
+            cart_id,
+            store_id,
+            register_id,
+            shift_id: Some(shift_id),
+            subtotal_cents: 1_200,
+            discount_cents: 100,
+            tax_cents: 50,
+            total_cents: 1_150,
+            submission_id: Some(submission_id),
+            lines: vec![NewOrderLineEntry {
+                line_id,
+                item_id,
+                sku: "SKU-LEDGER".into(),
+                name: "Ledger Item".into(),
+                quantity: 2,
+                unit_price_cents: 600,
+                line_total_cents: 1_200,
+                discount_cents: 100,
+                tax_cents: 50,
+            }],
+            payments: vec![NewOrderPaymentEntry {
+                tender_id,
+                tender_type: "cash".into(),
+                amount_cents: 1_150,
+                external_reference: Some("cash".into()),
+            }],
+        },
+    )
+    .await
+    .expect("insert order ledger entry");
+
+    let order = fetch_order_ledger_entry(&pool, order_id)
+        .await
+        .expect("fetch order")
+        .expect("order exists");
+    assert_eq!(order.order_id, order_id);
+    assert_eq!(order.shift_id, Some(shift_id));
+    assert_eq!(order.lines.len(), 1);
+    assert_eq!(order.lines[0].line_id, line_id);
+    assert_eq!(order.payments.len(), 1);
+    assert_eq!(order.payments[0].tender_type, "cash");
+
+    let by_shift = list_order_ledger_entries(&pool, store_id, Some(shift_id))
+        .await
+        .expect("list by shift");
+    assert_eq!(by_shift.len(), 1);
+    assert_eq!(by_shift[0].order_id, order_id);
+
+    let cash_sales = cash_sales_cents_for_shift(&pool, shift_id)
+        .await
+        .expect("cash sales for shift");
+    assert_eq!(cash_sales, 1_150);
+}
+
+#[tokio::test]
 async fn seed_demo_data_populates_enough_catalog_and_customers() {
     let pool = test_pool().await;
     let store_id = Uuid::from_u128(1);

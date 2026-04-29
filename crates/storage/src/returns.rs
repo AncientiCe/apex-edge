@@ -242,6 +242,21 @@ pub async fn list_refunds(pool: &SqlitePool, return_id: Uuid) -> Result<Vec<Refu
     Ok(out)
 }
 
+pub async fn cash_refunds_cents_for_shift(
+    pool: &SqlitePool,
+    shift_id: Uuid,
+) -> Result<u64, PoolError> {
+    let total: Option<i64> = sqlx::query_scalar(
+        "SELECT SUM(f.amount_cents) FROM refunds f \
+         JOIN returns r ON r.id = f.return_id \
+         WHERE r.shift_id = ? AND r.state = 'finalized' AND lower(f.tender_type) = 'cash'",
+    )
+    .bind(shift_id.to_string())
+    .fetch_one(pool)
+    .await?;
+    Ok(total.unwrap_or(0).max(0) as u64)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

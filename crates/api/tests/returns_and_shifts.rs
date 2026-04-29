@@ -10,8 +10,10 @@ use apex_edge_contracts::{
     RefundTenderPayload, ReturnLineItemPayload, StartReturnPayload, VoidReturnPayload,
 };
 use apex_edge_storage::{
-    create_sqlite_pool, grant_approval, request_approval, run_migrations, set_audit_key,
-    ApprovalState, AuditKey,
+    create_sqlite_pool, finalize_return_row, grant_approval, insert_order_ledger_entry,
+    insert_refund, insert_return, request_approval, run_migrations, set_audit_key,
+    update_return_totals, ApprovalState, AuditKey, NewOrderLedgerEntry, NewOrderLineEntry,
+    NewOrderPaymentEntry, NewReturn, RefundRow,
 };
 use sqlx::Row;
 use std::collections::BTreeMap;
@@ -504,6 +506,162 @@ async fn close_till_with_matching_count_succeeds_and_generates_outbox() {
         .await
         .unwrap();
     assert!(outbox >= 1);
+}
+
+#[tokio::test]
+async fn x_report_and_close_till_include_ledger_cash_sales_and_refunds() {
+    let state = setup().await;
+    let store = Uuid::new_v4();
+    let register = Uuid::new_v4();
+
+    let opened = execute_pos_command(
+        &state,
+        env(
+            store,
+            register,
+            PosCommand::OpenTill(OpenTillPayload {
+                register_id: Some(register),
+                associate_id: None,
+                opening_float_cents: 5_000,
+            }),
+        ),
+    )
+    .await;
+    let shift_id: Uuid =
+        serde_json::from_value(opened.payload.unwrap().get("shift_id").cloned().unwrap()).unwrap();
+
+    insert_order_ledger_entry(
+        &state.pool,
+        &NewOrderLedgerEntry {
+            order_id: Uuid::new_v4(),
+            cart_id: Uuid::new_v4(),
+            store_id: store,
+            register_id: register,
+            shift_id: Some(shift_id),
+            subtotal_cents: 1_500,
+            discount_cents: 0,
+            tax_cents: 0,
+            total_cents: 1_500,
+            submission_id: Some(Uuid::new_v4()),
+            lines: vec![NewOrderLineEntry {
+                line_id: Uuid::new_v4(),
+                item_id: Uuid::new_v4(),
+                sku: "SHIFT-CASH".into(),
+                name: "Shift Cash Item".into(),
+                quantity: 1,
+                unit_price_cents: 1_500,
+                line_total_cents: 1_500,
+                discount_cents: 0,
+                tax_cents: 0,
+            }],
+            payments: vec![NewOrderPaymentEntry {
+                tender_id: Uuid::new_v4(),
+                tender_type: "cash".into(),
+                amount_cents: 1_500,
+                external_reference: Some("cash".into()),
+            }],
+        },
+    )
+    .await
+    .expect("insert cash sale");
+
+    let return_id = Uuid::new_v4();
+    insert_return(
+        &state.pool,
+        &NewReturn {
+            id: return_id,
+            store_id: store,
+            register_id: register,
+            shift_id: Some(shift_id),
+            original_order_id: None,
+            reason_code: Some("cash_refund".into()),
+            approval_id: None,
+        },
+    )
+    .await
+    .expect("insert return");
+    insert_refund(
+        &state.pool,
+        &RefundRow {
+            id: Uuid::new_v4(),
+            return_id,
+            tender_type: "cash".into(),
+            amount_cents: 400,
+            external_reference: None,
+        },
+    )
+    .await
+    .expect("insert refund");
+    update_return_totals(&state.pool, return_id, 400, 0, 400, "paid")
+        .await
+        .expect("update return totals");
+    finalize_return_row(&state.pool, return_id)
+        .await
+        .expect("finalize return row");
+
+    execute_pos_command(
+        &state,
+        env(
+            store,
+            register,
+            PosCommand::PaidIn(PaidInPayload {
+                shift_id,
+                amount_cents: 1_000,
+                reason: "float top-up".into(),
+                approval_id: None,
+            }),
+        ),
+    )
+    .await;
+    execute_pos_command(
+        &state,
+        env(
+            store,
+            register,
+            PosCommand::PaidOut(PaidOutPayload {
+                shift_id,
+                amount_cents: 250,
+                reason: "petty cash".into(),
+                approval_id: None,
+            }),
+        ),
+    )
+    .await;
+
+    let x_report = execute_pos_command(
+        &state,
+        env(
+            store,
+            register,
+            PosCommand::GetXReport(apex_edge_contracts::GetXReportPayload { shift_id }),
+        ),
+    )
+    .await;
+    assert!(x_report.success);
+    let payload = x_report.payload.as_ref().unwrap();
+    assert_eq!(payload["cash_sales_cents"], 1_500);
+    assert_eq!(payload["cash_refunds_cents"], 400);
+    assert_eq!(payload["expected_cents"], 6_850);
+
+    let closed = execute_pos_command(
+        &state,
+        env(
+            store,
+            register,
+            PosCommand::CloseTill(CloseTillPayload {
+                shift_id,
+                counted_cents: 6_850,
+                approval_id: None,
+            }),
+        ),
+    )
+    .await;
+    assert!(closed.success, "close failed: {:?}", closed.errors);
+    let payload = closed.payload.as_ref().unwrap();
+    assert_eq!(payload["expected_cents"], 6_850);
+    assert_eq!(payload["cash_sales_cents"], 1_500);
+    assert_eq!(payload["cash_refunds_cents"], 400);
+    assert_eq!(payload["variance_cents"], 0);
 }
 
 #[tokio::test]

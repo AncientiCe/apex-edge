@@ -3,11 +3,11 @@
 use apex_edge_api::{
     auth_middleware, create_approval, create_gift_receipt_document, create_pairing_code,
     deny_approval_handler, exchange_session, get_approval_handler, get_cart_state_handler,
-    get_document, get_prices, get_product_by_id, grant_approval_handler, handle_pos_command,
-    health, list_categories, list_order_documents, openapi_handler, openapi_ui_handler,
-    pair_device, pos_stream_sse, pos_stream_ws, ready, refresh_session, revoke_session,
-    role::standby_guard_middleware, search_customers, search_products, serve_metrics, sync_status,
-    verify_audit_chain, AppState, AuthSettings,
+    get_document, get_order_handler, get_prices, get_product_by_id, grant_approval_handler,
+    handle_pos_command, health, list_categories, list_order_documents, list_orders_handler,
+    openapi_handler, openapi_ui_handler, pair_device, pos_stream_sse, pos_stream_ws, ready,
+    refresh_session, revoke_session, role::standby_guard_middleware, search_customers,
+    search_products, serve_metrics, sync_status, verify_audit_chain, AppState, AuthSettings,
 };
 use axum::middleware;
 use axum::routing::post;
@@ -91,6 +91,8 @@ pub fn build_router(
         .route("/catalog/categories", get(list_categories))
         .route("/customers", get(search_customers))
         .route("/documents/:id", get(get_document))
+        .route("/orders", get(list_orders_handler))
+        .route("/orders/:id", get(get_order_handler))
         .route("/orders/:order_id/documents", get(list_order_documents))
         .route(
             "/orders/:order_id/documents/gift-receipt",

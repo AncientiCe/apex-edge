@@ -222,6 +222,9 @@ Metrics are Prometheus-style (counters, histograms, gauges) with an `apex_edge_`
 | `apex_edge_catalog_product_image_selection_total` | counter | `source` | Source selected for product image URLs |
 | `apex_edge_document_render_total` | counter | `document_type`, `outcome` | Document render attempts |
 | `apex_edge_document_render_duration_seconds` | histogram | `document_type` | Document render duration |
+| `apex_edge_orders_finalized_total` | counter | `outcome` | Durable order ledger writes by outcome |
+| `apex_edge_orders_lookup_total` | counter | `operation`, `outcome` | Order ledger get/list requests by outcome |
+| `apex_edge_orders_ledger_write_duration_seconds` | histogram | — | Durable order ledger write duration |
 | `apex_edge_dependency_http_requests_total` | counter | `status_class`, `outcome` | Outbound HTTP requests to dependencies |
 | `apex_edge_dependency_http_duration_seconds` | histogram | — | Outbound dependency HTTP call duration |
 | `apex_edge_auth_requests_total` | counter | `operation`, `outcome` | Auth route requests by operation/outcome |

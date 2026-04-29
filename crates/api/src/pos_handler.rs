@@ -11,8 +11,10 @@ use apex_edge_domain::{
 };
 use apex_edge_printing::generate_document;
 use apex_edge_storage::{
-    get_catalog_item, get_coupon_definition_by_code, get_customer, get_print_template,
-    insert_outbox, list_price_book_entries, list_promotions, list_tax_rules, load_cart, save_cart,
+    fetch_open_shift, get_catalog_item, get_coupon_definition_by_code, get_customer,
+    get_print_template, insert_order_ledger_entry, insert_outbox, list_price_book_entries,
+    list_promotions, list_tax_rules, load_cart, save_cart, NewOrderLedgerEntry, NewOrderLineEntry,
+    NewOrderPaymentEntry,
 };
 use sqlx::SqlitePool;
 use std::sync::OnceLock;
@@ -95,6 +97,14 @@ pub async fn build_cart_state(pool: &SqlitePool, store_id: Uuid, cart: &Cart) ->
 
 fn finalize_result_to_payload(result: &FinalizeResult) -> serde_json::Value {
     serde_json::to_value(result).unwrap_or(serde_json::Value::Null)
+}
+
+fn payment_tender_type(external_reference: &Option<String>) -> String {
+    match external_reference.as_deref().map(str::trim) {
+        Some(reference) if reference.eq_ignore_ascii_case("cash") => "cash".into(),
+        Some(reference) if !reference.is_empty() => "external".into(),
+        _ => "unknown".into(),
+    }
 }
 
 pub async fn load_cart_from_db(
@@ -1429,6 +1439,78 @@ pub async fn execute_pos_command(
                 hq_payload.clone(),
             );
             let envelope_json = serde_json::to_string(&envelope_hq).unwrap_or_default();
+            let shift_id = fetch_open_shift(pool, store_id, register_id)
+                .await
+                .ok()
+                .flatten()
+                .map(|shift| shift.id);
+            let ledger_entry = NewOrderLedgerEntry {
+                order_id,
+                cart_id: cart.id,
+                store_id,
+                register_id,
+                shift_id,
+                subtotal_cents: order.subtotal_cents,
+                discount_cents: order.discount_cents,
+                tax_cents: order.tax_cents,
+                total_cents: order.total_cents,
+                submission_id: Some(submission_id),
+                lines: order
+                    .lines
+                    .iter()
+                    .map(|line| NewOrderLineEntry {
+                        line_id: line.line_id,
+                        item_id: line.item_id,
+                        sku: line.sku.clone(),
+                        name: line.name.clone(),
+                        quantity: line.quantity,
+                        unit_price_cents: line.unit_price_cents,
+                        line_total_cents: line.line_total_cents,
+                        discount_cents: line.discount_cents,
+                        tax_cents: line.tax_cents,
+                    })
+                    .collect(),
+                payments: order
+                    .payments
+                    .iter()
+                    .map(
+                        |(tender_id, amount_cents, external_reference)| NewOrderPaymentEntry {
+                            tender_id: *tender_id,
+                            tender_type: payment_tender_type(external_reference),
+                            amount_cents: *amount_cents,
+                            external_reference: external_reference.clone(),
+                        },
+                    )
+                    .collect(),
+            };
+            let ledger_started_at = Instant::now();
+            if let Err(e) = insert_order_ledger_entry(pool, &ledger_entry).await {
+                metrics::counter!(
+                    apex_edge_metrics::ORDERS_FINALIZED_TOTAL,
+                    1u64,
+                    "outcome" => apex_edge_metrics::OUTCOME_ERROR
+                );
+                return PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors: vec![PosError {
+                        code: "ORDER_LEDGER_FAILED".into(),
+                        message: e.to_string(),
+                        field: None,
+                    }],
+                };
+            }
+            metrics::counter!(
+                apex_edge_metrics::ORDERS_FINALIZED_TOTAL,
+                1u64,
+                "outcome" => apex_edge_metrics::OUTCOME_SUCCESS
+            );
+            metrics::histogram!(
+                apex_edge_metrics::ORDERS_LEDGER_WRITE_DURATION_SECONDS,
+                ledger_started_at.elapsed().as_secs_f64()
+            );
             if let Err(e) = insert_outbox(pool, submission_id, &envelope_json).await {
                 return PosResponseEnvelope {
                     version: ContractVersion::V1_0_0,
