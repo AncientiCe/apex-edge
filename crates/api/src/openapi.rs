@@ -46,6 +46,10 @@ fn spec() -> serde_json::Value {
             "/auth/sessions/exchange": { "post": { "summary": "Exchange device credentials for session", "responses": { "200": { "description": "Session tokens" }, "401": { "description": "Unauthorized" } } } },
             "/auth/sessions/refresh": { "post": { "summary": "Refresh session token", "responses": { "200": { "description": "Session tokens" }, "401": { "description": "Unauthorized" } } } },
             "/auth/sessions/revoke": { "post": { "summary": "Revoke session", "responses": { "204": { "description": "Revoked" } } } },
+            "/admin/api-tokens": { "post": { "summary": "Create scoped third-party API token", "responses": { "200": { "description": "CreateApiTokenResponse" } } } },
+            "/admin/customers/{id}/export": { "get": { "summary": "Export customer data for privacy requests", "responses": { "200": { "description": "Customer data export" }, "404": { "description": "Not found" } } } },
+            "/admin/customers/{id}/erase": { "post": { "summary": "Pseudonymize customer data for privacy requests", "responses": { "200": { "description": "Customer erased" }, "404": { "description": "Not found" } } } },
+            "/webhooks/{connector_id}": { "post": { "summary": "Receive connector webhook", "parameters": [ { "name": "connector_id", "in": "path", "required": true, "schema": { "type": "string" } } ], "responses": { "200": { "description": "Webhook accepted" } } } },
             "/approvals": { "post": { "summary": "Request supervisor approval", "responses": { "202": { "description": "Pending approval created" } } } },
             "/approvals/{id}": { "get": { "summary": "Poll approval state", "responses": { "200": { "description": "ApprovalResponse" }, "404": { "description": "Not found" } } } },
             "/approvals/{id}/grant": { "post": { "summary": "Grant supervisor approval", "responses": { "200": { "description": "ApprovalResponse" } } } },
@@ -118,6 +122,10 @@ mod tests {
         assert!(v["paths"]["/auth/pairing-codes"]["post"].is_object());
         assert!(v["paths"]["/orders"]["get"].is_object());
         assert!(v["paths"]["/orders/{id}"]["get"].is_object());
+        assert!(v["paths"]["/admin/api-tokens"]["post"].is_object());
+        assert!(v["paths"]["/admin/customers/{id}/export"]["get"].is_object());
+        assert!(v["paths"]["/admin/customers/{id}/erase"]["post"].is_object());
+        assert!(v["paths"]["/webhooks/{connector_id}"]["post"].is_object());
         assert!(v["paths"]["/docs"]["get"].is_object());
     }
 }

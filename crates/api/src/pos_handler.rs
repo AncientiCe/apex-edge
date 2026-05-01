@@ -1,8 +1,8 @@
 //! POS command execution: load/save cart, run pricing pipeline, return payloads.
 
 use apex_edge_contracts::{
-    build_submission_envelope, AppliedPromoInfo, CartState, CartStateKind, ContractVersion,
-    FinalizeResult, ManualDiscountInfo, ManualDiscountKind, PosCommand, PosError,
+    build_submission_envelope, AddPaymentInput, AppliedPromoInfo, CartState, CartStateKind,
+    ContractVersion, FinalizeResult, ManualDiscountInfo, ManualDiscountKind, PosCommand, PosError,
     PosRequestEnvelope, PosResponseEnvelope, Promotion, PromotionType, TaxRule,
 };
 use apex_edge_domain::{
@@ -12,9 +12,10 @@ use apex_edge_domain::{
 use apex_edge_printing::generate_document;
 use apex_edge_storage::{
     fetch_open_shift, get_catalog_item, get_coupon_definition_by_code, get_customer,
-    get_print_template, insert_order_ledger_entry, insert_outbox, list_price_book_entries,
-    list_promotions, list_tax_rules, load_cart, save_cart, NewOrderLedgerEntry, NewOrderLineEntry,
-    NewOrderPaymentEntry,
+    get_print_template, insert_order_ledger_entry, insert_outbox, insert_stock_movement,
+    list_parked_carts, list_price_book_entries, list_promotions, list_tax_rules, load_cart,
+    park_cart, recall_parked_cart, save_cart, NewOrderLedgerEntry, NewOrderLineEntry,
+    NewOrderPaymentEntry, ParkCartInput, StockMovementInput,
 };
 use sqlx::SqlitePool;
 use std::sync::OnceLock;
@@ -1297,7 +1298,15 @@ pub async fn execute_pos_command(
             }
         }
         PosCommand::AddPayment(p) => {
+            let payment_started_at = Instant::now();
+            let payment_provider = p.provider.as_deref().unwrap_or("manual");
             let Some(mut cart) = load_cart_from_db(pool, p.cart_id).await.ok().flatten() else {
+                metrics::counter!(
+                    apex_edge_metrics::PAYMENT_ATTEMPTS_TOTAL,
+                    1u64,
+                    "provider" => payment_provider.to_string(),
+                    "outcome" => apex_edge_metrics::OUTCOME_ERROR
+                );
                 return PosResponseEnvelope {
                     version: ContractVersion::V1_0_0,
                     success: false,
@@ -1311,9 +1320,23 @@ pub async fn execute_pos_command(
                 };
             };
             if cart
-                .add_payment(p.tender_id, p.amount_cents, p.external_reference.clone())
+                .add_payment(AddPaymentInput {
+                    tender_id: p.tender_id,
+                    amount_cents: p.amount_cents,
+                    tip_amount_cents: p.tip_amount_cents,
+                    external_reference: p.external_reference.clone(),
+                    provider: p.provider.clone(),
+                    provider_payment_id: p.provider_payment_id.clone(),
+                    entry_method: p.entry_method,
+                })
                 .is_err()
             {
+                metrics::counter!(
+                    apex_edge_metrics::PAYMENT_ATTEMPTS_TOTAL,
+                    1u64,
+                    "provider" => payment_provider.to_string(),
+                    "outcome" => apex_edge_metrics::OUTCOME_ERROR
+                );
                 return PosResponseEnvelope {
                     version: ContractVersion::V1_0_0,
                     success: false,
@@ -1327,6 +1350,12 @@ pub async fn execute_pos_command(
                 };
             }
             if let Err(errors) = save_cart_to_db(pool, &cart).await {
+                metrics::counter!(
+                    apex_edge_metrics::PAYMENT_ATTEMPTS_TOTAL,
+                    1u64,
+                    "provider" => payment_provider.to_string(),
+                    "outcome" => apex_edge_metrics::OUTCOME_ERROR
+                );
                 return PosResponseEnvelope {
                     version: ContractVersion::V1_0_0,
                     success: false,
@@ -1335,6 +1364,17 @@ pub async fn execute_pos_command(
                     errors,
                 };
             }
+            metrics::counter!(
+                apex_edge_metrics::PAYMENT_ATTEMPTS_TOTAL,
+                1u64,
+                "provider" => payment_provider.to_string(),
+                "outcome" => apex_edge_metrics::OUTCOME_SUCCESS
+            );
+            metrics::histogram!(
+                apex_edge_metrics::PAYMENT_DURATION_SECONDS,
+                payment_started_at.elapsed().as_secs_f64(),
+                "provider" => payment_provider.to_string()
+            );
             let state = build_cart_state(pool, store_id, &cart).await;
             PosResponseEnvelope {
                 version: ContractVersion::V1_0_0,
@@ -1393,6 +1433,268 @@ pub async fn execute_pos_command(
                 idempotency_key,
                 payload: Some(cart_state_to_payload(&state)),
                 errors: vec![],
+            }
+        }
+        PosCommand::ParkCart(p) => {
+            let Some(cart) = load_cart_from_db(pool, p.cart_id).await.ok().flatten() else {
+                return PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors: vec![PosError {
+                        code: "CART_NOT_FOUND".into(),
+                        message: "Cart not found".into(),
+                        field: None,
+                    }],
+                };
+            };
+            let data = match serde_json::to_value(&cart) {
+                Ok(data) => data,
+                Err(e) => {
+                    return PosResponseEnvelope {
+                        version: ContractVersion::V1_0_0,
+                        success: false,
+                        idempotency_key,
+                        payload: None,
+                        errors: vec![PosError {
+                            code: "CART_SERIALIZE".into(),
+                            message: e.to_string(),
+                            field: None,
+                        }],
+                    };
+                }
+            };
+            let summary = match park_cart(
+                pool,
+                ParkCartInput {
+                    cart_id: cart.id,
+                    store_id,
+                    register_id,
+                    note: p.note.as_deref(),
+                    cart_data: &data,
+                    total_cents: cart.total_cents(),
+                    line_count: cart.lines.len(),
+                },
+            )
+            .await
+            {
+                Ok(summary) => summary,
+                Err(e) => {
+                    return PosResponseEnvelope {
+                        version: ContractVersion::V1_0_0,
+                        success: false,
+                        idempotency_key,
+                        payload: None,
+                        errors: vec![PosError {
+                            code: "PARK_CART_FAILED".into(),
+                            message: e.to_string(),
+                            field: None,
+                        }],
+                    };
+                }
+            };
+            PosResponseEnvelope {
+                version: ContractVersion::V1_0_0,
+                success: true,
+                idempotency_key,
+                payload: Some(serde_json::to_value(summary).unwrap_or(serde_json::Value::Null)),
+                errors: vec![],
+            }
+        }
+        PosCommand::RecallCart(p) => {
+            let Some(data) = recall_parked_cart(pool, p.parked_cart_id)
+                .await
+                .ok()
+                .flatten()
+            else {
+                return PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors: vec![PosError {
+                        code: "PARKED_CART_NOT_FOUND".into(),
+                        message: "Parked cart not found".into(),
+                        field: None,
+                    }],
+                };
+            };
+            let cart: Cart = match serde_json::from_value(data) {
+                Ok(cart) => cart,
+                Err(e) => {
+                    return PosResponseEnvelope {
+                        version: ContractVersion::V1_0_0,
+                        success: false,
+                        idempotency_key,
+                        payload: None,
+                        errors: vec![PosError {
+                            code: "CART_DESERIALIZE".into(),
+                            message: e.to_string(),
+                            field: None,
+                        }],
+                    };
+                }
+            };
+            if let Err(errors) = save_cart_to_db(pool, &cart).await {
+                return PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors,
+                };
+            }
+            let state = build_cart_state(pool, store_id, &cart).await;
+            PosResponseEnvelope {
+                version: ContractVersion::V1_0_0,
+                success: true,
+                idempotency_key,
+                payload: Some(cart_state_to_payload(&state)),
+                errors: vec![],
+            }
+        }
+        PosCommand::ListParkedCarts(p) => match list_parked_carts(pool, store_id, p.register_id)
+            .await
+        {
+            Ok(summaries) => PosResponseEnvelope {
+                version: ContractVersion::V1_0_0,
+                success: true,
+                idempotency_key,
+                payload: Some(serde_json::to_value(summaries).unwrap_or(serde_json::Value::Null)),
+                errors: vec![],
+            },
+            Err(e) => PosResponseEnvelope {
+                version: ContractVersion::V1_0_0,
+                success: false,
+                idempotency_key,
+                payload: None,
+                errors: vec![PosError {
+                    code: "LIST_PARKED_CARTS_FAILED".into(),
+                    message: e.to_string(),
+                    field: None,
+                }],
+            },
+        },
+        PosCommand::ClockIn(p) => {
+            match apex_edge_storage::clock_in(pool, store_id, register_id, p.associate_id.trim())
+                .await
+            {
+                Ok(entry) => PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: true,
+                    idempotency_key,
+                    payload: Some(serde_json::to_value(entry).unwrap_or(serde_json::Value::Null)),
+                    errors: vec![],
+                },
+                Err(e) => PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors: vec![PosError {
+                        code: "CLOCK_IN_FAILED".into(),
+                        message: e.to_string(),
+                        field: None,
+                    }],
+                },
+            }
+        }
+        PosCommand::ClockOut(p) => {
+            match apex_edge_storage::clock_out(pool, store_id, p.associate_id.trim()).await {
+                Ok(Some(entry)) => PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: true,
+                    idempotency_key,
+                    payload: Some(serde_json::to_value(entry).unwrap_or(serde_json::Value::Null)),
+                    errors: vec![],
+                },
+                Ok(None) => PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors: vec![PosError {
+                        code: "CLOCK_ENTRY_NOT_FOUND".into(),
+                        message: "No open time clock entry found".into(),
+                        field: Some("associate_id".into()),
+                    }],
+                },
+                Err(e) => PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors: vec![PosError {
+                        code: "CLOCK_OUT_FAILED".into(),
+                        message: e.to_string(),
+                        field: None,
+                    }],
+                },
+            }
+        }
+        PosCommand::ReceiveStock(p) | PosCommand::TransferStock(p) | PosCommand::AdjustStock(p) => {
+            let operation = match &envelope.payload {
+                PosCommand::ReceiveStock(_) => "receive_stock",
+                PosCommand::TransferStock(_) => "transfer_stock",
+                PosCommand::AdjustStock(_) => "adjust_stock",
+                _ => "stock_operation",
+            };
+            if p.quantity_delta == 0 || p.reason.trim().is_empty() {
+                return PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors: vec![PosError {
+                        code: "INVALID_STOCK_MOVEMENT".into(),
+                        message: "Stock movement requires a non-zero quantity and reason".into(),
+                        field: None,
+                    }],
+                };
+            }
+            match insert_stock_movement(
+                pool,
+                StockMovementInput {
+                    store_id,
+                    register_id,
+                    item_id: p.item_id,
+                    operation,
+                    quantity_delta: p.quantity_delta,
+                    reason: p.reason.trim(),
+                    reference: p.reference.as_deref(),
+                },
+            )
+            .await
+            {
+                Ok(movement) => {
+                    let payload = serde_json::to_string(&serde_json::json!({
+                        "event_type": "stock.movement",
+                        "movement": movement,
+                    }))
+                    .unwrap_or_default();
+                    let _ = insert_outbox(pool, movement.id, &payload).await;
+                    PosResponseEnvelope {
+                        version: ContractVersion::V1_0_0,
+                        success: true,
+                        idempotency_key,
+                        payload: Some(
+                            serde_json::to_value(movement).unwrap_or(serde_json::Value::Null),
+                        ),
+                        errors: vec![],
+                    }
+                }
+                Err(e) => PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors: vec![PosError {
+                        code: "STOCK_MOVEMENT_FAILED".into(),
+                        message: e.to_string(),
+                        field: None,
+                    }],
+                },
             }
         }
         PosCommand::FinalizeOrder(p) => {
@@ -1473,14 +1775,16 @@ pub async fn execute_pos_command(
                 payments: order
                     .payments
                     .iter()
-                    .map(
-                        |(tender_id, amount_cents, external_reference)| NewOrderPaymentEntry {
-                            tender_id: *tender_id,
-                            tender_type: payment_tender_type(external_reference),
-                            amount_cents: *amount_cents,
-                            external_reference: external_reference.clone(),
-                        },
-                    )
+                    .map(|payment| NewOrderPaymentEntry {
+                        tender_id: payment.tender_id,
+                        tender_type: payment_tender_type(&payment.external_reference),
+                        amount_cents: payment.amount_cents,
+                        tip_amount_cents: payment.tip_amount_cents,
+                        external_reference: payment.external_reference.clone(),
+                        provider: payment.provider.clone(),
+                        provider_payment_id: payment.provider_payment_id.clone(),
+                        entry_method: payment.entry_method,
+                    })
                     .collect(),
             };
             let ledger_started_at = Instant::now();
@@ -1571,9 +1875,13 @@ pub async fn execute_pos_command(
                     "discount_cents": l.discount_cents,
                     "tax_cents": l.tax_cents,
                 })).collect::<Vec<_>>(),
-                "payments": order.payments.iter().map(|(tender_id, amount, _)| serde_json::json!({
-                    "tender_id": tender_id.to_string(),
-                    "amount_cents": amount
+                "payments": order.payments.iter().map(|payment| serde_json::json!({
+                    "tender_id": payment.tender_id.to_string(),
+                    "amount_cents": payment.amount_cents,
+                    "tip_amount_cents": payment.tip_amount_cents,
+                    "provider": payment.provider.clone(),
+                    "provider_payment_id": payment.provider_payment_id.clone(),
+                    "entry_method": payment.entry_method,
                 })).collect::<Vec<_>>(),
             });
             let receipt_payload_str = receipt_payload.to_string();

@@ -1,6 +1,6 @@
 use apex_edge_contracts::{
-    CartStateKind, CouponDefinition, PriceBookEntry, PromoAction, PromoCondition, Promotion,
-    PromotionType, TaxRule,
+    AddPaymentInput, CartStateKind, CouponDefinition, PriceBookEntry, PromoAction, PromoCondition,
+    Promotion, PromotionType, TaxRule,
 };
 use apex_edge_domain::{apply_promos_to_lines, AddLineItemInput, Cart, CartLineItem};
 use apex_edge_domain::{base_price_cents, check_eligibility, coupon_discount_cents, tax_for_line};
@@ -60,8 +60,16 @@ fn cart_payment_and_finalize_journey_works() {
     });
     cart.state = CartStateKind::Itemized;
     cart.set_tendering();
-    cart.add_payment(Uuid::new_v4(), 1100, None)
-        .expect("payment should succeed");
+    cart.add_payment(AddPaymentInput {
+        tender_id: Uuid::new_v4(),
+        amount_cents: 1100,
+        tip_amount_cents: 0,
+        external_reference: None,
+        provider: None,
+        provider_payment_id: None,
+        entry_method: None,
+    })
+    .expect("payment should succeed");
     assert_eq!(cart.state, CartStateKind::Paid);
     let order = cart.to_order(Uuid::new_v4()).expect("to_order should work");
     assert_eq!(order.total_cents, 1100);

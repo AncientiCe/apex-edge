@@ -71,6 +71,50 @@ dependencies = [
 ]
 
 [[package]]
+name = "apex-edge-adapters-cloud"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "hmac",
+ "sha2",
+ "thiserror 1.0.69",
+ "uuid",
+]
+
+[[package]]
+name = "apex-edge-adapters-fiscal"
+version = "0.1.0"
+dependencies = [
+ "thiserror 1.0.69",
+ "uuid",
+]
+
+[[package]]
+name = "apex-edge-adapters-hardware"
+version = "0.1.0"
+dependencies = [
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "apex-edge-adapters-payment"
+version = "0.1.0"
+dependencies = [
+ "apex-edge-contracts",
+ "thiserror 1.0.69",
+ "uuid",
+]
+
+[[package]]
+name = "apex-edge-adapters-tax"
+version = "0.1.0"
+dependencies = [
+ "apex-edge-contracts",
+ "thiserror 1.0.69",
+ "uuid",
+]
+
+[[package]]
 name = "apex-edge-api"
 version = "0.3.0"
 dependencies = [
@@ -102,6 +146,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "apex-edge-conformance"
+version = "0.1.0"
+dependencies = [
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "apex-edge-contracts"
 version = "0.3.0"
 dependencies = [
@@ -121,6 +175,22 @@ dependencies = [
  "chrono",
  "serde",
  "serde_json",
+ "thiserror 1.0.69",
+ "uuid",
+]
+
+[[package]]
+name = "apex-edge-giftcards"
+version = "0.1.0"
+dependencies = [
+ "thiserror 1.0.69",
+ "uuid",
+]
+
+[[package]]
+name = "apex-edge-loyalty"
+version = "0.1.0"
+dependencies = [
  "thiserror 1.0.69",
  "uuid",
 ]

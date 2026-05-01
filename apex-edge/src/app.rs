@@ -1,11 +1,12 @@
 //! Reusable app bootstrap for the binary and tests (build router, no bind).
 
 use apex_edge_api::{
-    auth_middleware, create_approval, create_gift_receipt_document, create_pairing_code,
-    deny_approval_handler, exchange_session, get_approval_handler, get_cart_state_handler,
-    get_document, get_order_handler, get_prices, get_product_by_id, grant_approval_handler,
-    handle_pos_command, health, list_categories, list_order_documents, list_orders_handler,
-    openapi_handler, openapi_ui_handler, pair_device, pos_stream_sse, pos_stream_ws, ready,
+    auth_middleware, create_api_token, create_approval, create_gift_receipt_document,
+    create_pairing_code, deny_approval_handler, erase_customer_data, exchange_session,
+    export_customer_data, get_approval_handler, get_cart_state_handler, get_document,
+    get_order_handler, get_prices, get_product_by_id, grant_approval_handler, handle_pos_command,
+    health, list_categories, list_order_documents, list_orders_handler, openapi_handler,
+    openapi_ui_handler, pair_device, pos_stream_sse, pos_stream_ws, ready, receive_webhook,
     refresh_session, revoke_session, role::standby_guard_middleware, search_customers,
     search_products, serve_metrics, sync_status, verify_audit_chain, AppState, AuthSettings,
 };
@@ -105,6 +106,10 @@ pub fn build_router(
         .route("/approvals/:id", get(get_approval_handler))
         .route("/approvals/:id/grant", post(grant_approval_handler))
         .route("/approvals/:id/deny", post(deny_approval_handler))
+        .route("/admin/api-tokens", post(create_api_token))
+        .route("/admin/customers/:id/export", get(export_customer_data))
+        .route("/admin/customers/:id/erase", post(erase_customer_data))
+        .route("/webhooks/:connector_id", post(receive_webhook))
         .route("/pos/stream", get(pos_stream_ws))
         .route("/pos/events", get(pos_stream_sse))
         .route("/openapi.json", get(openapi_handler))

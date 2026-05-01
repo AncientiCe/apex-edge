@@ -499,7 +499,11 @@ async fn full_order_flow_journey() {
             cart_id,
             tender_id,
             amount_cents: 1600,
+            tip_amount_cents: 0,
             external_reference: None,
+            provider: None,
+            provider_payment_id: None,
+            entry_method: None,
         }),
     };
     let payment_res = client

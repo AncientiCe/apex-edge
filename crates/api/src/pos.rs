@@ -41,6 +41,14 @@ fn pos_operation_label(cmd: &PosCommand) -> &'static str {
         PosCommand::CashCount(_) => "cash_count",
         PosCommand::GetXReport(_) => "get_x_report",
         PosCommand::CloseTill(_) => "close_till",
+        PosCommand::ParkCart(_) => "park_cart",
+        PosCommand::RecallCart(_) => "recall_cart",
+        PosCommand::ListParkedCarts(_) => "list_parked_carts",
+        PosCommand::ClockIn(_) => "clock_in",
+        PosCommand::ClockOut(_) => "clock_out",
+        PosCommand::ReceiveStock(_) => "receive_stock",
+        PosCommand::TransferStock(_) => "transfer_stock",
+        PosCommand::AdjustStock(_) => "adjust_stock",
     }
 }
 

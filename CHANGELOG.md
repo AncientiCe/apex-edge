@@ -9,6 +9,37 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Payment provider adapter crate with `PaymentProvider`, `CashPaymentProvider`, and hosted terminal reference implementations for Stripe Terminal and Adyen Terminal.
+- POS payment metadata fields for provider payment ids, entry method, and tip amounts, preserved through cart state, order ledger, receipts, and HQ submission payloads.
+- Payment observability metrics: `apex_edge_payment_attempts_total` and `apex_edge_payment_duration_seconds`.
+- Tax provider adapter crate with `TaxProvider`, internal stacked-tax/VAT quoting, and hosted Avalara/Stripe Tax reference implementations.
+- ISO-minor-unit currency rounding helpers for 0-, 2-, and 3-decimal currencies.
+- Tax observability metric names: `apex_edge_tax_quote_total` and `apex_edge_tax_quote_duration_seconds`.
+- Hardware adapter crate with receipt printer, cash drawer, barcode scanner, scale, and customer-display traits plus sidecar-friendly reference implementations.
+- Hardware observability metric names: `apex_edge_hardware_operations_total` and `apex_edge_hardware_operation_duration_seconds`.
+- Suspended sale POS commands (`park_cart`, `recall_cart`, `list_parked_carts`), time-clock commands (`clock_in`, `clock_out`), register-layout contracts, and store-operation metric names.
+- Local-first gift card state machine and loyalty provider trait with local earn/redeem implementation.
+- Gift card and loyalty metric names: `apex_edge_gift_card_operations_total` and `apex_edge_loyalty_operations_total`.
+- Cloud connector adapter crate with hosted connector references for Shopify, NetSuite, QuickBooks, Xero, and HMAC-signed generic webhooks.
+- Multi-destination outbox destination and delivery-attempt schema.
+- Third-party API token route (`POST /admin/api-tokens`), inbound connector webhook route (`POST /webhooks/:connector_id`), and OpenAPI coverage for both routes.
+- Stock operation POS commands (`receive_stock`, `transfer_stock`, `adjust_stock`) with durable stock movement ledger rows and outbound outbox events.
+- Fiscal provider adapter crate with NoOp default and DE-TSE reference implementation.
+- GDPR customer export and pseudonymising erase admin routes.
+- First-run `apex-edge init` mode and release packaging scaffold for MSI/deb/rpm/pkg work.
+- `tools/conformance` deployment probe for health, readiness, and OpenAPI checks.
+
+### Migrations
+
+- `015_payment_provider.sql` and `015_payment_provider.down.sql`.
+- `016_store_operations.sql` and `016_store_operations.down.sql`.
+- `017_gift_cards_loyalty.sql` and `017_gift_cards_loyalty.down.sql`.
+- `018_outbox_destinations.sql` and `018_outbox_destinations.down.sql`.
+- `019_api_tokens_webhooks.sql` and `019_api_tokens_webhooks.down.sql`.
+- `020_stock_movements.sql` and `020_stock_movements.down.sql`.
+
 ## [0.7.0] — 2026-04-29
 
 ### Added

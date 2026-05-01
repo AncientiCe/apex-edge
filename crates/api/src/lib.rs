@@ -2,6 +2,7 @@
 
 //! Northbound API: POS <-> ApexEdge (HTTP).
 
+pub mod admin_api;
 pub mod approvals;
 pub mod audit;
 pub mod auth;
@@ -21,6 +22,7 @@ pub mod shifts_handler;
 pub mod stream;
 pub mod sync_status;
 
+pub use admin_api::*;
 pub use approvals::*;
 pub use audit::*;
 pub use auth::*;

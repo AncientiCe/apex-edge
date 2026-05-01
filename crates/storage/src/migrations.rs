@@ -15,12 +15,24 @@ const MIGRATION_013: &str = include_str!("../migrations/013_approvals.sql");
 const MIGRATION_010: &str = include_str!("../migrations/010_returns.sql");
 const MIGRATION_011: &str = include_str!("../migrations/011_shifts.sql");
 const MIGRATION_014: &str = include_str!("../migrations/014_order_ledger.sql");
+const MIGRATION_015: &str = include_str!("../migrations/015_payment_provider.sql");
+const MIGRATION_016: &str = include_str!("../migrations/016_store_operations.sql");
+const MIGRATION_017: &str = include_str!("../migrations/017_gift_cards_loyalty.sql");
+const MIGRATION_018: &str = include_str!("../migrations/018_outbox_destinations.sql");
+const MIGRATION_019: &str = include_str!("../migrations/019_api_tokens_webhooks.sql");
+const MIGRATION_020: &str = include_str!("../migrations/020_stock_movements.sql");
 
 const DOWN_010: &str = include_str!("../migrations/010_returns.down.sql");
 const DOWN_011: &str = include_str!("../migrations/011_shifts.down.sql");
 const DOWN_012: &str = include_str!("../migrations/012_audit_chain.down.sql");
 const DOWN_013: &str = include_str!("../migrations/013_approvals.down.sql");
 const DOWN_014: &str = include_str!("../migrations/014_order_ledger.down.sql");
+const DOWN_015: &str = include_str!("../migrations/015_payment_provider.down.sql");
+const DOWN_016: &str = include_str!("../migrations/016_store_operations.down.sql");
+const DOWN_017: &str = include_str!("../migrations/017_gift_cards_loyalty.down.sql");
+const DOWN_018: &str = include_str!("../migrations/018_outbox_destinations.down.sql");
+const DOWN_019: &str = include_str!("../migrations/019_api_tokens_webhooks.down.sql");
+const DOWN_020: &str = include_str!("../migrations/020_stock_movements.down.sql");
 
 fn strip_sql_comment_lines(sql: &str) -> String {
     sql.lines()
@@ -168,6 +180,84 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), MigrationError> {
             sqlx::query(stmt).execute(pool).await?;
         }
     }
+    for (table, column, ddl) in &[
+        (
+            "order_payments",
+            "tip_amount_cents",
+            "ALTER TABLE order_payments ADD COLUMN tip_amount_cents INTEGER NOT NULL DEFAULT 0",
+        ),
+        (
+            "order_payments",
+            "provider",
+            "ALTER TABLE order_payments ADD COLUMN provider TEXT",
+        ),
+        (
+            "order_payments",
+            "provider_payment_id",
+            "ALTER TABLE order_payments ADD COLUMN provider_payment_id TEXT",
+        ),
+        (
+            "order_payments",
+            "entry_method",
+            "ALTER TABLE order_payments ADD COLUMN entry_method TEXT",
+        ),
+    ] {
+        if !column_exists(pool, table, column).await? {
+            if let Err(e) = sqlx::query(ddl).execute(pool).await {
+                if !e.to_string().contains("duplicate column name") {
+                    return Err(e.into());
+                }
+            }
+        }
+    }
+    let sql_no_comments = strip_sql_comment_lines(MIGRATION_015);
+    for stmt in sql_no_comments.split(';').filter(|s| !s.trim().is_empty()) {
+        let stmt = stmt.trim();
+        if stmt.is_empty() || stmt.starts_with("ALTER TABLE") {
+            continue;
+        }
+        sqlx::query(stmt).execute(pool).await?;
+    }
+    let sql_no_comments = strip_sql_comment_lines(MIGRATION_016);
+    for stmt in sql_no_comments.split(';').filter(|s| !s.trim().is_empty()) {
+        let stmt = stmt.trim();
+        if stmt.is_empty() {
+            continue;
+        }
+        sqlx::query(stmt).execute(pool).await?;
+    }
+    let sql_no_comments = strip_sql_comment_lines(MIGRATION_017);
+    for stmt in sql_no_comments.split(';').filter(|s| !s.trim().is_empty()) {
+        let stmt = stmt.trim();
+        if stmt.is_empty() {
+            continue;
+        }
+        sqlx::query(stmt).execute(pool).await?;
+    }
+    let sql_no_comments = strip_sql_comment_lines(MIGRATION_018);
+    for stmt in sql_no_comments.split(';').filter(|s| !s.trim().is_empty()) {
+        let stmt = stmt.trim();
+        if stmt.is_empty() {
+            continue;
+        }
+        sqlx::query(stmt).execute(pool).await?;
+    }
+    let sql_no_comments = strip_sql_comment_lines(MIGRATION_019);
+    for stmt in sql_no_comments.split(';').filter(|s| !s.trim().is_empty()) {
+        let stmt = stmt.trim();
+        if stmt.is_empty() {
+            continue;
+        }
+        sqlx::query(stmt).execute(pool).await?;
+    }
+    let sql_no_comments = strip_sql_comment_lines(MIGRATION_020);
+    for stmt in sql_no_comments.split(';').filter(|s| !s.trim().is_empty()) {
+        let stmt = stmt.trim();
+        if stmt.is_empty() {
+            continue;
+        }
+        sqlx::query(stmt).execute(pool).await?;
+    }
     Ok(())
 }
 
@@ -182,7 +272,10 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), MigrationError> {
 /// retained (harmless defaults). The `run_migrations` function's additive column
 /// check is idempotent when those columns already exist.
 pub async fn run_down_v0_6_0(pool: &SqlitePool) -> Result<(), MigrationError> {
-    for sql in &[DOWN_014, DOWN_013, DOWN_012, DOWN_011, DOWN_010] {
+    for sql in &[
+        DOWN_020, DOWN_019, DOWN_018, DOWN_017, DOWN_016, DOWN_015, DOWN_014, DOWN_013, DOWN_012,
+        DOWN_011, DOWN_010,
+    ] {
         let sql_no_comments = strip_sql_comment_lines(sql);
         for stmt in sql_no_comments.split(';').filter(|s| !s.trim().is_empty()) {
             let stmt = stmt.trim();

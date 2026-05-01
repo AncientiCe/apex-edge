@@ -1,0 +1,12 @@
+[package]
+name = "apex-edge-adapters-cloud"
+version = "0.1.0"
+edition = "2021"
+description = "Cloud connector adapter contracts and reference implementations for ApexEdge"
+
+[dependencies]
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
+thiserror = "1.0"
+uuid = { version = "1.0", features = ["v4", "serde"] }

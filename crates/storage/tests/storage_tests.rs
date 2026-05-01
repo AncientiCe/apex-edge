@@ -141,7 +141,11 @@ async fn order_ledger_roundtrips_lines_payments_and_shift_cash_totals() {
                 tender_id,
                 tender_type: "cash".into(),
                 amount_cents: 1_150,
+                tip_amount_cents: 150,
                 external_reference: Some("cash".into()),
+                provider: Some("stripe_terminal".into()),
+                provider_payment_id: Some("pi_ledger_test".into()),
+                entry_method: Some(apex_edge_contracts::PaymentEntryMethod::Contactless),
             }],
         },
     )
@@ -158,6 +162,19 @@ async fn order_ledger_roundtrips_lines_payments_and_shift_cash_totals() {
     assert_eq!(order.lines[0].line_id, line_id);
     assert_eq!(order.payments.len(), 1);
     assert_eq!(order.payments[0].tender_type, "cash");
+    assert_eq!(order.payments[0].tip_amount_cents, 150);
+    assert_eq!(
+        order.payments[0].provider.as_deref(),
+        Some("stripe_terminal")
+    );
+    assert_eq!(
+        order.payments[0].provider_payment_id.as_deref(),
+        Some("pi_ledger_test")
+    );
+    assert_eq!(
+        order.payments[0].entry_method,
+        Some(apex_edge_contracts::PaymentEntryMethod::Contactless)
+    );
 
     let by_shift = list_order_ledger_entries(&pool, store_id, Some(shift_id))
         .await
@@ -169,6 +186,52 @@ async fn order_ledger_roundtrips_lines_payments_and_shift_cash_totals() {
         .await
         .expect("cash sales for shift");
     assert_eq!(cash_sales, 1_150);
+}
+
+#[tokio::test]
+async fn parked_cart_and_time_clock_roundtrip() {
+    let pool = test_pool().await;
+    let store_id = Uuid::new_v4();
+    let register_id = Uuid::new_v4();
+    let cart_id = Uuid::new_v4();
+    let cart_data = serde_json::json!({
+        "id": cart_id,
+        "state": "itemized",
+        "lines": [{"sku": "SKU-1"}]
+    });
+
+    let parked = park_cart(
+        &pool,
+        ParkCartInput {
+            cart_id,
+            store_id,
+            register_id,
+            note: Some("customer will return"),
+            cart_data: &cart_data,
+            total_cents: 1_200,
+            line_count: 1,
+        },
+    )
+    .await
+    .expect("park cart");
+    assert_eq!(parked.total_cents, 1_200);
+
+    let recalled = recall_parked_cart(&pool, parked.parked_cart_id)
+        .await
+        .expect("recall cart")
+        .expect("parked cart exists");
+    assert_eq!(recalled["id"], cart_id.to_string());
+
+    let clocked_in = clock_in(&pool, store_id, register_id, "associate-1")
+        .await
+        .expect("clock in");
+    assert_eq!(clocked_in.associate_id, "associate-1");
+
+    let clocked_out = clock_out(&pool, store_id, "associate-1")
+        .await
+        .expect("clock out")
+        .expect("open entry exists");
+    assert!(clocked_out.clocked_out_at.is_some());
 }
 
 #[tokio::test]

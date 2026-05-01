@@ -31,3 +31,27 @@ pub struct TaxRule {
     pub inclusive: bool,
     pub version: u64,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TaxQuoteLine {
+    pub line_id: Uuid,
+    pub tax_category_id: Uuid,
+    pub taxable_amount_cents: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TaxBreakdown {
+    pub line_id: Uuid,
+    pub jurisdiction: String,
+    pub rate_bps: u32,
+    pub amount_cents: u64,
+    pub inclusive: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TaxQuote {
+    pub provider: String,
+    pub currency: String,
+    pub total_tax_cents: u64,
+    pub breakdown: Vec<TaxBreakdown>,
+}

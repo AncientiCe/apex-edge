@@ -89,6 +89,14 @@ Or pass a CLI flag:
 cargo run -p apex-edge -- --seed-demo
 ```
 
+For first-run provisioning on a counter PC or packaged install, run:
+
+```bash
+cargo run -p apex-edge -- init
+```
+
+This applies migrations, prepares audit signing state, and prints setup details for the operator.
+
 Seeded data is store-scoped to `store_id = 00000000-0000-0000-0000-000000000000` and includes (at minimum):
 - 8 categories
 - 180 products with prices and descriptions
@@ -164,6 +172,7 @@ A local-only POS simulator frontend (Vite + React + TypeScript in `frontend/`) l
 - **Unit / integration**: `cargo test --workspace --all-features` (or `make test`). Covers all crates plus the apex-edge binary tests.
 - **Smoke tests**: In-process server tests in `apex-edge/tests/smoke_http.rs` hit `/health`, `/ready`, and a minimal POS `create_cart` flow; they start the app on a random port and use an in-memory SQLite DB.
 - **Full order flow (journey)**: `apex-edge/tests/orchestrator_journey.rs` runs create cart → search/add product → search/add customer → add second product → assert 20% automatic promotion → receive payment → place order → generate document → assert document content and full HQ outbox payload. Run with `make test-journey` or as part of `make test`.
+- **Conformance probe**: `tools/conformance` validates deployed hub basics (`/health`, `/ready`, `/openapi.json`) and returns a JSON report. Set `APEX_EDGE_CONFORMANCE_URL` to target a non-local hub.
 - **Release smoke**: The `.github/workflows/smoke-release.yml` job builds the Docker image, runs the container, and asserts `/health`, `/ready`, and `POST /pos/command` (create_cart) with `curl`.
 
 ## Contracts
@@ -206,6 +215,20 @@ Metrics are Prometheus-style (counters, histograms, gauges) with an `apex_edge_`
 | `apex_edge_http_requests_in_flight` | gauge | `route` | In-flight requests by route |
 | `apex_edge_pos_commands_total` | counter | `operation`, `outcome` | POS commands (create_cart, add_line_item, finalize_order, etc.) by outcome |
 | `apex_edge_pos_command_duration_seconds` | histogram | `operation` | POS command handler duration |
+| `apex_edge_payment_attempts_total` | counter | `provider`, `outcome` | Payment attempts by provider (manual, cash, stripe_terminal, adyen_terminal, etc.) |
+| `apex_edge_payment_duration_seconds` | histogram | `provider` | Payment operation duration by provider |
+| `apex_edge_tax_quote_total` | counter | `provider`, `outcome` | Tax quote attempts by provider |
+| `apex_edge_tax_quote_duration_seconds` | histogram | `provider` | Tax quote duration by provider |
+| `apex_edge_hardware_operations_total` | counter | `device`, `operation`, `outcome` | Hardware operations for printer, drawer, scanner, scale, and customer display |
+| `apex_edge_hardware_operation_duration_seconds` | histogram | `device`, `operation` | Hardware operation duration |
+| `apex_edge_store_operations_total` | counter | `operation`, `outcome` | Suspended sale and time-clock operations |
+| `apex_edge_store_operation_duration_seconds` | histogram | `operation` | Suspended sale and time-clock operation duration |
+| `apex_edge_gift_card_operations_total` | counter | `operation`, `outcome` | Gift card issue, activate, reload, and redeem outcomes |
+| `apex_edge_loyalty_operations_total` | counter | `operation`, `outcome` | Loyalty earn and redeem outcomes |
+| `apex_edge_cloud_connector_deliveries_total` | counter | `connector`, `outcome` | Cloud connector delivery outcomes |
+| `apex_edge_cloud_connector_delivery_duration_seconds` | histogram | `connector` | Cloud connector delivery duration |
+| `apex_edge_stock_operations_total` | counter | `operation`, `outcome` | Stock receipt, transfer, count, and adjustment outcomes |
+| `apex_edge_fiscal_receipts_total` | counter | `provider`, `outcome` | Fiscal receipt signing outcomes |
 | `apex_edge_document_operations_total` | counter | `operation`, `outcome` | Document get/list by outcome (hit, not_found, error) |
 | `apex_edge_document_operation_duration_seconds` | histogram | `operation` | Document operation duration |
 | `apex_edge_outbox_dispatch_attempts_total` | counter | `outcome` | Outbox dispatch attempts (accepted, rejected, http_error, timeout) |
@@ -245,6 +268,13 @@ Metrics are Prometheus-style (counters, histograms, gauges) with an `apex_edge_`
 | `apex-edge-outbox` | Durable outbox dispatcher (retry, backoff, DLQ) |
 | `apex-edge-printing` | Document generation (render + persist for POS retrieval) |
 | `apex-edge-metrics` | Prometheus metric names, labels, and recorder bootstrap |
+| `apex-edge-adapters-payment` | Payment provider adapter trait and Cash/Stripe Terminal/Adyen Terminal reference implementations |
+| `apex-edge-adapters-tax` | Tax provider adapter trait and Internal/Avalara/Stripe Tax reference implementations |
+| `apex-edge-adapters-hardware` | Hardware adapter traits and ESC/POS, drawer, scanner, scale, and display reference implementations |
+| `apex-edge-adapters-cloud` | Cloud connector trait and hosted/signed-webhook reference implementations |
+| `apex-edge-adapters-fiscal` | Fiscal provider trait with NoOp and DE-TSE reference implementations |
+| `apex-edge-giftcards` | Local-first gift card state machine |
+| `apex-edge-loyalty` | Loyalty provider trait and local earn/redeem implementation |
 | `apex-edge-api` | HTTP API (POS, health, ready, documents) |
 | `apex-edge` | Binary entrypoint |
 

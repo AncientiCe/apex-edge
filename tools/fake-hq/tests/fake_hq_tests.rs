@@ -37,7 +37,11 @@ fn sample_payload(order_id: Uuid) -> HqOrderPayload {
         payments: vec![HqPayment {
             tender_id: Uuid::new_v4(),
             amount_cents: 1000,
+            tip_amount_cents: 0,
             external_reference: Some("cash".to_string()),
+            provider: None,
+            provider_payment_id: None,
+            entry_method: None,
         }],
         applied_promo_ids: vec![],
         applied_coupons: vec![HqAppliedCoupon {

@@ -4,6 +4,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::payments::PaymentEntryMethod;
 use crate::version::ContractVersion;
 
 /// All POS requests carry version and idempotency key.
@@ -53,6 +54,50 @@ pub enum PosCommand {
     CashCount(CashCountPayload),
     GetXReport(GetXReportPayload),
     CloseTill(CloseTillPayload),
+    // --- v0.9.0 In-store operations ---
+    ParkCart(ParkCartPayload),
+    RecallCart(RecallCartPayload),
+    ListParkedCarts(ListParkedCartsPayload),
+    ClockIn(ClockInPayload),
+    ClockOut(ClockOutPayload),
+    // --- v0.10.0 Stock operations ---
+    ReceiveStock(StockMovementPayload),
+    TransferStock(StockMovementPayload),
+    AdjustStock(StockMovementPayload),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ParkCartPayload {
+    pub cart_id: Uuid,
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecallCartPayload {
+    pub parked_cart_id: Uuid,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListParkedCartsPayload {
+    pub register_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClockInPayload {
+    pub associate_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClockOutPayload {
+    pub associate_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StockMovementPayload {
+    pub item_id: Uuid,
+    pub quantity_delta: i64,
+    pub reason: String,
+    pub reference: Option<String>,
 }
 
 // --- Returns & Refunds payloads ---
@@ -243,7 +288,15 @@ pub struct AddPaymentPayload {
     pub cart_id: Uuid,
     pub tender_id: Uuid,
     pub amount_cents: u64,
+    #[serde(default)]
+    pub tip_amount_cents: u64,
     pub external_reference: Option<String>,
+    #[serde(default)]
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub provider_payment_id: Option<String>,
+    #[serde(default)]
+    pub entry_method: Option<PaymentEntryMethod>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

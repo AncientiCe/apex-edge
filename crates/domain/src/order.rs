@@ -1,7 +1,7 @@
 //! Finalized order (for HQ submission).
 
 use apex_edge_contracts::{
-    HqAppliedCoupon, HqOrderLine, HqOrderPayload, HqPayment, ManualDiscountInfo,
+    HqAppliedCoupon, HqOrderLine, HqOrderPayload, HqPayment, ManualDiscountInfo, PaymentEntryMethod,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -51,11 +51,22 @@ pub struct Order {
     pub discount_cents: u64,
     pub tax_cents: u64,
     pub total_cents: u64,
-    pub payments: Vec<(Uuid, u64, Option<String>)>,
+    pub payments: Vec<OrderPayment>,
     pub applied_promo_ids: Vec<Uuid>,
     pub applied_coupons: Vec<(Uuid, String, u64)>,
     pub manual_discounts: Vec<ManualDiscountInfo>,
     pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrderPayment {
+    pub tender_id: Uuid,
+    pub amount_cents: u64,
+    pub tip_amount_cents: u64,
+    pub external_reference: Option<String>,
+    pub provider: Option<String>,
+    pub provider_payment_id: Option<String>,
+    pub entry_method: Option<PaymentEntryMethod>,
 }
 
 impl Order {
@@ -72,10 +83,14 @@ impl Order {
             payments: self
                 .payments
                 .iter()
-                .map(|(tender_id, amount_cents, ext)| HqPayment {
-                    tender_id: *tender_id,
-                    amount_cents: *amount_cents,
-                    external_reference: ext.clone(),
+                .map(|payment| HqPayment {
+                    tender_id: payment.tender_id,
+                    amount_cents: payment.amount_cents,
+                    tip_amount_cents: payment.tip_amount_cents,
+                    external_reference: payment.external_reference.clone(),
+                    provider: payment.provider.clone(),
+                    provider_payment_id: payment.provider_payment_id.clone(),
+                    entry_method: payment.entry_method,
                 })
                 .collect(),
             applied_promo_ids: self.applied_promo_ids.clone(),

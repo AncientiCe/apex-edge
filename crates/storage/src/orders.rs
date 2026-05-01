@@ -1,5 +1,6 @@
 //! Durable finalized order ledger.
 
+use apex_edge_contracts::PaymentEntryMethod;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::{Row, SqlitePool};
@@ -41,7 +42,11 @@ pub struct NewOrderPaymentEntry {
     pub tender_id: Uuid,
     pub tender_type: String,
     pub amount_cents: u64,
+    pub tip_amount_cents: u64,
     pub external_reference: Option<String>,
+    pub provider: Option<String>,
+    pub provider_payment_id: Option<String>,
+    pub entry_method: Option<PaymentEntryMethod>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -94,7 +99,11 @@ pub struct OrderPaymentEntry {
     pub tender_id: Uuid,
     pub tender_type: String,
     pub amount_cents: u64,
+    pub tip_amount_cents: u64,
     pub external_reference: Option<String>,
+    pub provider: Option<String>,
+    pub provider_payment_id: Option<String>,
+    pub entry_method: Option<PaymentEntryMethod>,
 }
 
 fn parse_uuid(s: &str) -> Result<Uuid, PoolError> {
@@ -174,15 +183,19 @@ pub async fn insert_order_ledger_entry(
 
     for payment in &order.payments {
         sqlx::query(
-            "INSERT INTO order_payments (id, order_id, tender_id, tender_type, amount_cents, external_reference, created_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO order_payments (id, order_id, tender_id, tender_type, amount_cents, tip_amount_cents, external_reference, provider, provider_payment_id, entry_method, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(Uuid::new_v4().to_string())
         .bind(order.order_id.to_string())
         .bind(payment.tender_id.to_string())
         .bind(normalize_tender_type(&payment.tender_type))
         .bind(payment.amount_cents as i64)
+        .bind(payment.tip_amount_cents as i64)
         .bind(&payment.external_reference)
+        .bind(&payment.provider)
+        .bind(&payment.provider_payment_id)
+        .bind(payment.entry_method.map(|method| payment_entry_method_to_str(method).to_string()))
         .bind(&now)
         .execute(&mut *tx)
         .await?;
@@ -352,11 +365,42 @@ fn row_to_payment(row: sqlx::sqlite::SqliteRow) -> Result<OrderPaymentEntry, Poo
     let id: String = row.try_get("id")?;
     let tender_id: String = row.try_get("tender_id")?;
     let amount: i64 = row.try_get("amount_cents")?;
+    let tip_amount: i64 = row.try_get("tip_amount_cents").unwrap_or(0);
+    let entry_method: Option<String> = row.try_get("entry_method").ok();
     Ok(OrderPaymentEntry {
         payment_id: parse_uuid(&id)?,
         tender_id: parse_uuid(&tender_id)?,
         tender_type: row.try_get("tender_type")?,
         amount_cents: amount.max(0) as u64,
+        tip_amount_cents: tip_amount.max(0) as u64,
         external_reference: row.try_get("external_reference")?,
+        provider: row.try_get("provider").ok(),
+        provider_payment_id: row.try_get("provider_payment_id").ok(),
+        entry_method: entry_method
+            .as_deref()
+            .and_then(payment_entry_method_from_str),
     })
+}
+
+fn payment_entry_method_to_str(method: PaymentEntryMethod) -> &'static str {
+    match method {
+        PaymentEntryMethod::Cash => "cash",
+        PaymentEntryMethod::Manual => "manual",
+        PaymentEntryMethod::Swipe => "swipe",
+        PaymentEntryMethod::Dip => "dip",
+        PaymentEntryMethod::Contactless => "contactless",
+        PaymentEntryMethod::Online => "online",
+    }
+}
+
+fn payment_entry_method_from_str(value: &str) -> Option<PaymentEntryMethod> {
+    match value {
+        "cash" => Some(PaymentEntryMethod::Cash),
+        "manual" => Some(PaymentEntryMethod::Manual),
+        "swipe" => Some(PaymentEntryMethod::Swipe),
+        "dip" => Some(PaymentEntryMethod::Dip),
+        "contactless" => Some(PaymentEntryMethod::Contactless),
+        "online" => Some(PaymentEntryMethod::Online),
+        _ => None,
+    }
 }

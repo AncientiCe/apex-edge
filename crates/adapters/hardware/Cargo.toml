@@ -1,0 +1,8 @@
+[package]
+name = "apex-edge-adapters-hardware"
+version = "0.1.0"
+edition = "2021"
+description = "Hardware adapter contracts and reference implementations for ApexEdge"
+
+[dependencies]
+thiserror = "1.0"

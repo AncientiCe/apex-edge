@@ -781,7 +781,11 @@ async fn finalize_order_with_synced_template_produces_pdf_receipt() {
                 cart_id: cart_state.cart_id,
                 tender_id: Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap(),
                 amount_cents: 500,
+                tip_amount_cents: 0,
                 external_reference: None,
+                provider: None,
+                provider_payment_id: None,
+                entry_method: None,
             }),
         }),
     )
@@ -943,7 +947,11 @@ async fn finalize_persists_order_ledger_and_order_read_apis_return_it() {
                 cart_id: cart_state.cart_id,
                 tender_id: Uuid::new_v4(),
                 amount_cents: 1_500,
+                tip_amount_cents: 0,
                 external_reference: Some("cash".into()),
+                provider: None,
+                provider_payment_id: None,
+                entry_method: None,
             }),
         }),
     )

@@ -1,14 +1,15 @@
 //! Cart aggregate and state machine: Open -> Itemized -> Discounted -> Tendering -> Paid -> Finalized.
 
 use apex_edge_contracts::{
-    AppliedCouponInfo, AppliedPromoInfo, CartLine, CartState, CartStateKind, ManualDiscountInfo,
+    AddPaymentInput, AppliedCouponInfo, AppliedPromoInfo, CartLine, CartState, CartStateKind,
+    ManualDiscountInfo, PaymentEntryMethod,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::errors::DomainError;
-use crate::order::{Order, OrderLine};
+use crate::order::{Order, OrderLine, OrderPayment};
 use crate::pricing::LinePriceResult;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -67,7 +68,15 @@ pub struct AppliedCouponRecord {
 pub struct PaymentRecord {
     pub tender_id: Uuid,
     pub amount_cents: u64,
+    #[serde(default)]
+    pub tip_amount_cents: u64,
     pub external_reference: Option<String>,
+    #[serde(default)]
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub provider_payment_id: Option<String>,
+    #[serde(default)]
+    pub entry_method: Option<PaymentEntryMethod>,
 }
 
 impl Cart {
@@ -234,21 +243,20 @@ impl Cart {
         self.updated_at = Utc::now();
     }
 
-    pub fn add_payment(
-        &mut self,
-        tender_id: Uuid,
-        amount_cents: u64,
-        external_reference: Option<String>,
-    ) -> Result<(), DomainError> {
+    pub fn add_payment(&mut self, input: AddPaymentInput) -> Result<(), DomainError> {
         if self.state != CartStateKind::Tendering && self.state != CartStateKind::Paid {
             return Err(DomainError::InvalidTransition(
                 "cart must be in tendering to add payment".into(),
             ));
         }
         self.payments.push(PaymentRecord {
-            tender_id,
-            amount_cents,
-            external_reference,
+            tender_id: input.tender_id,
+            amount_cents: input.amount_cents,
+            tip_amount_cents: input.tip_amount_cents,
+            external_reference: input.external_reference,
+            provider: input.provider,
+            provider_payment_id: input.provider_payment_id,
+            entry_method: input.entry_method,
         });
         self.updated_at = Utc::now();
         let tendered = self.tendered_cents();
@@ -344,10 +352,18 @@ impl Cart {
     /// Build an Order from this cart (must be in Paid state).
     pub fn to_order(&self, order_id: Uuid) -> Result<Order, DomainError> {
         self.ensure_can_finalize()?;
-        let payments: Vec<(Uuid, u64, Option<String>)> = self
+        let payments: Vec<OrderPayment> = self
             .payments
             .iter()
-            .map(|p| (p.tender_id, p.amount_cents, p.external_reference.clone()))
+            .map(|p| OrderPayment {
+                tender_id: p.tender_id,
+                amount_cents: p.amount_cents,
+                tip_amount_cents: p.tip_amount_cents,
+                external_reference: p.external_reference.clone(),
+                provider: p.provider.clone(),
+                provider_payment_id: p.provider_payment_id.clone(),
+                entry_method: p.entry_method,
+            })
             .collect();
         let coupons: Vec<(Uuid, String, u64)> = self
             .applied_coupons
@@ -377,8 +393,20 @@ impl Cart {
 mod tests {
     use super::{Cart, CartLineItem};
     use crate::errors::DomainError;
-    use apex_edge_contracts::CartStateKind;
+    use apex_edge_contracts::{AddPaymentInput, CartStateKind};
     use uuid::Uuid;
+
+    fn payment_input(amount_cents: u64) -> AddPaymentInput {
+        AddPaymentInput {
+            tender_id: Uuid::new_v4(),
+            amount_cents,
+            tip_amount_cents: 0,
+            external_reference: None,
+            provider: None,
+            provider_payment_id: None,
+            entry_method: None,
+        }
+    }
 
     fn make_line(line_id: Uuid) -> CartLineItem {
         CartLineItem {
@@ -471,7 +499,7 @@ mod tests {
     fn add_payment_requires_tendering_or_paid_state() {
         let mut cart = Cart::new(Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
         let err = cart
-            .add_payment(Uuid::new_v4(), 100, None)
+            .add_payment(payment_input(100))
             .expect_err("must reject payment in open state");
         match err {
             DomainError::InvalidTransition(_) => {}
@@ -496,8 +524,55 @@ mod tests {
             tax_cents: 0,
         });
         cart.state = CartStateKind::Tendering;
-        cart.add_payment(Uuid::new_v4(), 100, None)
+        cart.add_payment(payment_input(100))
             .expect("payment should succeed");
         assert_eq!(cart.state, CartStateKind::Paid);
+    }
+
+    #[test]
+    fn payment_provider_metadata_flows_to_order() {
+        let mut cart = Cart::new(Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+        cart.lines.push(CartLineItem {
+            line_id: Uuid::new_v4(),
+            item_id: Uuid::new_v4(),
+            sku: "sku".into(),
+            name: "item".into(),
+            quantity: 1,
+            modifier_option_ids: vec![],
+            notes: None,
+            unit_price_cents: 100,
+            line_total_cents: 100,
+            discount_cents: 0,
+            tax_cents: 0,
+        });
+        cart.state = CartStateKind::Tendering;
+
+        cart.add_payment(apex_edge_contracts::AddPaymentInput {
+            tender_id: Uuid::new_v4(),
+            amount_cents: 120,
+            tip_amount_cents: 20,
+            external_reference: Some("card".into()),
+            provider: Some("stripe_terminal".into()),
+            provider_payment_id: Some("pi_test_123".into()),
+            entry_method: Some(apex_edge_contracts::PaymentEntryMethod::Contactless),
+        })
+        .expect("payment should succeed");
+
+        let order = cart.to_order(Uuid::new_v4()).expect("cart should finalize");
+        assert_eq!(order.payments.len(), 1);
+        assert_eq!(order.payments[0].amount_cents, 120);
+        assert_eq!(order.payments[0].tip_amount_cents, 20);
+        assert_eq!(
+            order.payments[0].provider.as_deref(),
+            Some("stripe_terminal")
+        );
+        assert_eq!(
+            order.payments[0].provider_payment_id.as_deref(),
+            Some("pi_test_123")
+        );
+        assert_eq!(
+            order.payments[0].entry_method,
+            Some(apex_edge_contracts::PaymentEntryMethod::Contactless)
+        );
     }
 }

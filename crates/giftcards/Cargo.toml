@@ -1,0 +1,9 @@
+[package]
+name = "apex-edge-giftcards"
+version = "0.1.0"
+edition = "2021"
+description = "Local-first gift card state machine for ApexEdge"
+
+[dependencies]
+thiserror = "1.0"
+uuid = { version = "1.0", features = ["v4", "serde"] }

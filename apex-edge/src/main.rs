@@ -124,6 +124,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     };
     set_audit_key(AuditKey::new(audit_key_id.clone(), audit_secret));
     tracing::info!("Audit chain signing key loaded (id={})", audit_key_id);
+    if std::env::args().any(|a| a == "init" || a == "--init") {
+        println!("ApexEdge initialized");
+        println!("database={db_path}");
+        println!("audit_key_id={audit_key_id}");
+        println!("admin_pairing_code_endpoint=POST /auth/pairing-codes");
+        return Ok(());
+    }
     let seed_flag = std::env::args().any(|a| a == "--seed-demo")
         || std::env::var("APEX_EDGE_SEED_DEMO")
             .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))

@@ -42,6 +42,10 @@ pub fn route_label(path: &str) -> &'static str {
         "/auth/sessions/exchange" => "auth_sessions_exchange",
         "/auth/sessions/refresh" => "auth_sessions_refresh",
         "/auth/sessions/revoke" => "auth_sessions_revoke",
+        "/admin/api-tokens" => "admin_api_tokens",
+        "/admin/customers/:id/export" | "/admin/customers/{id}/export" => "admin_customer_export",
+        "/admin/customers/:id/erase" | "/admin/customers/{id}/erase" => "admin_customer_erase",
+        "/webhooks/:connector_id" | "/webhooks/{connector_id}" => "webhooks_connector",
         _ => "unknown",
     }
 }
@@ -111,6 +115,18 @@ pub fn request_path_to_route(path: &str) -> &'static str {
     if path == "/auth/sessions/revoke" {
         return "auth_sessions_revoke";
     }
+    if path == "/admin/api-tokens" {
+        return "admin_api_tokens";
+    }
+    if path.starts_with("/admin/customers/") && path.ends_with("/export") {
+        return "admin_customer_export";
+    }
+    if path.starts_with("/admin/customers/") && path.ends_with("/erase") {
+        return "admin_customer_erase";
+    }
+    if path.starts_with("/webhooks/") && path.len() > 10 {
+        return "webhooks_connector";
+    }
     if path.starts_with("/pos/cart/") && path.len() > 10 {
         return "pos_cart";
     }
@@ -164,6 +180,52 @@ pub const OUTCOME_SUCCESS: &str = "success";
 pub const OUTCOME_VALIDATION_ERROR: &str = "validation_error";
 pub const OUTCOME_UNSUPPORTED_VERSION: &str = "unsupported_version";
 pub const OUTCOME_DOMAIN_ERROR: &str = "domain_error";
+
+// ---------- Payments (api::pos_handler + adapters) ----------
+/// Counter: payment attempts by provider and outcome. Labels: provider, outcome.
+pub const PAYMENT_ATTEMPTS_TOTAL: &str = "apex_edge_payment_attempts_total";
+/// Histogram: payment operation duration in seconds. Labels: provider.
+pub const PAYMENT_DURATION_SECONDS: &str = "apex_edge_payment_duration_seconds";
+
+// ---------- Tax providers (domain pricing + adapters) ----------
+/// Counter: tax quote attempts by provider and outcome. Labels: provider, outcome.
+pub const TAX_QUOTES_TOTAL: &str = "apex_edge_tax_quote_total";
+/// Histogram: tax quote duration in seconds. Labels: provider.
+pub const TAX_QUOTE_DURATION_SECONDS: &str = "apex_edge_tax_quote_duration_seconds";
+
+// ---------- Hardware adapters ----------
+/// Counter: hardware operations by device, operation, and outcome.
+pub const HARDWARE_OPERATIONS_TOTAL: &str = "apex_edge_hardware_operations_total";
+/// Histogram: hardware operation duration in seconds. Labels: device, operation.
+pub const HARDWARE_OPERATION_DURATION_SECONDS: &str =
+    "apex_edge_hardware_operation_duration_seconds";
+
+// ---------- Store operations ----------
+/// Counter: suspended sale/time-clock operations by operation and outcome.
+pub const STORE_OPERATIONS_TOTAL: &str = "apex_edge_store_operations_total";
+/// Histogram: suspended sale/time-clock operation duration in seconds. Labels: operation.
+pub const STORE_OPERATION_DURATION_SECONDS: &str = "apex_edge_store_operation_duration_seconds";
+
+// ---------- Gift cards and loyalty ----------
+/// Counter: gift card operations by operation and outcome.
+pub const GIFT_CARD_OPERATIONS_TOTAL: &str = "apex_edge_gift_card_operations_total";
+/// Counter: loyalty operations by operation and outcome.
+pub const LOYALTY_OPERATIONS_TOTAL: &str = "apex_edge_loyalty_operations_total";
+
+// ---------- Cloud connectors ----------
+/// Counter: cloud connector deliveries by connector and outcome.
+pub const CLOUD_CONNECTOR_DELIVERIES_TOTAL: &str = "apex_edge_cloud_connector_deliveries_total";
+/// Histogram: cloud connector delivery duration in seconds. Labels: connector.
+pub const CLOUD_CONNECTOR_DELIVERY_DURATION_SECONDS: &str =
+    "apex_edge_cloud_connector_delivery_duration_seconds";
+
+// ---------- Stock operations ----------
+/// Counter: stock movement operations by operation and outcome.
+pub const STOCK_OPERATIONS_TOTAL: &str = "apex_edge_stock_operations_total";
+
+// ---------- Fiscal providers ----------
+/// Counter: fiscal receipt signing by provider and outcome.
+pub const FISCAL_RECEIPTS_TOTAL: &str = "apex_edge_fiscal_receipts_total";
 
 // ---------- Documents (api::documents) ----------
 /// Counter: document operations. Labels: operation, outcome.

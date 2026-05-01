@@ -98,9 +98,27 @@ pub fn tax_for_line(
     apply_tax(line_net_cents, rule.rate_bps, inclusive)
 }
 
+pub fn currency_minor_units(currency: &str) -> u32 {
+    match currency.to_ascii_uppercase().as_str() {
+        "BHD" | "JOD" | "KWD" | "OMR" | "TND" => 3,
+        "CLP" | "ISK" | "JPY" | "KRW" | "PYG" | "VND" => 0,
+        _ => 2,
+    }
+}
+
+pub fn round_major_units_to_minor(major_units_micros: i64, currency: &str) -> i64 {
+    let scale = 10_i64.pow(currency_minor_units(currency));
+    let scaled = major_units_micros.saturating_mul(scale);
+    if scaled >= 0 {
+        (scaled + 500_000) / 1_000_000
+    } else {
+        (scaled - 500_000) / 1_000_000
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{apply_tax, base_price_cents};
+    use super::{apply_tax, base_price_cents, currency_minor_units, round_major_units_to_minor};
     use apex_edge_contracts::PriceBookEntry;
     use uuid::Uuid;
 
@@ -129,5 +147,16 @@ mod tests {
     fn apply_tax_handles_exclusive_and_inclusive() {
         assert_eq!(apply_tax(1000, 1000, false), 100);
         assert_eq!(apply_tax(1100, 1000, true), 100);
+    }
+
+    #[test]
+    fn currency_rounding_uses_iso_minor_units() {
+        assert_eq!(currency_minor_units("USD"), 2);
+        assert_eq!(currency_minor_units("JPY"), 0);
+        assert_eq!(currency_minor_units("KWD"), 3);
+
+        assert_eq!(round_major_units_to_minor(12_345_000, "USD"), 1235);
+        assert_eq!(round_major_units_to_minor(12_500_000, "JPY"), 13);
+        assert_eq!(round_major_units_to_minor(12_345_600, "KWD"), 12346);
     }
 }

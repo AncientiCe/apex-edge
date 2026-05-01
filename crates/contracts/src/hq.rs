@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::version::ContractVersion;
+use crate::PaymentEntryMethod;
 
 /// Build submission envelope with checksum (deterministic for idempotency).
 pub fn build_submission_envelope(
@@ -83,7 +84,15 @@ pub struct HqOrderLine {
 pub struct HqPayment {
     pub tender_id: Uuid,
     pub amount_cents: u64,
+    #[serde(default)]
+    pub tip_amount_cents: u64,
     pub external_reference: Option<String>,
+    #[serde(default)]
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub provider_payment_id: Option<String>,
+    #[serde(default)]
+    pub entry_method: Option<PaymentEntryMethod>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

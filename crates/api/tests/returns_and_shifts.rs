@@ -558,7 +558,11 @@ async fn x_report_and_close_till_include_ledger_cash_sales_and_refunds() {
                 tender_id: Uuid::new_v4(),
                 tender_type: "cash".into(),
                 amount_cents: 1_500,
+                tip_amount_cents: 0,
                 external_reference: Some("cash".into()),
+                provider: None,
+                provider_payment_id: None,
+                entry_method: None,
             }],
         },
     )

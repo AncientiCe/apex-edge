@@ -36,7 +36,11 @@ fn hq_submission_checksum_is_deterministic_for_same_inputs() {
         payments: vec![HqPayment {
             tender_id: Uuid::new_v4(),
             amount_cents: 330,
+            tip_amount_cents: 0,
             external_reference: None,
+            provider: None,
+            provider_payment_id: None,
+            entry_method: None,
         }],
         applied_promo_ids: vec![],
         applied_coupons: vec![],

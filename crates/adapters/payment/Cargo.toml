@@ -1,0 +1,10 @@
+[package]
+name = "apex-edge-adapters-payment"
+version = "0.1.0"
+edition = "2021"
+description = "Payment provider adapter contracts and reference implementations for ApexEdge"
+
+[dependencies]
+apex-edge-contracts = { path = "../../contracts" }
+thiserror = "1.0"
+uuid = { version = "1.0", features = ["v4", "serde"] }

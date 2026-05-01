@@ -826,3 +826,285 @@ flowchart TB
 - **Outputs:** `GET /orders` and `GET /orders/:id` read from the local ledger; X/Z reports include `cash_sales_cents`, `cash_refunds_cents`, `expected_cents`, and variance; HQ shift submissions include the same cash sales/refunds totals.
 - **Failure path:** order ledger write failure returns `ORDER_LEDGER_FAILED` before outbox/document work; missing order lookup returns 404; shift accounting falls back to zero for unavailable ledger aggregates rather than blocking close.
 - **Metrics:** order finalization and lookup use `apex_edge_orders_finalized_total`, `apex_edge_orders_lookup_total`, and `apex_edge_orders_ledger_write_duration_seconds`; HTTP metrics label the order routes explicitly.
+
+### 24. Payment Provider Adapters (v0.8.0)
+
+**Purpose:** Add a pluggable payment-provider boundary for cash and terminal-backed tenders without ApexEdge handling raw card data or EMV kernels.
+
+```mermaid
+flowchart TB
+    POS[POS_MPOS] -->|"add_payment metadata"| PosCommand[POST /pos/command]
+    PosCommand --> CartJson[(Cart JSON)]
+    CartJson --> Finalize[finalize_order]
+    Finalize --> Ledger[(order_payments)]
+    Finalize --> Receipt[Receipt Payload]
+    Finalize --> HQ[HQ Submission]
+
+    subgraph paymentAdapters [Payment Adapter Crate]
+        Trait[PaymentProvider]
+        Cash[CashPaymentProvider]
+        Stripe[StripeTerminalProvider]
+        Adyen[AdyenTerminalProvider]
+    end
+
+    Trait --> Cash
+    Trait --> Stripe
+    Trait --> Adyen
+    POS --> Trait
+```
+
+**Notes:**
+- **Inputs:** `AddPaymentPayload` can carry `tip_amount_cents`, `provider`, `provider_payment_id`, and `entry_method` in addition to the existing tender id, amount, and external reference. Adapter calls return opaque provider payment ids and receipt metadata only.
+- **Outputs:** Cart payment records, order ledger rows, receipt payloads, and HQ `HqPayment` payloads preserve provider metadata and tip amounts.
+- **Failure path:** Unconfigured terminal adapters fail closed with `PaymentProviderError::NotConfigured`; zero-value provider payments fail as `InvalidAmount`. POS `add_payment` errors increment payment attempt metrics with `outcome=error`.
+- **Metrics:** `apex_edge_payment_attempts_total{provider,outcome}` and `apex_edge_payment_duration_seconds{provider}` observe the `add_payment` path. Provider implementations are in `crates/adapters/payment`.
+
+### 25. Tax Provider Adapters and Currency Rounding (v0.8.0)
+
+**Purpose:** Support US/Canada destination-style stacked tax, EU inclusive VAT, and hosted tax providers through a single tax quote boundary.
+
+```mermaid
+flowchart TB
+    CartPricing[PricingPipeline] --> TaxRequest[TaxQuoteRequest]
+    TaxRequest --> TaxProvider[TaxProvider]
+    TaxProvider --> Internal[InternalTaxProvider]
+    TaxProvider --> Avalara[Avalara]
+    TaxProvider --> StripeTax[StripeTax]
+    Internal --> Rules[(SyncedTaxRules)]
+    TaxProvider --> Quote[TaxQuoteBreakdown]
+    Quote --> CartTotals[CartTotals]
+    Currency[StoreConfigCurrency] --> Rounding[ISO Minor Unit Rounding]
+    Rounding --> CartTotals
+```
+
+**Notes:**
+- **Inputs:** `TaxQuoteRequest` contains currency, line tax categories, taxable amounts, and optional destination data. Internal tax quotes use synced `TaxRule` rows.
+- **Outputs:** `TaxQuote` returns per-line jurisdiction breakdowns with rate, inclusive flag, and total tax cents. Domain pricing exposes ISO-minor-unit rounding for USD/CAD/EUR-style 2-decimal currencies, JPY/KRW-style zero-decimal currencies, and KWD/BHD-style 3-decimal currencies.
+- **Failure path:** Hosted `Avalara` and `StripeTax` adapters fail closed with `TaxProviderError::NotConfigured` until credentials are configured; empty quotes return `EmptyQuote`.
+- **Metrics:** `apex_edge_tax_quote_total{provider,outcome}` and `apex_edge_tax_quote_duration_seconds{provider}` are reserved for quote paths.
+
+### 26. Hardware Provider Boundary (v0.9.0)
+
+**Purpose:** Own retail-counter hardware through pluggable, sidecar-friendly traits for receipt printing, drawer kick, barcode scanner, scale, and customer-facing display.
+
+```mermaid
+flowchart TB
+    POS[POS_MPOS] --> HardwareAPI[HardwareAdapterTraits]
+    HardwareAPI --> Printer[ReceiptPrinter]
+    HardwareAPI --> Drawer[CashDrawer]
+    HardwareAPI --> Scanner[BarcodeScanner]
+    HardwareAPI --> Scale[WeightScale]
+    HardwareAPI --> Display[CustomerDisplay]
+
+    Printer --> EscPos[ESC_POS_USB_TCP]
+    Drawer --> EscPos
+    Scanner --> HID[HIDScanner]
+    Scale --> NCI[NCIScale]
+    Display --> TextDisplay[TextCustomerDisplay]
+    HardwareAPI --> Sidecar[OptionalOSDriverSidecar]
+```
+
+**Notes:**
+- **Inputs:** Print requests carry document type and rendered bytes; scanner/scale/display operations use bounded value objects (`BarcodeScan`, `ScaleReading`, display text).
+- **Outputs:** Hardware adapters return deterministic success/failure without exposing OS driver details to the core hub. ESC/POS printer and drawer support USB/TCP or an optional sidecar process.
+- **Failure path:** Unconfigured devices fail closed with `HardwareError::NotConfigured`; empty print/display payloads fail as `EmptyPayload`.
+- **Metrics:** `apex_edge_hardware_operations_total{device,operation,outcome}` and `apex_edge_hardware_operation_duration_seconds{device,operation}` are reserved for hardware command paths.
+
+### 27. Suspended Sales, Register Layouts, and Time Clock (v0.9.0)
+
+**Purpose:** Add day-of-store operations required for real cashdesk use: park and recall active carts, sync register quick-pick layouts, and track associate clock-in/out.
+
+```mermaid
+flowchart TB
+    POS[POS_MPOS] -->|"park_cart"| Park[ParkCartHandler]
+    POS -->|"recall_cart"| Recall[RecallCartHandler]
+    POS -->|"list_parked_carts"| List[ListParkedCartsHandler]
+    POS -->|"clock_in / clock_out"| Clock[TimeClockHandler]
+
+    Park --> Parked[(parked_carts)]
+    List --> Parked
+    Recall --> Parked
+    Recall --> Carts[(carts)]
+    Clock --> TimeClock[(time_clock_entries)]
+    Sync[HQSync] --> Layouts[(register_layouts)]
+    Layouts --> POS
+```
+
+**Notes:**
+- **Inputs:** POS commands `park_cart`, `recall_cart`, `list_parked_carts`, `clock_in`, and `clock_out`; synced `RegisterLayout` records for quick-pick/favorites; optional receipt/template language.
+- **Outputs:** Parked cart summaries, recalled `CartState`, and `TimeClockEntry` payloads. Register layouts store language-specific tile definitions for frontend rendering.
+- **Failure path:** Missing cart returns `CART_NOT_FOUND`; missing parked cart returns `PARKED_CART_NOT_FOUND`; clock-out without an open entry returns `CLOCK_ENTRY_NOT_FOUND`.
+- **Metrics:** `apex_edge_store_operations_total{operation,outcome}` and `apex_edge_store_operation_duration_seconds{operation}` are reserved for suspended sale and time-clock paths.
+
+### 28. Gift Cards and Loyalty (v0.9.0)
+
+**Purpose:** Add local-first stored-value and loyalty primitives that can work offline and later reconcile through cloud connectors.
+
+```mermaid
+flowchart TB
+    POS[POS_MPOS] --> Gift[GiftCardStateMachine]
+    POS --> Loyalty[LoyaltyProvider]
+    Gift --> GiftStore[(gift_cards)]
+    Loyalty --> LoyaltyStore[(loyalty_accounts)]
+    Gift --> Tender[GiftCardTender]
+    Loyalty --> Discounts[LoyaltyRedeemDiscount]
+    Tender --> Cart[CartPayment]
+    Discounts --> Cart
+```
+
+**Notes:**
+- **Inputs:** Gift card issue/activate/reload/redeem operations; loyalty earn based on spend and redeem based on points.
+- **Outputs:** Gift card balance/state and loyalty points are held locally with additive storage tables for later cloud reconciliation.
+- **Failure path:** Gift cards reject inactive, zero-value, and over-balance redemptions; loyalty rejects zero-point and over-balance redemptions.
+- **Metrics:** `apex_edge_gift_card_operations_total{operation,outcome}` and `apex_edge_loyalty_operations_total{operation,outcome}` are reserved for stored-value and points operations.
+
+### 29. Cloud Connector Framework (v0.10.0)
+
+**Purpose:** Generalize the outbox from one HQ URL into a multi-destination connector model for e-commerce, ERP, accounting, and generic webhooks.
+
+```mermaid
+flowchart TB
+    DomainEvent[DomainEvent] --> Outbox[(outbox)]
+    Outbox --> Delivery[(outbox_delivery_attempts)]
+    Destinations[(outbox_destinations)] --> Delivery
+    Delivery --> Connector[CloudConnector]
+    Connector --> Shopify[Shopify]
+    Connector --> NetSuite[NetSuite]
+    Connector --> QuickBooks[QuickBooks]
+    Connector --> Xero[Xero]
+    Connector --> Webhook[SignedWebhook]
+```
+
+**Notes:**
+- **Inputs:** Durable outbox events and configured destinations. Connectors receive bounded `CloudEvent` payloads with event id, type, and JSON payload.
+- **Outputs:** Each destination tracks independent delivery status, attempts, next retry, and last error. Signed webhooks use HMAC-SHA256 for replay-safe downstream verification.
+- **Failure path:** Hosted connectors fail closed with `CloudConnectorError::NotConfigured`; empty payloads return `EmptyPayload`; each destination can retry or DLQ independently.
+- **Metrics:** `apex_edge_cloud_connector_deliveries_total{connector,outcome}` and `apex_edge_cloud_connector_delivery_duration_seconds{connector}` observe connector dispatch.
+
+### 30. Third-Party API Tokens and Inbound Webhooks (v0.10.0)
+
+**Purpose:** Let external systems call ApexEdge with scoped tokens and let connector webhooks enter through a durable receipt table before sync/application.
+
+```mermaid
+sequenceDiagram
+    participant Admin as AdminClient
+    participant API as ApexEdgeAPI
+    participant DB as SQLite
+    participant Cloud as CloudService
+
+    Admin->>API: POST /admin/api-tokens
+    API->>DB: insert api_tokens
+    API-->>Admin: signed JWT + scopes
+
+    Cloud->>API: POST /webhooks/:connector_id
+    API->>DB: insert inbound_webhooks
+    API-->>Cloud: accepted=true
+```
+
+**Notes:**
+- **Inputs:** Token creation request (`name`, `scopes`, optional TTL); inbound webhook JSON payload scoped by `connector_id`.
+- **Outputs:** Signed token response using the hub session signing secret; durable `inbound_webhooks` receipt row with accepted status.
+- **Failure path:** Token signing or DB insert failures return HTTP 500; malformed JSON is rejected by Axum before the handler.
+- **OpenAPI:** `/admin/api-tokens` and `/webhooks/{connector_id}` are present in `GET /openapi.json`.
+
+### 31. Stock Operations and Connector Outbox (v0.10.0)
+
+**Purpose:** Let stores record goods receipt, transfers, and stock adjustments locally, then push each movement through the durable outbox for cloud connectors.
+
+```mermaid
+flowchart TB
+    POS[POS_MPOS] -->|"receive_stock / transfer_stock / adjust_stock"| PosCommand[POST /pos/command]
+    PosCommand --> Movement[(stock_movements)]
+    Movement --> Outbox[(outbox)]
+    Outbox --> Destinations[(outbox_destinations)]
+    Destinations --> Cloud[CloudConnectors]
+```
+
+**Notes:**
+- **Inputs:** `StockMovementPayload` with item id, non-zero quantity delta, reason, and optional reference.
+- **Outputs:** Durable `stock_movements` row and an outbound `stock.movement` event in the existing outbox for connector fan-out.
+- **Failure path:** Zero quantity or blank reason returns `INVALID_STOCK_MOVEMENT`; storage failure returns `STOCK_MOVEMENT_FAILED`.
+- **Metrics:** `apex_edge_stock_operations_total{operation,outcome}` is reserved for stock command outcomes.
+
+### 32. Fiscal Provider Boundary (v1.0.0)
+
+**Purpose:** Keep country-specific fiscal certification outside the core checkout engine through a stable `FiscalProvider` trait.
+
+```mermaid
+flowchart TB
+    Finalize[finalize_order] --> FiscalProvider[FiscalProvider]
+    FiscalProvider --> NoOp[NoOpFiscalProvider]
+    FiscalProvider --> DETSE[DeTseFiscalProvider]
+    FiscalProvider --> Receipt[FiscalReceiptMetadata]
+    Receipt --> Documents[ReceiptDocuments]
+    Receipt --> Outbox[HQSubmission]
+```
+
+**Notes:**
+- **Inputs:** Order id, total amount, and currency in `FiscalReceiptRequest`.
+- **Outputs:** `FiscalReceipt` with provider, optional fiscal id, and optional signature.
+- **Failure path:** NoOp is the default for US/CA and non-fiscal deployments; DE-TSE fails closed with `NotConfigured` until certified configuration is provided.
+- **Metrics:** `apex_edge_fiscal_receipts_total{provider,outcome}` is reserved for fiscal signing outcomes.
+
+### 33. GDPR Customer Export and Erase (v1.0.0)
+
+**Purpose:** Support privacy requests while retaining finance/order facts required for audit and accounting.
+
+```mermaid
+sequenceDiagram
+    participant Admin as AdminClient
+    participant API as ApexEdgeAPI
+    participant DB as SQLite
+
+    Admin->>API: GET /admin/customers/:id/export
+    API->>DB: read customer row
+    API-->>Admin: machine-readable customer JSON
+
+    Admin->>API: POST /admin/customers/:id/erase
+    API->>DB: pseudonymize customer row
+    API-->>Admin: erased=true
+```
+
+**Notes:**
+- **Inputs:** Customer id under admin routes.
+- **Outputs:** Export returns customer id, store id, code, name, and email; erase replaces direct identifiers with a deterministic erased code, `Erased Customer`, and `NULL` email.
+- **Failure path:** Missing customers return 404; storage failures return 500.
+- **Retention:** Order, shift, audit, and payment facts remain intact while direct customer identifiers are removed.
+
+### 34. Installer and First-Run Init (v1.0.0)
+
+**Purpose:** Reduce adoption friction by giving operators a single first-run command after installing the packaged binary.
+
+```mermaid
+flowchart TB
+    Installer[MSI_DEB_RPM_PKG] --> Binary[apex-edge binary]
+    Operator[Operator] -->|"apex-edge init"| Binary
+    Binary --> DB[(SQLiteMigrations)]
+    Binary --> Audit[AuditKeyLoadOrGenerate]
+    Binary --> Setup[SetupDetails]
+```
+
+**Notes:**
+- **Inputs:** Packaged binary and optional environment variables such as `APEX_EDGE_DB`, `APEX_EDGE_AUDIT_KEY_PATH`, and `APEX_EDGE_AUDIT_KEY_SECRET`.
+- **Outputs:** Migrated database, audit key state, and printed setup details including the pairing-code endpoint.
+- **Failure path:** DB or migration failures exit non-zero before the server starts.
+
+### 35. GA Conformance Probe (v1.0.0)
+
+**Purpose:** Give operators and CI a repeatable green/red check for a deployed hub before go-live.
+
+```mermaid
+flowchart TB
+    Operator[OperatorOrCI] --> Tool[tools_conformance]
+    Tool --> Health[GET_health]
+    Tool --> Ready[GET_ready]
+    Tool --> OpenAPI[GET_openapi_json]
+    Health --> Report[JSONReport]
+    Ready --> Report
+    OpenAPI --> Report
+```
+
+**Notes:**
+- **Inputs:** `APEX_EDGE_CONFORMANCE_URL`, defaulting to `http://localhost:3000`.
+- **Outputs:** JSON report with per-check status; process exits non-zero when any check fails.
+- **Failure path:** Network failures and non-2xx responses are captured in check detail for operator troubleshooting.

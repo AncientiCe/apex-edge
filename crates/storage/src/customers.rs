@@ -111,3 +111,20 @@ pub async fn insert_customer(
     .await?;
     Ok(())
 }
+
+pub async fn pseudonymize_customer(
+    pool: &SqlitePool,
+    store_id: Uuid,
+    customer_id: Uuid,
+) -> Result<bool, PoolError> {
+    let pseudonym = format!("erased-{}", customer_id);
+    let result = sqlx::query(
+        "UPDATE customers SET code = ?, name = 'Erased Customer', email = NULL WHERE id = ? AND store_id = ?",
+    )
+    .bind(pseudonym)
+    .bind(customer_id.to_string())
+    .bind(store_id.to_string())
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
