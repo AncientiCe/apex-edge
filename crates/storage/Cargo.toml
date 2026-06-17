@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 apex-edge-contracts = { path = "../contracts" }
+apex-edge-domain = { path = "../domain" }
 apex-edge-metrics = { path = "../metrics" }
 metrics = "0.21"
 tokio = { version = "1", features = ["sync", "fs"] }

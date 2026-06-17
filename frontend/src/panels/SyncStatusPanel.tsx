@@ -18,6 +18,13 @@ function formatTime(iso: string | null): string {
   }
 }
 
+function formatStaleness(seconds: number | null | undefined): string {
+  if (seconds == null) return 'never synced';
+  if (seconds < 60) return `${seconds}s ago`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  return `${Math.floor(seconds / 3600)}h ago`;
+}
+
 export function SyncStatusPanel({ baseUrl, disabled }: Props) {
   const [status, setStatus] = useState<SyncStatusResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -76,10 +83,23 @@ export function SyncStatusPanel({ baseUrl, disabled }: Props) {
   return (
     <div className="sync-status-panel">
       <p className="ios-section-header">Sync Status</p>
+      {data.degraded && (
+        <div className="sync-degraded-banner" role="alert" data-testid="degraded-banner">
+          <strong>Degraded mode</strong> — selling on stale stock baselines (last successful sync{' '}
+          {formatStaleness(data.sync_staleness_seconds)}). Sales and reservations still work
+          locally and will reconcile when HQ is reachable.
+        </div>
+      )}
       <div className="ios-card sync-status-card">
         <div className="sync-status-row">
           <span className="sync-status-label">Last sync</span>
           <span className="sync-status-value">{formatTime(data.last_sync_at)}</span>
+        </div>
+        <div className="sync-status-row">
+          <span className="sync-status-label">Freshness</span>
+          <span className={`sync-status-badge ${data.degraded ? 'syncing' : 'idle'}`}>
+            {formatStaleness(data.sync_staleness_seconds)}
+          </span>
         </div>
         <div className="sync-status-row">
           <span className="sync-status-label">State</span>

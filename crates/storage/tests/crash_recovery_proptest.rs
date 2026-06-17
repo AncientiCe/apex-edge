@@ -19,10 +19,13 @@
 //! 4. **No partial rows.** Every row in `outbox` has a parseable uuid id, valid
 //!    status ∈ {pending, delivered, dead_letter}, and an integer `attempts ≥ 0`.
 
+use apex_edge_storage::verify_chain;
 use apex_edge_storage::{
-    create_sqlite_pool, fetch_pending_outbox, insert_outbox, mark_delivered, run_migrations,
-    set_audit_key, verify_chain, AuditKey,
+    commit_cart_sale, create_sqlite_pool, fetch_pending_outbox, get_inventory_state, insert_outbox,
+    mark_delivered, rebase_baseline, release_cart_reservations, run_migrations, set_audit_key,
+    try_reserve, AuditKey, ReserveInput,
 };
+use chrono::Utc;
 use proptest::prelude::*;
 use sqlx::SqlitePool;
 use std::sync::Once;
@@ -184,5 +187,132 @@ proptest! {
         ops in prop::collection::vec(op_strategy(8), 1..30)
     ) {
         run(ops)?;
+    }
+}
+
+// -------- Inventory ledger crash recovery --------
+//
+// The real-time inventory ledger and its reservations live in SQLite, so they must
+// survive a SIGKILL-equivalent crash. After recovery, regardless of where we crashed
+// mid-cart, these invariants must hold for every item:
+//   (L1) reserved_qty >= 0 and sold_since_sync_qty >= 0
+//   (L2) reserved_qty == SUM(qty) of still-active reservation rows (aggregate matches rows)
+//   (L3) available_to_sell() >= 0 (never oversell into negative)
+
+#[derive(Debug, Clone)]
+enum LedgerOp {
+    Reserve { cart: usize, qty: i64 },
+    Commit(usize),
+    Release(usize),
+    Crash,
+}
+
+fn ledger_op_strategy(carts: usize) -> impl Strategy<Value = LedgerOp> {
+    prop_oneof![
+        5 => (0..carts.max(1), 1i64..6).prop_map(|(cart, qty)| LedgerOp::Reserve { cart, qty }),
+        2 => (0..carts.max(1)).prop_map(LedgerOp::Commit),
+        2 => (0..carts.max(1)).prop_map(LedgerOp::Release),
+        1 => Just(LedgerOp::Crash),
+    ]
+}
+
+async fn active_reservation_qty(pool: &SqlitePool, store_id: Uuid, item_id: Uuid) -> i64 {
+    let row: (i64,) = sqlx::query_as(
+        "SELECT COALESCE(SUM(qty), 0) FROM stock_reservations \
+         WHERE store_id = ? AND item_id = ? AND state = 'active'",
+    )
+    .bind(store_id.to_string())
+    .bind(item_id.to_string())
+    .fetch_one(pool)
+    .await
+    .expect("sum active reservations");
+    row.0
+}
+
+fn run_ledger(ops: Vec<LedgerOp>) -> Result<(), TestCaseError> {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("ledger.db").to_string_lossy().to_string();
+    let store_id = Uuid::from_u128(0xA11CE);
+    let item_id = Uuid::from_u128(0xB0B);
+    let carts: Vec<Uuid> = (0..4).map(|i| Uuid::from_u128(0xC000 + i)).collect();
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    rt.block_on(async {
+        let mut pool = open(&db_path).await;
+        // Establish an HQ baseline so the item is tracked (idempotent across the run).
+        rebase_baseline(&pool, store_id, item_id, 20, Utc::now())
+            .await
+            .expect("seed baseline");
+
+        for op in ops {
+            match op {
+                LedgerOp::Reserve { cart, qty } => {
+                    let cart_id = carts[cart % carts.len()];
+                    let input = ReserveInput {
+                        store_id,
+                        register_id: Uuid::from_u128(0x5E00 + cart as u128),
+                        cart_id,
+                        line_id: Uuid::new_v4(),
+                        item_id,
+                        qty,
+                        expires_at: None,
+                    };
+                    let _ = try_reserve(&pool, input).await;
+                }
+                LedgerOp::Commit(cart) => {
+                    let cart_id = carts[cart % carts.len()];
+                    let _ = commit_cart_sale(&pool, store_id, cart_id).await;
+                }
+                LedgerOp::Release(cart) => {
+                    let cart_id = carts[cart % carts.len()];
+                    let _ = release_cart_reservations(&pool, store_id, cart_id).await;
+                }
+                LedgerOp::Crash => {
+                    drop(pool);
+                    pool = open(&db_path).await;
+                }
+            }
+        }
+
+        let state = get_inventory_state(&pool, store_id, item_id)
+            .await
+            .expect("get state")
+            .expect("tracked item row exists");
+
+        // (L1)
+        prop_assert!(state.reserved_qty >= 0, "reserved_qty went negative");
+        prop_assert!(
+            state.sold_since_sync_qty >= 0,
+            "sold_since_sync went negative"
+        );
+        // (L2)
+        let active = active_reservation_qty(&pool, store_id, item_id).await;
+        prop_assert_eq!(
+            state.reserved_qty,
+            active,
+            "reserved_qty diverged from active reservation rows after crash"
+        );
+        // (L3)
+        prop_assert!(
+            state.available_to_sell() >= 0,
+            "available_to_sell went negative"
+        );
+
+        Ok(())
+    })
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: 24, max_shrink_iters: 32, .. ProptestConfig::default() })]
+
+    #[test]
+    fn ledger_crash_recovery_preserves_reservation_invariants(
+        ops in prop::collection::vec(ledger_op_strategy(4), 1..30)
+    ) {
+        run_ledger(ops)?;
     }
 }

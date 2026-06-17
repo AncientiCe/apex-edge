@@ -21,6 +21,7 @@ apex-edge-contracts = { path = "../crates/contracts" }
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
 axum = { version = "0.7", features = ["json"] }
 metrics = "0.21"
+chrono = { version = "0.4", features = ["serde"] }
 tower = "0.4"
 tower-http = { version = "0.5", features = ["cors"] }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite"] }
@@ -32,6 +33,7 @@ uuid = { version = "1.0", features = ["v4"] }
 [dev-dependencies]
 apex-edge-contracts = { path = "../crates/contracts" }
 apex-edge-storage = { path = "../crates/storage" }
+tempfile = "3"
 axum = { version = "0.7", features = ["json"] }
 chrono = { version = "0.4", features = ["serde"] }
 reqwest = { version = "0.12", features = ["json"] }

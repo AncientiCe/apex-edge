@@ -5,10 +5,11 @@ use apex_edge_api::{
     create_pairing_code, deny_approval_handler, erase_customer_data, exchange_session,
     export_customer_data, get_approval_handler, get_cart_state_handler, get_document,
     get_order_handler, get_prices, get_product_by_id, grant_approval_handler, handle_pos_command,
-    health, list_categories, list_order_documents, list_orders_handler, openapi_handler,
-    openapi_ui_handler, pair_device, pos_stream_sse, pos_stream_ws, ready, receive_webhook,
-    refresh_session, revoke_session, role::standby_guard_middleware, search_customers,
-    search_products, serve_metrics, sync_status, verify_audit_chain, AppState, AuthSettings,
+    health, list_categories, list_order_documents, list_orders_handler, list_registers,
+    lookup_order_for_return, openapi_handler, openapi_ui_handler, pair_device, pos_snapshot,
+    pos_stream_sse, pos_stream_ws, ready, receive_webhook, refresh_session, revoke_session,
+    role::standby_guard_middleware, search_customers, search_products, serve_metrics, sync_status,
+    verify_audit_chain, AppState, AuthSettings,
 };
 use axum::middleware;
 use axum::routing::post;
@@ -112,6 +113,9 @@ pub fn build_router(
         .route("/webhooks/:connector_id", post(receive_webhook))
         .route("/pos/stream", get(pos_stream_ws))
         .route("/pos/events", get(pos_stream_sse))
+        .route("/pos/registers", get(list_registers))
+        .route("/pos/snapshot", get(pos_snapshot))
+        .route("/pos/returns/lookup", get(lookup_order_for_return))
         .route("/openapi.json", get(openapi_handler))
         .route("/docs", get(openapi_ui_handler))
         .route_layer(middleware::from_fn_with_state(

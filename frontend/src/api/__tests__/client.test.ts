@@ -64,7 +64,7 @@ describe('buildEnvelope', () => {
 });
 
 describe('auth transport', () => {
-  const originalFetch = global.fetch;
+  const originalFetch = globalThis.fetch;
   const baseUrl = 'http://localhost:3000';
 
   beforeEach(() => {
@@ -74,16 +74,16 @@ describe('auth transport', () => {
   });
 
   afterEach(() => {
-    global.fetch = originalFetch;
+    globalThis.fetch = originalFetch;
   });
 
   it('attaches bearer token to protected requests', async () => {
-    const fetchMock = vi.fn(async () => ({
+    const fetchMock = vi.fn(async (..._args: unknown[]) => ({
       ok: true,
       status: 200,
       json: async () => [],
-    })) as unknown as typeof fetch;
-    global.fetch = fetchMock;
+    }));
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
     configureAuthTransport({
       getAccessToken: () => 'access-123',
       getRefreshToken: () => null,
@@ -119,8 +119,8 @@ describe('auth transport', () => {
         ok: true,
         status: 200,
         json: async () => [],
-      }) as unknown as typeof fetch;
-    global.fetch = fetchMock;
+      });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
 
     let access = 'old-access';
     let refresh = 'old-refresh';
@@ -155,8 +155,8 @@ describe('auth transport', () => {
         ok: false,
         status: 401,
         json: async () => ({ message: 'refresh failed' }),
-      }) as unknown as typeof fetch;
-    global.fetch = fetchMock;
+      });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
 
     configureAuthTransport({
       getAccessToken: () => 'old-access',
@@ -171,7 +171,7 @@ describe('auth transport', () => {
 });
 
 describe('journey http tracker', () => {
-  const originalFetch = global.fetch;
+  const originalFetch = globalThis.fetch;
 
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -180,7 +180,7 @@ describe('journey http tracker', () => {
   });
 
   afterEach(() => {
-    global.fetch = originalFetch;
+    globalThis.fetch = originalFetch;
   });
 
   it('counts wire-level attempts including auth retry and refresh', async () => {
@@ -206,8 +206,8 @@ describe('journey http tracker', () => {
         ok: true,
         status: 200,
         json: async () => [],
-      }) as unknown as typeof fetch;
-    global.fetch = fetchMock;
+      });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
 
     let access = 'old-access';
     let refresh = 'old-refresh';
@@ -237,12 +237,12 @@ describe('journey http tracker', () => {
 
   it('classifies non-local requests and tracks errors', async () => {
     const baseUrl = 'https://api.example.com';
-    const fetchMock = vi.fn(async () => ({
+    const fetchMock = vi.fn(async (..._args: unknown[]) => ({
       ok: false,
       status: 404,
       json: async () => ({ message: 'missing' }),
-    })) as unknown as typeof fetch;
-    global.fetch = fetchMock;
+    }));
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
 
     startJourneyTracking('test');
     await expect(getHealth(baseUrl)).rejects.toMatchObject({ status: 404 });
@@ -256,15 +256,15 @@ describe('journey http tracker', () => {
 });
 
 describe('auth endpoints', () => {
-  const originalFetch = global.fetch;
+  const originalFetch = globalThis.fetch;
   const baseUrl = 'http://localhost:3000';
 
   afterEach(() => {
-    global.fetch = originalFetch;
+    globalThis.fetch = originalFetch;
   });
 
   it('refreshSession posts refresh token payload', async () => {
-    const fetchMock = vi.fn(async () => ({
+    const fetchMock = vi.fn(async (..._args: unknown[]) => ({
       ok: true,
       status: 200,
       json: async () => ({
@@ -273,8 +273,8 @@ describe('auth endpoints', () => {
         expires_at: new Date().toISOString(),
         refresh_expires_at: new Date().toISOString(),
       }),
-    })) as unknown as typeof fetch;
-    global.fetch = fetchMock;
+    }));
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
     await refreshSession(baseUrl, 'refresh-token');
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe(`${baseUrl}/auth/sessions/refresh`);
@@ -282,7 +282,7 @@ describe('auth endpoints', () => {
   });
 
   it('postPosCommand uses auth transport for protected route', async () => {
-    const fetchMock = vi.fn(async () => ({
+    const fetchMock = vi.fn(async (..._args: unknown[]) => ({
       ok: true,
       status: 200,
       json: async () => ({
@@ -292,8 +292,8 @@ describe('auth endpoints', () => {
         payload: null,
         errors: [],
       }),
-    })) as unknown as typeof fetch;
-    global.fetch = fetchMock;
+    }));
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
     configureAuthTransport({
       getAccessToken: () => 'access-xyz',
       getRefreshToken: () => null,

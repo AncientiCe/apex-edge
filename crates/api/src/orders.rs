@@ -16,6 +16,49 @@ pub struct OrderListQuery {
     pub shift_id: Option<Uuid>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct ReturnLookupQuery {
+    pub order_id: Uuid,
+}
+
+/// GET /pos/returns/lookup?order_id=... — find an order store-wide for a return, regardless of
+/// which register finalized it. The order ledger is store-scoped (not register-scoped), so a
+/// customer can return at any till. Returns the full order entry (lines + payments).
+pub async fn lookup_order_for_return(
+    State(app): State<AppState>,
+    Query(query): Query<ReturnLookupQuery>,
+) -> Result<Json<apex_edge_storage::OrderLedgerEntry>, StatusCode> {
+    match fetch_order_ledger_entry(&app.pool, query.order_id).await {
+        Ok(Some(order)) => {
+            metrics::counter!(
+                apex_edge_metrics::ORDERS_LOOKUP_TOTAL,
+                1u64,
+                "operation" => "return_lookup",
+                "outcome" => apex_edge_metrics::OUTCOME_HIT
+            );
+            Ok(Json(order))
+        }
+        Ok(None) => {
+            metrics::counter!(
+                apex_edge_metrics::ORDERS_LOOKUP_TOTAL,
+                1u64,
+                "operation" => "return_lookup",
+                "outcome" => apex_edge_metrics::OUTCOME_NOT_FOUND
+            );
+            Err(StatusCode::NOT_FOUND)
+        }
+        Err(_) => {
+            metrics::counter!(
+                apex_edge_metrics::ORDERS_LOOKUP_TOTAL,
+                1u64,
+                "operation" => "return_lookup",
+                "outcome" => apex_edge_metrics::OUTCOME_ERROR
+            );
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
 pub async fn get_order_handler(
     State(app): State<AppState>,
     Path(order_id): Path<Uuid>,

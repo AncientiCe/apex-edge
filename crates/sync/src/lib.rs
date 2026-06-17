@@ -40,6 +40,8 @@ pub async fn run_sync_ndjson(
                 None,
             )
             .await;
+            // Record a durable last-success marker for freshness/degraded-mode tracking.
+            let _ = apex_edge_storage::record_successful_sync(pool, finished).await;
         }
         Err(e) => {
             let _ = apex_edge_storage::upsert_latest_sync_run(
@@ -216,10 +218,39 @@ async fn apply_entity_batch(
                     .map_err(|_| crate::ingest::IngestError::InvalidPayload)?;
                 levels.push(level);
             }
-            apex_edge_storage::replace_inventory_levels(pool, store_id, &levels)
-                .await
-                .map_err(crate::ingest::IngestError::Storage)
-                .map_err(RunSyncError::Ingest)?;
+            // Rebase the real-time ledger onto the fresh HQ baseline (delta-ledger model):
+            // keep active reservations and local activity HQ has not yet seen.
+            let started = std::time::Instant::now();
+            let result =
+                apex_edge_storage::reconcile_inventory_levels(pool, store_id, &levels).await;
+            metrics::histogram!(
+                apex_edge_metrics::INVENTORY_RECONCILE_DURATION_SECONDS,
+                started.elapsed().as_secs_f64()
+            );
+            match result {
+                Ok(summary) => {
+                    metrics::counter!(
+                        apex_edge_metrics::INVENTORY_RECONCILE_TOTAL,
+                        1u64,
+                        "outcome" => apex_edge_metrics::OUTCOME_SUCCESS
+                    );
+                    if summary.drift > 0 {
+                        metrics::counter!(apex_edge_metrics::INVENTORY_DRIFT_TOTAL, summary.drift);
+                        tracing::warn!(
+                            "Inventory reconcile drift: {} item(s) where local activity exceeded HQ baseline",
+                            summary.drift
+                        );
+                    }
+                }
+                Err(e) => {
+                    metrics::counter!(
+                        apex_edge_metrics::INVENTORY_RECONCILE_TOTAL,
+                        1u64,
+                        "outcome" => apex_edge_metrics::OUTCOME_ERROR
+                    );
+                    return Err(RunSyncError::Ingest(crate::ingest::IngestError::Storage(e)));
+                }
+            }
         }
         "print_templates" => {
             use apex_edge_contracts::PrintTemplateConfig;

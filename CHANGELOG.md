@@ -11,6 +11,13 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Edge Store Brain: real-time inventory ledger (`inventory_state` + `stock_reservations`) that prevents oversell across concurrent registers via atomic guarded reservations, with live `available_to_sell` surfaced on catalog APIs and `StockChanged` stream events.
+- HQ reconciliation by delta-ledger rebase: `reconcile_inventory_levels` keeps active reservations and unreflected local activity while rebasing the HQ baseline, with drift auditing.
+- Multi-register coordination: register presence tracking (`GET /pos/registers`, `RegisterPresence`), safe parked-cart handoff (`claim_parked_cart`, `CartHandoff`), and cross-register returns lookup (`GET /pos/returns/lookup`).
+- Continuity hardening: bounded sync staleness + degraded-mode flag on `GET /sync/status` and the POS UI, reservation TTL sweeper with crash recovery, and stream resnapshot via a bounded history ring (`since` replay) plus a `GET /pos/snapshot` full-state endpoint.
+- OpenAPI coverage for the new real-time endpoints (`/pos/registers`, `/pos/snapshot`, `/pos/returns/lookup`) plus `register_id`/`since` parameters on `/pos/stream` and `/pos/events`.
+- Inventory/continuity observability metrics: `apex_edge_inventory_reservations_total`, `apex_edge_inventory_oversell_prevented_total`, `apex_edge_inventory_reconcile_total`, `apex_edge_inventory_reconcile_duration_seconds`, `apex_edge_inventory_drift_total`, `apex_edge_inventory_reservations_expired_total`, `apex_edge_register_presence`, `apex_edge_cart_handoff_total`, `apex_edge_sync_staleness_seconds`, and `apex_edge_edge_degraded_mode`.
+
 - Payment provider adapter crate with `PaymentProvider`, `CashPaymentProvider`, and hosted terminal reference implementations for Stripe Terminal and Adyen Terminal.
 - POS payment metadata fields for provider payment ids, entry method, and tip amounts, preserved through cart state, order ledger, receipts, and HQ submission payloads.
 - Payment observability metrics: `apex_edge_payment_attempts_total` and `apex_edge_payment_duration_seconds`.
@@ -39,6 +46,8 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `018_outbox_destinations.sql` and `018_outbox_destinations.down.sql`.
 - `019_api_tokens_webhooks.sql` and `019_api_tokens_webhooks.down.sql`.
 - `020_stock_movements.sql` and `020_stock_movements.down.sql`.
+- `021_inventory_ledger.sql` and `021_inventory_ledger.down.sql` (real-time inventory ledger + reservations).
+- Additive `parked_carts.recalled_by_register_id` column for safe cross-register cart handoff.
 
 ## [0.7.0] — 2026-04-29
 

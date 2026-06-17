@@ -62,6 +62,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sqlx",
+ "tempfile",
  "tokio",
  "tower 0.4.13",
  "tower-http 0.5.2",
@@ -245,6 +246,7 @@ name = "apex-edge-storage"
 version = "0.3.0"
 dependencies = [
  "apex-edge-contracts",
+ "apex-edge-domain",
  "apex-edge-metrics",
  "chrono",
  "hex",

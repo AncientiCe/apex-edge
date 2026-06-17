@@ -216,11 +216,29 @@ async fn parked_cart_and_time_clock_roundtrip() {
     .expect("park cart");
     assert_eq!(parked.total_cents, 1_200);
 
-    let recalled = recall_parked_cart(&pool, parked.parked_cart_id)
+    let claiming_register = Uuid::new_v4();
+    let outcome = claim_parked_cart(&pool, parked.parked_cart_id, claiming_register)
         .await
-        .expect("recall cart")
-        .expect("parked cart exists");
-    assert_eq!(recalled["id"], cart_id.to_string());
+        .expect("claim cart");
+    match outcome {
+        apex_edge_storage::ClaimOutcome::Claimed {
+            cart_data,
+            parked_by_register,
+        } => {
+            assert_eq!(cart_data["id"], cart_id.to_string());
+            assert_eq!(parked_by_register, register_id);
+        }
+        other => panic!("expected Claimed, got {other:?}"),
+    }
+
+    // A second claim by a different register must lose the race (no double-recall).
+    let second = claim_parked_cart(&pool, parked.parked_cart_id, Uuid::new_v4())
+        .await
+        .expect("second claim");
+    assert!(matches!(
+        second,
+        apex_edge_storage::ClaimOutcome::AlreadyClaimed
+    ));
 
     let clocked_in = clock_in(&pool, store_id, register_id, "associate-1")
         .await
@@ -415,6 +433,39 @@ async fn sync_status_upsert_and_read_latest_run() {
         .unwrap();
     assert_eq!(run2.state, "success");
     assert!(run2.finished_at.is_some());
+}
+
+#[tokio::test]
+async fn last_successful_sync_survives_a_later_failure() {
+    let pool = test_pool().await;
+    assert_eq!(
+        get_last_successful_sync_at(&pool)
+            .await
+            .expect("query last success"),
+        None
+    );
+
+    let success_at = Utc::now();
+    record_successful_sync(&pool, success_at)
+        .await
+        .expect("record success");
+
+    // A later failed run must not clobber the last-success timestamp.
+    upsert_latest_sync_run(
+        &pool,
+        "failed",
+        Some(Utc::now()),
+        Some(Utc::now()),
+        Some("boom"),
+    )
+    .await
+    .expect("upsert failed run");
+
+    let last = get_last_successful_sync_at(&pool)
+        .await
+        .expect("query last success")
+        .expect("a success was recorded");
+    assert_eq!(last.timestamp(), success_at.timestamp());
 }
 
 // --- Print templates ---

@@ -11,6 +11,7 @@ pub mod catalog_search;
 pub mod customer_search;
 pub mod documents;
 pub mod health;
+pub mod inventory_realtime;
 pub mod metrics_handler;
 pub mod openapi;
 pub mod orders;
@@ -31,10 +32,14 @@ pub use catalog_search::*;
 pub use customer_search::*;
 pub use documents::*;
 pub use health::*;
+pub use inventory_realtime::*;
 pub use metrics_handler::serve_metrics;
 pub use openapi::*;
 pub use orders::*;
 pub use pos::{get_cart_state_handler, handle_pos_command, AppState};
 pub use role::*;
-pub use stream::{pos_stream_sse, pos_stream_ws, stream_broadcast, StreamHub, StreamKind};
+pub use stream::{
+    list_registers, pos_snapshot, pos_stream_sse, pos_stream_ws, stream_broadcast, StreamHub,
+    StreamKind,
+};
 pub use sync_status::*;

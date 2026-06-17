@@ -26,6 +26,9 @@ Related: [README](../../README.md) · [Architecture](../architecture/README.md) 
 | `APEX_EDGE_SEED_DEMO` | No | unset | Set to `1` or `true` to seed demo catalog, customers, and promotions on startup. |
 | `APEX_EDGE_SYNC_SOURCE_URL` | No | unset | Base URL of the HQ sync source. If set, sync runs on startup and periodically. |
 | `APEX_EDGE_SYNC_INTERVAL_SECONDS` | No | `300` | Sync retry/schedule interval in seconds when `APEX_EDGE_SYNC_SOURCE_URL` is set. |
+| `APEX_EDGE_SYNC_STALENESS_DEGRADED_SECONDS` | No | `900` | Sync staleness (seconds) beyond which `/sync/status` reports `degraded: true` and the UI shows a degraded banner. |
+| `APEX_EDGE_RESERVATION_TTL_SECONDS` | No | `3600` | Lifetime of a stock reservation before the sweeper may release it (frees stock from abandoned carts). |
+| `APEX_EDGE_RESERVATION_SWEEP_INTERVAL_SECONDS` | No | `60` | How often the background sweeper expires stale reservations. A sweep also runs once on startup (crash recovery). |
 | `APEX_EDGE_HQ_SUBMIT_URL` | No | unset | URL to POST outbox submissions to HQ. If set, the outbox dispatcher runs every 30 s. |
 | `APEX_EDGE_ALLOWED_ORIGINS` | No | unset (wildcard) | Comma-separated list of allowed CORS origins, e.g. `http://localhost:5173,https://pos.internal`. Empty = allow all (logs a warning). Always set this in non-local environments. |
 | `APEX_EDGE_AUTH_ENABLED` | No | `false` | Enable edge auth middleware and auth endpoints. When `true`, business routes require bearer access tokens. |
@@ -115,6 +118,9 @@ The service uses structured logging via `tracing`. Key log events:
 | `ERROR` | `"outbox dispatch cycle error ..."` | Dispatch failed; will retry in 30 s. |
 | `WARN` | `"CORS: allowing all origins ..."` | Running in wildcard CORS mode — not for production. |
 | `INFO` | `"CORS restricted to N origin(s)"` | CORS is locked to an explicit allowlist. |
+| `INFO` | `"Seeded inventory ledger for N item(s)"` | Real-time oversell ledger initialised from local catalog stock on startup. |
+| `INFO` | `"Released N stale stock reservation(s)"` | Reservation TTL sweeper freed stock from abandoned/crashed carts. |
+| `WARN` | `"Reservation sweep failed: ..."` | Sweeper cycle errored; stock release retried next interval (sale path unaffected). |
 
 Set `RUST_LOG=apex_edge=debug` to see per-row outbox dispatches and sync checkpoint progress.
 
@@ -162,6 +168,37 @@ SQLite has a single-writer model. Under load, readers may briefly block. If pers
 `/metrics` returns 404 when no Prometheus recorder is installed. This happens in test
 setups that pass `None` for `metrics_handle`. In normal production startup,
 `install_recorder()` is called before `build_router`, so this should not occur.
+
+### Store stuck in "Degraded mode" (stale stock baselines)
+
+The hub reports `degraded: true` on `GET /sync/status` (and shows a banner in the POS) when the last
+successful HQ sync is older than `APEX_EDGE_SYNC_STALENESS_DEGRADED_SECONDS` (default 900s), or when
+no sync has ever succeeded. The store keeps selling on the local ledger; this is a freshness
+warning, not an outage.
+
+1. Confirm HQ reachability and that `APEX_EDGE_SYNC_SOURCE_URL` is set/correct.
+2. Check logs for `Sync failed:` and the underlying error.
+3. Inspect freshness directly:
+   ```bash
+   curl -s http://localhost:3000/sync/status | jq '{degraded, sync_staleness_seconds, last_sync_at}'
+   ```
+4. Once a sync succeeds, `degraded` clears automatically (a durable `sync_run(id='last_success')`
+   marker drives the calculation, so a later failed run will not re-trigger it).
+
+### Stock looks wrong / reservations seem stuck
+
+Live availability is `available_to_sell = hq_baseline + local_adjust - reserved - sold_since_sync`.
+
+1. Fetch the authoritative snapshot:
+   ```bash
+   curl -s http://localhost:3000/pos/snapshot | jq '.stock, .registers, .parked_carts'
+   ```
+2. Abandoned-cart reservations are released by the sweeper within
+   `APEX_EDGE_RESERVATION_SWEEP_INTERVAL_SECONDS`; watch for `Released N stale stock reservation(s)`.
+3. After a crash, a startup sweep plus the durable ledger restore consistent state; a reconnecting
+   POS that missed events receives `resnapshot_required` and refetches `/pos/snapshot`.
+4. A persistent gap between local availability and HQ on-hand surfaces as
+   `apex_edge_inventory_drift_total` increments at reconcile time — investigate shrinkage/receiving.
 
 ### Auth exchange fails with 401
 
@@ -217,6 +254,11 @@ For local transparency and live troubleshooting, run ApexEdge and the observabil
 | `sum(rate(apex_edge_sync_ingest_batches_total{outcome="invalid_payload"}[5m]))` | Northbound data contract integrity | Invalid HQ payload/contract drift | Always zero |
 | `sum(rate(apex_edge_pos_commands_total{operation="finalize_order",outcome="success"}[5m])) / clamp_min(sum(rate(apex_edge_pos_commands_total{operation="finalize_order"}[5m])), 0.001)` | Checkout completion quality | Pricing/payment/order finalization regressions | Close to 1.0 under normal operation |
 | `100 * (1 - (sum(rate(apex_edge_pos_commands_total{operation="finalize_order", outcome="success"}[15m])) / clamp_min(sum(rate(apex_edge_pos_commands_total{operation="add_payment", outcome="success"}[15m])), 0.001)))` | Transaction funnel drop-off after payment | Finalize path bugs, downstream write failures | Close to 0%; investigate growth trend |
+| `max(apex_edge_edge_degraded_mode)` | Selling on stale baselines (HQ/WAN down) | HQ unreachable, sync failing | `0` in steady state; `1` means investigate sync/HQ |
+| `max(apex_edge_sync_staleness_seconds)` | Freshness of HQ baselines | Sync stalled | Below `APEX_EDGE_SYNC_STALENESS_DEGRADED_SECONDS` |
+| `sum(rate(apex_edge_inventory_oversell_prevented_total[5m]))` | Oversell pressure across registers | Hot item near zero stock | Brief spikes ok; sustained means restock/replenish |
+| `sum(increase(apex_edge_inventory_drift_total[1h]))` | Local-vs-HQ stock discrepancy | Shrinkage, unrecorded movement | Near zero; sustained growth needs a stock audit |
+| `max(apex_edge_register_presence)` | Live registers online | Mass disconnect / network issue | Matches expected lane count |
 
 ### Shutdown
 

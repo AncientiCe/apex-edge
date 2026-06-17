@@ -34,8 +34,11 @@ fn spec() -> serde_json::Value {
                 }
             },
             "/pos/cart/{cart_id}": { "get": { "summary": "Get cart state", "parameters": [ { "name": "cart_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ], "responses": { "200": { "description": "CartState" }, "404": { "description": "Not found" } } } },
-            "/pos/stream": { "get": { "summary": "WebSocket real-time feed", "description": "Upgrade to WebSocket for per-store real-time events (cart, approvals, documents, sync, prices).", "responses": { "101": { "description": "Switching protocols" } } } },
-            "/pos/events": { "get": { "summary": "SSE fallback for real-time feed", "responses": { "200": { "description": "text/event-stream" } } } },
+            "/pos/stream": { "get": { "summary": "WebSocket real-time feed", "description": "Upgrade to WebSocket for per-store real-time events (cart, approvals, documents, sync, prices, stock, presence, handoff). Pass `register_id` for presence tracking and `since` to replay missed events.", "parameters": [ { "name": "store_id", "in": "query", "required": false, "schema": { "type": "string", "format": "uuid" } }, { "name": "register_id", "in": "query", "required": false, "schema": { "type": "string", "format": "uuid" } }, { "name": "since", "in": "query", "required": false, "description": "Last seq seen; replays newer events or signals resnapshot_required.", "schema": { "type": "integer", "format": "int64" } } ], "responses": { "101": { "description": "Switching protocols" } } } },
+            "/pos/events": { "get": { "summary": "SSE fallback for real-time feed", "description": "Server-Sent Events fallback. Supports the same `store_id`, `register_id`, and `since` query parameters as /pos/stream.", "parameters": [ { "name": "store_id", "in": "query", "required": false, "schema": { "type": "string", "format": "uuid" } }, { "name": "register_id", "in": "query", "required": false, "schema": { "type": "string", "format": "uuid" } }, { "name": "since", "in": "query", "required": false, "schema": { "type": "integer", "format": "int64" } } ], "responses": { "200": { "description": "text/event-stream" } } } },
+            "/pos/registers": { "get": { "summary": "List present registers", "description": "Registers currently holding at least one live stream connection in the store.", "parameters": [ { "name": "store_id", "in": "query", "required": false, "schema": { "type": "string", "format": "uuid" } } ], "responses": { "200": { "description": "Present register ids", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RegisterPresence" } } } } } } },
+            "/pos/snapshot": { "get": { "summary": "Full live store state (resnapshot)", "description": "Authoritative live state for a client that reconnected after a gap (resnapshot_required): current stock availability, present registers, open parked carts, and the latest stream seq.", "parameters": [ { "name": "store_id", "in": "query", "required": false, "schema": { "type": "string", "format": "uuid" } } ], "responses": { "200": { "description": "Store snapshot", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/StoreSnapshot" } } } } } } },
+            "/pos/returns/lookup": { "get": { "summary": "Look up an order for return (store-wide)", "description": "Find an order anywhere in the store for a return, regardless of which register finalized it.", "parameters": [ { "name": "order_id", "in": "query", "required": true, "schema": { "type": "string", "format": "uuid" } } ], "responses": { "200": { "description": "Order ledger entry" }, "404": { "description": "Not found" } } } },
             "/catalog/products": { "get": { "summary": "Search products", "responses": { "200": { "description": "Product search results" } } } },
             "/catalog/products/{id}": { "get": { "summary": "Get product by id", "parameters": [ { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ], "responses": { "200": { "description": "Product" }, "404": { "description": "Not found" } } } },
             "/catalog/prices": { "get": { "summary": "Get prices for products", "parameters": [ { "name": "product_id", "in": "query", "required": true, "schema": { "type": "array", "items": { "type": "string", "format": "uuid" } } } ], "responses": { "200": { "description": "Price list" } } } },
@@ -91,6 +94,35 @@ fn spec() -> serde_json::Value {
                         "first_bad_id": { "type": "integer", "format": "int64", "nullable": true },
                         "reason": { "type": "string", "nullable": true }
                     }
+                },
+                "RegisterPresence": {
+                    "type": "object",
+                    "required": ["store_id", "registers"],
+                    "properties": {
+                        "store_id": { "type": "string", "format": "uuid" },
+                        "registers": { "type": "array", "items": { "type": "string", "format": "uuid" } }
+                    }
+                },
+                "StoreSnapshot": {
+                    "type": "object",
+                    "required": ["store_id", "seq", "stock", "registers", "parked_carts"],
+                    "properties": {
+                        "store_id": { "type": "string", "format": "uuid" },
+                        "seq": { "type": "integer", "format": "int64", "description": "Latest stream sequence; resume /pos/stream with since=seq." },
+                        "stock": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "required": ["item_id", "available_to_sell"],
+                                "properties": {
+                                    "item_id": { "type": "string", "format": "uuid" },
+                                    "available_to_sell": { "type": "integer", "format": "int64" }
+                                }
+                            }
+                        },
+                        "registers": { "type": "array", "items": { "type": "string", "format": "uuid" } },
+                        "parked_carts": { "type": "array", "items": { "type": "object" } }
+                    }
                 }
             }
         }
@@ -127,5 +159,22 @@ mod tests {
         assert!(v["paths"]["/admin/customers/{id}/erase"]["post"].is_object());
         assert!(v["paths"]["/webhooks/{connector_id}"]["post"].is_object());
         assert!(v["paths"]["/docs"]["get"].is_object());
+    }
+
+    #[test]
+    fn openapi_documents_realtime_coordination_endpoints() {
+        let v = spec();
+        // Multi-register coordination + continuity endpoints added with the Edge Store Brain.
+        assert!(v["paths"]["/pos/registers"]["get"].is_object());
+        assert!(v["paths"]["/pos/snapshot"]["get"].is_object());
+        assert!(v["paths"]["/pos/returns/lookup"]["get"].is_object());
+        // Returns lookup requires order_id.
+        assert_eq!(
+            v["paths"]["/pos/returns/lookup"]["get"]["parameters"][0]["name"],
+            "order_id"
+        );
+        // Snapshot/presence response schemas are defined.
+        assert!(v["components"]["schemas"]["StoreSnapshot"].is_object());
+        assert!(v["components"]["schemas"]["RegisterPresence"].is_object());
     }
 }

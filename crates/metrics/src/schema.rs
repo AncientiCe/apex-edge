@@ -35,6 +35,9 @@ pub fn route_label(path: &str) -> &'static str {
         "/approvals/:id/deny" | "/approvals/{id}/deny" => "approvals_deny",
         "/pos/stream" => "pos_stream",
         "/pos/events" => "pos_events",
+        "/pos/registers" => "pos_registers",
+        "/pos/snapshot" => "pos_snapshot",
+        "/pos/returns/lookup" => "pos_returns_lookup",
         "/openapi.json" => "openapi_json",
         "/docs" => "docs",
         "/auth/pairing-codes" => "auth_pairing_codes",
@@ -93,6 +96,15 @@ pub fn request_path_to_route(path: &str) -> &'static str {
     }
     if path == "/pos/events" {
         return "pos_events";
+    }
+    if path == "/pos/registers" {
+        return "pos_registers";
+    }
+    if path == "/pos/snapshot" {
+        return "pos_snapshot";
+    }
+    if path == "/pos/returns/lookup" {
+        return "pos_returns_lookup";
     }
     if path == "/openapi.json" {
         return "openapi_json";
@@ -222,6 +234,34 @@ pub const CLOUD_CONNECTOR_DELIVERY_DURATION_SECONDS: &str =
 // ---------- Stock operations ----------
 /// Counter: stock movement operations by operation and outcome.
 pub const STOCK_OPERATIONS_TOTAL: &str = "apex_edge_stock_operations_total";
+
+// ---------- Real-time inventory ledger (api::pos_handler + sync) ----------
+/// Counter: reservation attempts on add-to-cart. Labels: outcome (reserved, untracked, insufficient, error).
+pub const INVENTORY_RESERVATIONS_TOTAL: &str = "apex_edge_inventory_reservations_total";
+/// Counter: oversell attempts prevented by the ledger (no label).
+pub const INVENTORY_OVERSELL_PREVENTED_TOTAL: &str = "apex_edge_inventory_oversell_prevented_total";
+/// Counter: HQ baseline rebases applied during sync. Labels: outcome (success, error).
+pub const INVENTORY_RECONCILE_TOTAL: &str = "apex_edge_inventory_reconcile_total";
+/// Histogram: inventory rebase/reconcile duration in seconds.
+pub const INVENTORY_RECONCILE_DURATION_SECONDS: &str =
+    "apex_edge_inventory_reconcile_duration_seconds";
+/// Counter: detected availability drift events during reconcile (no label).
+pub const INVENTORY_DRIFT_TOTAL: &str = "apex_edge_inventory_drift_total";
+/// Counter: stale reservations expired by the TTL sweeper (no label).
+pub const INVENTORY_RESERVATIONS_EXPIRED_TOTAL: &str =
+    "apex_edge_inventory_reservations_expired_total";
+
+// ---------- Multi-register coordination (api::stream + api::pos_handler) ----------
+/// Gauge: currently-present registers per store. Label: store-scoped via process; no id label.
+pub const REGISTER_PRESENCE: &str = "apex_edge_register_presence";
+/// Counter: parked-cart handoff events. Labels: outcome (claimed, conflict, not_found, error).
+pub const CART_HANDOFF_TOTAL: &str = "apex_edge_cart_handoff_total";
+
+// ---------- Continuity / freshness ----------
+/// Gauge: seconds since the last successful HQ sync.
+pub const SYNC_STALENESS_SECONDS: &str = "apex_edge_sync_staleness_seconds";
+/// Gauge: 1 when the hub is in degraded (stale-sync) mode, else 0.
+pub const EDGE_DEGRADED_MODE: &str = "apex_edge_edge_degraded_mode";
 
 // ---------- Fiscal providers ----------
 /// Counter: fiscal receipt signing by provider and outcome.
@@ -393,6 +433,7 @@ mod tests {
             ),
             ("/pos/stream", "pos_stream"),
             ("/pos/events", "pos_events"),
+            ("/pos/snapshot", "pos_snapshot"),
             ("/orders", "orders"),
             ("/orders/550e8400-e29b-41d4-a716-446655440000", "orders_id"),
             ("/openapi.json", "openapi_json"),

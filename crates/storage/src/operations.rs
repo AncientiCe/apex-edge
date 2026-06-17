@@ -82,25 +82,61 @@ pub async fn list_parked_carts(
     rows.into_iter().map(row_to_parked_cart).collect()
 }
 
-pub async fn recall_parked_cart(
+/// Outcome of attempting to claim (recall) a parked cart for handoff between registers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClaimOutcome {
+    /// The caller won the claim; carries the cart data and the register that parked it.
+    Claimed {
+        cart_data: Value,
+        parked_by_register: Uuid,
+    },
+    /// The cart exists but was already recalled by another register (lost the race).
+    AlreadyClaimed,
+    /// No such parked cart.
+    NotFound,
+}
+
+/// Atomically claim a parked cart for recall. The guarded `UPDATE ... WHERE recalled_at IS NULL`
+/// ensures only one register can win a concurrent recall — a safe handoff with no double-recall.
+pub async fn claim_parked_cart(
     pool: &SqlitePool,
     parked_cart_id: Uuid,
-) -> Result<Option<Value>, PoolError> {
-    let Some(row) =
-        sqlx::query("SELECT cart_data FROM parked_carts WHERE id = ? AND recalled_at IS NULL")
+    claiming_register_id: Uuid,
+) -> Result<ClaimOutcome, PoolError> {
+    let now = Utc::now().to_rfc3339();
+    let updated = sqlx::query(
+        "UPDATE parked_carts SET recalled_at = ?, recalled_by_register_id = ? \
+         WHERE id = ? AND recalled_at IS NULL",
+    )
+    .bind(&now)
+    .bind(claiming_register_id.to_string())
+    .bind(parked_cart_id.to_string())
+    .execute(pool)
+    .await?;
+
+    if updated.rows_affected() == 0 {
+        // Either the row does not exist, or it was already claimed.
+        let exists = sqlx::query("SELECT 1 FROM parked_carts WHERE id = ?")
             .bind(parked_cart_id.to_string())
             .fetch_optional(pool)
-            .await?
-    else {
-        return Ok(None);
-    };
-    sqlx::query("UPDATE parked_carts SET recalled_at = ? WHERE id = ?")
-        .bind(Utc::now().to_rfc3339())
+            .await?;
+        return Ok(if exists.is_some() {
+            ClaimOutcome::AlreadyClaimed
+        } else {
+            ClaimOutcome::NotFound
+        });
+    }
+
+    let row = sqlx::query("SELECT cart_data, register_id FROM parked_carts WHERE id = ?")
         .bind(parked_cart_id.to_string())
-        .execute(pool)
+        .fetch_one(pool)
         .await?;
     let data: String = row.try_get("cart_data")?;
-    Ok(Some(serde_json::from_str(&data).unwrap_or(Value::Null)))
+    let parked_by: String = row.try_get("register_id")?;
+    Ok(ClaimOutcome::Claimed {
+        cart_data: serde_json::from_str(&data).unwrap_or(Value::Null),
+        parked_by_register: Uuid::parse_str(&parked_by).unwrap_or_default(),
+    })
 }
 
 pub async fn clock_in(

@@ -90,6 +90,41 @@ pub async fn upsert_latest_sync_run(
     Ok(())
 }
 
+/// Record the timestamp of the most recent *successful* sync.
+///
+/// Stored as a dedicated `sync_run` row (`id = 'last_success'`) so a subsequent failed
+/// run cannot erase our knowledge of when the baseline was last trustworthy. Used to
+/// compute sync staleness and the degraded-mode flag.
+pub async fn record_successful_sync(
+    pool: &SqlitePool,
+    finished_at: DateTime<Utc>,
+) -> Result<(), SyncStatusError> {
+    let finished = finished_at.to_rfc3339();
+    sqlx::query(
+        "INSERT INTO sync_run (id, state, started_at, finished_at, last_error) VALUES ('last_success', 'success', ?, ?, NULL)
+         ON CONFLICT(id) DO UPDATE SET finished_at = ?, started_at = ?",
+    )
+    .bind(&finished)
+    .bind(&finished)
+    .bind(&finished)
+    .bind(&finished)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Get the timestamp of the last successful sync, if any.
+pub async fn get_last_successful_sync_at(
+    pool: &SqlitePool,
+) -> Result<Option<DateTime<Utc>>, SyncStatusError> {
+    let row = sqlx::query_as::<_, (Option<String>,)>(
+        "SELECT finished_at FROM sync_run WHERE id = 'last_success'",
+    )
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.and_then(|(finished_at,)| finished_at.as_deref().and_then(parse_datetime)))
+}
+
 /// Get all entity sync statuses (for status page).
 pub async fn get_entity_sync_statuses(
     pool: &SqlitePool,

@@ -1,0 +1,55 @@
+wing: apex_edge
+rooms:
+- name: observability
+  description: Files from observability/
+  keywords:
+  - observability
+  - observability
+- name: backend
+  description: Files from api/
+  keywords:
+  - backend
+  - api
+- name: packaging
+  description: Files from packaging/
+  keywords:
+  - packaging
+  - packaging
+- name: scripts
+  description: Files from tools/
+  keywords:
+  - scripts
+  - tools
+- name: apex_edge
+  description: Files from apex-edge/
+  keywords:
+  - apex_edge
+  - apex-edge
+- name: documentation
+  description: Files from docs/
+  keywords:
+  - documentation
+  - docs
+- name: crates
+  description: Files from crates/
+  keywords:
+  - crates
+  - crates
+- name: testing
+  description: Files from tests/
+  keywords:
+  - testing
+  - tests
+- name: frontend
+  description: Files from frontend/
+  keywords:
+  - frontend
+  - frontend
+- name: design
+  description: Files from assets/
+  keywords:
+  - design
+  - assets
+- name: general
+  description: Files that don't fit other rooms
+  keywords: []

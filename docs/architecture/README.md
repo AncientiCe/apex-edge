@@ -1108,3 +1108,165 @@ flowchart TB
 - **Inputs:** `APEX_EDGE_CONFORMANCE_URL`, defaulting to `http://localhost:3000`.
 - **Outputs:** JSON report with per-check status; process exits non-zero when any check fails.
 - **Failure path:** Network failures and non-2xx responses are captured in check detail for operator troubleshooting.
+
+### 36. Real-Time Inventory Ledger (Edge Store Brain)
+
+**Purpose:** Prevent oversell across concurrent registers between periodic HQ syncs. HQ stays
+authoritative for on-hand stock; the edge owns the real-time sale path that HQ is not in.
+
+The ledger tracks four quantities per item in `inventory_state` and derives a single number:
+
+`available_to_sell = max(0, hq_baseline_qty + local_adjust_qty - reserved_qty - sold_since_sync_qty)`
+
+```mermaid
+flowchart TB
+    subgraph registers [In-Store Registers]
+        R1[Register1]
+        R2[Register2]
+    end
+    subgraph edge [ApexEdge Hub]
+        AddLine["add_line_item -> try_reserve (atomic guarded UPDATE)"]
+        EditLine["update/remove/void -> release"]
+        Finalize["finalize_order -> commit_sale"]
+        StockOps["receive/adjust/transfer + returns -> apply_local_delta"]
+        Ledger[("inventory_state + stock_reservations")]
+        Stream["StreamHub: StockChanged"]
+    end
+    subgraph hq [HQ]
+        InvSync["inventory sync (periodic baseline)"]
+    end
+    R1 --> AddLine
+    R2 --> AddLine
+    AddLine --> Ledger
+    EditLine --> Ledger
+    Finalize --> Ledger
+    StockOps --> Ledger
+    Ledger --> Stream
+    Stream --> R1
+    Stream --> R2
+    InvSync -->|"rebase baseline, keep active reservations"| Ledger
+    Finalize -->|"order submission"| HQOut[HQ_Outbox]
+```
+
+**Behaviour ownership:**
+- **Reserve on add:** `add_line_item` performs a single guarded `UPDATE` that only succeeds while
+  `available_to_sell >= qty`, so two registers can never both take the last unit. Inactive items
+  and tracked items at zero return `OUT_OF_STOCK`; over-request returns `INSUFFICIENT_STOCK`.
+- **Release on edit:** `remove_line_item`, `update_line_item` (re-reserve at new qty), and
+  `void_cart` release held units back to availability.
+- **Commit on sale:** `finalize_order` converts the cart's reservations to `sold_since_sync`.
+- **Local deltas:** `receive/adjust/transfer_stock` and return restocks call `apply_local_delta`
+  so locally-moved stock is immediately sellable (the existing `stock.movement` outbox event to HQ
+  is unchanged).
+- **Untracked items:** items with no ledger row (synced `available_qty = NULL`) are never blocked,
+  preserving legacy behaviour. Tracked items are lazily seeded from their synced baseline on first
+  add so the guard holds even before startup/sync seeding runs.
+
+**Inputs/outputs:**
+- **Inputs:** POS commands, HQ inventory sync baseline.
+- **Outputs:** `StockChanged` stream events carrying live `available_to_sell` per item; the
+  `available_to_sell` field on `GET /catalog/products` and `/catalog/products/:id`.
+- **Metrics:** `apex_edge_inventory_reservations_total{outcome}`,
+  `apex_edge_inventory_oversell_prevented_total`.
+- **Failure path:** ledger write failures return `INVENTORY_LEDGER_FAILED`; reservations carry a TTL
+  (`APEX_EDGE_RESERVATION_TTL_SECONDS`, default 1h) so abandoned carts eventually free stock.
+
+**HQ reconciliation (delta-ledger rebase):** the inventory sync no longer blindly overwrites local
+state. `reconcile_inventory_levels` refreshes the catalog snapshot and then, per item, rebases the
+ledger: `hq_baseline_qty` is set to HQ's `available_qty` and `baseline_as_of` is advanced, while
+**active reservations are kept** and `sold_since_sync_qty` / `local_adjust_qty` are recomputed from
+only the local activity newer than the previous `baseline_as_of` (events HQ has not yet seen). This
+prevents double-counting a sale HQ already reflected, while never dropping an in-flight one.
+Availability is clamped at zero; when local activity exceeds the fresh HQ baseline the item is
+counted as **drift** (`apex_edge_inventory_drift_total`) and logged for audit. Reconcile is timed
+and counted via `apex_edge_inventory_reconcile_duration_seconds` and
+`apex_edge_inventory_reconcile_total{outcome}`.
+
+### 37. Multi-Register Coordination (Live In-Store State)
+
+**Purpose:** Make every register see the same live store state — stock, presence, and parked-cart
+handoffs — in real time, which a periodically-synced HQ cannot provide.
+
+```mermaid
+flowchart TB
+    subgraph registers [In-Store Registers]
+        R1[Register1]
+        R2[Register2]
+    end
+    subgraph edge [ApexEdge Hub]
+        Stream["StreamHub (per-store): seq + history ring"]
+        Presence["presence map (register -> conn count)"]
+        Claim["claim_parked_cart (atomic guarded UPDATE)"]
+    end
+    R1 -->|"open stream (register_id)"| Presence
+    R2 -->|"open stream (register_id)"| Presence
+    Presence -->|"RegisterPresence {present[]}"| R1
+    Presence -->|"RegisterPresence {present[]}"| R2
+    R2 -->|"recall_cart"| Claim
+    Claim -->|"CartHandoff {claimed_by,parked_by}"| R1
+    Claim -->|"CartHandoff"| R2
+```
+
+**Behaviour ownership:**
+- **Register presence:** a `PresenceGuard` (RAII) marks a register present for the life of its
+  stream connection (WS or SSE) and releases it on drop, broadcasting `RegisterPresence` with the
+  current `present[]` set. `GET /pos/registers` lists who is online; gauge
+  `apex_edge_register_presence` tracks the count.
+- **Safe cart handoff:** `recall_cart` uses `claim_parked_cart`, an atomic
+  `UPDATE … WHERE recalled_at IS NULL`, so only one register can claim a parked cart. The winner
+  gets the cart; a loser sees a conflict. Emits `CartHandoff` and
+  `apex_edge_cart_handoff_total{outcome}`.
+- **Cross-register returns lookup:** `GET /pos/returns/lookup` finds an order store-wide for
+  returns, since the order ledger is store-scoped.
+- **Frontend:** `useStoreStream` consumes the SSE feed and reduces it to live availability badges,
+  a presence indicator, and a handoff toast.
+
+**Inputs/outputs:**
+- **Inputs:** stream connections (with `register_id`), `recall_cart`, `lookup` queries.
+- **Outputs:** `RegisterPresence`, `CartHandoff`, `StockChanged` stream events; `/pos/registers`.
+- **Failure path:** a lost claim returns a conflict (no double-recall); presence self-heals on
+  disconnect via the RAII guard even when SSE has no explicit close.
+
+### 38. Continuity Hardening (HQ-Down, Crash, Reconnect)
+
+**Purpose:** Keep the store correct and observable when HQ/WAN is unreachable, when the hub crashes
+mid-cart, and when clients reconnect after dropping events.
+
+```mermaid
+flowchart TB
+    subgraph edge [ApexEdge Hub]
+        Sweeper["reservation TTL sweeper (interval)"]
+        Ledger[("inventory_state + stock_reservations (SQLite, durable)")]
+        Fresh["assess_freshness(last_success, now)"]
+        Ring["StreamHub history ring (bounded, seq-keyed)"]
+        Snap["GET /pos/snapshot"]
+    end
+    LastSuccess[("sync_run id=last_success")] --> Fresh
+    Fresh -->|"sync_staleness_seconds / degraded"| Status["GET /sync/status + UI banner"]
+    Sweeper -->|"expire stale -> release stock"| Ledger
+    Client -->|"reconnect with since=N"| Ring
+    Ring -->|"replay N+1.. or resnapshot_required"| Client
+    Client -->|"resnapshot_required"| Snap
+    Snap -->|"stock + registers + parked_carts"| Client
+```
+
+**Behaviour ownership:**
+- **Bounded staleness + degraded mode:** every successful sync records a durable
+  `sync_run(id='last_success')`. `GET /sync/status` returns `sync_staleness_seconds` and `degraded`
+  (true when staleness exceeds `APEX_EDGE_SYNC_STALENESS_DEGRADED_SECONDS`, default 900s, or when no
+  sync has ever succeeded). Gauges `apex_edge_sync_staleness_seconds` and
+  `apex_edge_edge_degraded_mode`. The frontend shows a degraded banner.
+- **Reservation TTL + crash recovery:** reservations and ledger live in SQLite and survive restart.
+  A startup sweep plus a periodic sweeper (`APEX_EDGE_RESERVATION_SWEEP_INTERVAL_SECONDS`, default
+  60s) call `expire_stale_reservations`, releasing stock from abandoned carts and counting
+  `apex_edge_inventory_reservations_expired_total`.
+- **Resnapshot on reconnect:** the per-store `StreamHub` keeps a bounded history ring keyed by
+  `seq`. A client reconnecting with `?since=N` is replayed events `N+1..`; if `N` predates the ring
+  it receives a `resnapshot_required` signal and refetches full state from `GET /pos/snapshot`
+  (current stock availability, present registers, open parked carts, and the latest `seq`).
+
+**Inputs/outputs:**
+- **Inputs:** `since` on `/pos/stream` and `/pos/events`; `/pos/snapshot`; `/sync/status`.
+- **Outputs:** replayed events or `resnapshot_required`; full snapshot JSON; freshness fields.
+- **Failure path:** when the gap is unrecoverable the client is told to resnapshot rather than
+  silently missing events; sweeper and freshness failures are logged and never block the sale path.

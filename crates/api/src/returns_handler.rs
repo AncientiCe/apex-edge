@@ -20,14 +20,16 @@ use apex_edge_metrics::{
     OUTCOME_ERROR, OUTCOME_SUCCESS, REFUND_TENDER_TOTAL, RETURNS_TOTAL, RETURN_DURATION_SECONDS,
 };
 use apex_edge_storage::{
-    fetch_approval, fetch_return, finalize_return_row, insert_outbox, insert_refund, insert_return,
-    insert_return_line, list_refunds, list_return_lines, record, update_return_totals,
-    void_return_row, ApprovalState, NewReturn, RefundRow, ReturnLineRow,
+    apply_local_delta, fetch_approval, fetch_return, finalize_return_row, get_catalog_item_by_sku,
+    insert_outbox, insert_refund, insert_return, insert_return_line, list_refunds,
+    list_return_lines, record, update_return_totals, void_return_row, ApprovalState, NewReturn,
+    RefundRow, ReturnLineRow,
 };
 use chrono::Utc;
 use std::time::Instant;
 use uuid::Uuid;
 
+use crate::inventory_realtime::broadcast_stock_changed;
 use crate::stream::{stream_broadcast, StreamKind};
 use crate::AppState;
 
@@ -351,6 +353,17 @@ pub async fn finalize_return(
             err("RETURN_FINALIZE_FAILED", e.to_string()),
         );
     }
+
+    // Restock returned items into the real-time ledger (HQ remains authoritative on next
+    // sync). Lines carry SKU only, so resolve each to its catalog item id.
+    let mut restocked_item_ids: Vec<Uuid> = Vec::new();
+    for line in &snapshot.lines {
+        if let Ok(Some(item)) = get_catalog_item_by_sku(&app.pool, store_id, &line.sku).await {
+            let _ = apply_local_delta(&app.pool, store_id, item.id, line.quantity as i64).await;
+            restocked_item_ids.push(item.id);
+        }
+    }
+    broadcast_stock_changed(app, store_id, &restocked_item_ids).await;
 
     let hq_payload = HqReturnPayload {
         return_id: snapshot.id,

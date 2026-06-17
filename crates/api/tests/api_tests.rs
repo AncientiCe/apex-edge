@@ -209,6 +209,57 @@ async fn get_sync_status_returns_shape_with_last_sync_and_entities() {
 }
 
 #[tokio::test]
+async fn sync_status_reports_degraded_when_never_synced() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("pool");
+    run_migrations(&pool).await.expect("migrations");
+
+    let state = AppState {
+        store_id: Uuid::nil(),
+        pool,
+        metrics_handle: None,
+        auth: apex_edge_api::AuthSettings::default(),
+        stream: apex_edge_api::StreamHub::new(),
+        role: apex_edge_api::HubRole::Primary,
+    };
+
+    let resp = sync_status(State(state)).await.expect("sync_status");
+    // No successful sync has ever been recorded -> degraded, unknown staleness.
+    assert!(resp.degraded, "never-synced hub must be degraded");
+    assert_eq!(resp.sync_staleness_seconds, None);
+}
+
+#[tokio::test]
+async fn sync_status_is_fresh_right_after_a_successful_sync() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("pool");
+    run_migrations(&pool).await.expect("migrations");
+    apex_edge_storage::record_successful_sync(&pool, Utc::now())
+        .await
+        .expect("record success");
+
+    let state = AppState {
+        store_id: Uuid::nil(),
+        pool,
+        metrics_handle: None,
+        auth: apex_edge_api::AuthSettings::default(),
+        stream: apex_edge_api::StreamHub::new(),
+        role: apex_edge_api::HubRole::Primary,
+    };
+
+    let resp = sync_status(State(state)).await.expect("sync_status");
+    assert!(!resp.degraded, "fresh sync must not be degraded");
+    let staleness = resp.sync_staleness_seconds.expect("staleness known");
+    assert!((0..5).contains(&staleness), "staleness ~0, got {staleness}");
+}
+
+#[tokio::test]
 async fn get_cart_state_returns_cart_for_known_id() {
     let pool = SqlitePoolOptions::new()
         .max_connections(1)

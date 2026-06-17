@@ -88,7 +88,9 @@ export function CatalogPanel({
       {/* Product grid */}
       <div className="catalog-grid">
         {(productList?.items ?? []).map((p) => {
-          const isOutOfStock = !p.is_active || (p.available_qty !== null && p.available_qty <= 0);
+          // Prefer the real-time ledger value when present; fall back to the synced snapshot.
+          const liveQty = p.available_to_sell ?? p.available_qty;
+          const isOutOfStock = !p.is_active || (liveQty !== null && liveQty <= 0);
           return (
             <div key={p.id} className={`catalog-card${isOutOfStock ? ' out-of-stock' : ''}`}>
               {p.image_urls.length > 0 && (
@@ -108,9 +110,9 @@ export function CatalogPanel({
               <div className="catalog-card-availability">
                 {isOutOfStock ? (
                   <span className="avail-badge out-of-stock">Out of Stock</span>
-                ) : p.available_qty !== null ? (
-                  <span className={`avail-badge${p.available_qty <= 5 ? ' low-stock' : ' in-stock'}`}>
-                    {p.available_qty <= 5 ? `${p.available_qty} left` : 'In Stock'}
+                ) : liveQty !== null && liveQty !== undefined ? (
+                  <span className={`avail-badge${liveQty <= 5 ? ' low-stock' : ' in-stock'}`}>
+                    {liveQty <= 5 ? `${liveQty} left` : 'In Stock'}
                   </span>
                 ) : (
                   <span className="avail-badge in-stock">Available</span>

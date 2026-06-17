@@ -152,6 +152,8 @@ export interface ProductSearchResult {
   is_active: boolean;
   /** `null` when inventory has not been synced (stock untracked). */
   available_qty: number | null;
+  /** Real-time available-to-sell from the edge ledger; `null` when untracked. */
+  available_to_sell?: number | null;
   image_urls: string[];
 }
 
@@ -204,6 +206,10 @@ export interface EntitySyncStatusDto {
 export interface SyncStatusResponse {
   last_sync_at: string | null;
   is_syncing: boolean;
+  /** Seconds since the last successful HQ sync; `null` when none has succeeded. */
+  sync_staleness_seconds?: number | null;
+  /** True when the hub is running on stale baselines (continuity/degraded mode). */
+  degraded?: boolean;
   entities: EntitySyncStatusDto[];
 }
 

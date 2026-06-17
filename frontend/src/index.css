@@ -1168,6 +1168,19 @@ button:disabled {
 .sync-status-card {
   padding: 1rem;
 }
+.sync-degraded-banner {
+  background: #fff4e5;
+  border: 1px solid #f5a623;
+  color: #8a4b00;
+  border-radius: 10px;
+  padding: 0.75rem 0.9rem;
+  margin-bottom: 0.75rem;
+  font-size: 0.85rem;
+  line-height: 1.35;
+}
+.sync-degraded-banner strong {
+  color: #b34700;
+}
 .sync-status-row {
   display: flex;
   justify-content: space-between;

@@ -1,6 +1,8 @@
 //! Domain: cart state machine, pricing/promo/coupon pipeline, order finalization.
 
+pub mod availability;
 pub mod cart;
+pub mod continuity;
 pub mod coupon_engine;
 pub mod errors;
 pub mod order;
@@ -9,7 +11,9 @@ pub mod promo_engine;
 pub mod returns;
 pub mod shifts;
 
+pub use availability::*;
 pub use cart::*;
+pub use continuity::*;
 pub use coupon_engine::*;
 pub use errors::*;
 pub use order::*;

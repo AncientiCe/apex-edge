@@ -4,13 +4,42 @@ use apex_edge::build_router;
 use apex_edge_api::AuthSettings;
 use apex_edge_contracts::ContractVersion;
 use apex_edge_outbox::run_dispatcher_loop;
-use apex_edge_storage::{create_sqlite_pool, seed_demo_data, set_audit_key, AuditKey};
+use apex_edge_storage::{
+    create_sqlite_pool, expire_stale_reservations, seed_demo_data, seed_inventory_from_catalog,
+    set_audit_key, AuditKey,
+};
 use apex_edge_sync::{run_sync_ndjson, SyncEntityConfig, SyncSourceConfig};
 use axum::http::HeaderValue;
 use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 
 const DEFAULT_SYNC_INTERVAL_SECONDS: u64 = 300;
+const DEFAULT_RESERVATION_SWEEP_INTERVAL_SECONDS: u64 = 60;
+
+fn reservation_sweep_interval_seconds() -> u64 {
+    std::env::var("APEX_EDGE_RESERVATION_SWEEP_INTERVAL_SECONDS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(DEFAULT_RESERVATION_SWEEP_INTERVAL_SECONDS)
+}
+
+/// Expire reservations whose TTL has elapsed, releasing the held stock back to available.
+/// Returns the number expired so the caller can log it; emits the expiry counter.
+async fn sweep_stale_reservations(pool: &sqlx::SqlitePool) -> u64 {
+    match expire_stale_reservations(pool, chrono::Utc::now()).await {
+        Ok(0) => 0,
+        Ok(n) => {
+            metrics::counter!(apex_edge_metrics::INVENTORY_RESERVATIONS_EXPIRED_TOTAL, n);
+            tracing::info!("Released {} stale stock reservation(s)", n);
+            n
+        }
+        Err(e) => {
+            tracing::warn!("Reservation sweep failed: {}", e);
+            0
+        }
+    }
+}
 
 fn rand_bytes() -> [u8; 32] {
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -145,6 +174,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             summary.promotions
         );
     }
+
+    // Seed the real-time inventory ledger from any catalog stock already present so the
+    // oversell guard is active immediately. Synced inventory rebases the baseline later.
+    match seed_inventory_from_catalog(&pool, Uuid::nil()).await {
+        Ok(n) if n > 0 => tracing::info!("Seeded inventory ledger for {} item(s)", n),
+        Ok(_) => {}
+        Err(e) => tracing::warn!("Inventory ledger seeding failed: {}", e),
+    }
+
+    // Crash recovery: release any reservations stranded by a previous crash mid-cart,
+    // then run a periodic sweeper so abandoned carts free their held stock on TTL.
+    sweep_stale_reservations(&pool).await;
+    let sweep_interval = reservation_sweep_interval_seconds();
+    let pool_sweeper = pool.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(sweep_interval));
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            sweep_stale_reservations(&pool_sweeper).await;
+        }
+    });
 
     let sync_source_url = std::env::var("APEX_EDGE_SYNC_SOURCE_URL").ok();
     if let Some(ref base_url) = sync_source_url {

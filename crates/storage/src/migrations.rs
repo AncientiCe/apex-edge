@@ -21,6 +21,7 @@ const MIGRATION_017: &str = include_str!("../migrations/017_gift_cards_loyalty.s
 const MIGRATION_018: &str = include_str!("../migrations/018_outbox_destinations.sql");
 const MIGRATION_019: &str = include_str!("../migrations/019_api_tokens_webhooks.sql");
 const MIGRATION_020: &str = include_str!("../migrations/020_stock_movements.sql");
+const MIGRATION_021: &str = include_str!("../migrations/021_inventory_ledger.sql");
 
 const DOWN_010: &str = include_str!("../migrations/010_returns.down.sql");
 const DOWN_011: &str = include_str!("../migrations/011_shifts.down.sql");
@@ -33,6 +34,7 @@ const DOWN_017: &str = include_str!("../migrations/017_gift_cards_loyalty.down.s
 const DOWN_018: &str = include_str!("../migrations/018_outbox_destinations.down.sql");
 const DOWN_019: &str = include_str!("../migrations/019_api_tokens_webhooks.down.sql");
 const DOWN_020: &str = include_str!("../migrations/020_stock_movements.down.sql");
+const DOWN_021: &str = include_str!("../migrations/021_inventory_ledger.down.sql");
 
 fn strip_sql_comment_lines(sql: &str) -> String {
     sql.lines()
@@ -258,6 +260,28 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), MigrationError> {
         }
         sqlx::query(stmt).execute(pool).await?;
     }
+    let sql_no_comments = strip_sql_comment_lines(MIGRATION_021);
+    for stmt in sql_no_comments.split(';').filter(|s| !s.trim().is_empty()) {
+        let stmt = stmt.trim();
+        if stmt.is_empty() {
+            continue;
+        }
+        sqlx::query(stmt).execute(pool).await?;
+    }
+    // Migration 021 (additive): record which register claimed a parked cart during handoff.
+    for (table, column, ddl) in &[(
+        "parked_carts",
+        "recalled_by_register_id",
+        "ALTER TABLE parked_carts ADD COLUMN recalled_by_register_id TEXT",
+    )] {
+        if !column_exists(pool, table, column).await? {
+            if let Err(e) = sqlx::query(ddl).execute(pool).await {
+                if !e.to_string().contains("duplicate column name") {
+                    return Err(e.into());
+                }
+            }
+        }
+    }
     Ok(())
 }
 
@@ -273,8 +297,8 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), MigrationError> {
 /// check is idempotent when those columns already exist.
 pub async fn run_down_v0_6_0(pool: &SqlitePool) -> Result<(), MigrationError> {
     for sql in &[
-        DOWN_020, DOWN_019, DOWN_018, DOWN_017, DOWN_016, DOWN_015, DOWN_014, DOWN_013, DOWN_012,
-        DOWN_011, DOWN_010,
+        DOWN_021, DOWN_020, DOWN_019, DOWN_018, DOWN_017, DOWN_016, DOWN_015, DOWN_014, DOWN_013,
+        DOWN_012, DOWN_011, DOWN_010,
     ] {
         let sql_no_comments = strip_sql_comment_lines(sql);
         for stmt in sql_no_comments.split(';').filter(|s| !s.trim().is_empty()) {

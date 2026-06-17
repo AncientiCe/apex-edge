@@ -11,18 +11,41 @@ use apex_edge_domain::{
 };
 use apex_edge_printing::generate_document;
 use apex_edge_storage::{
+    apply_local_delta, claim_parked_cart, commit_cart_sale, ensure_inventory_state,
     fetch_open_shift, get_catalog_item, get_coupon_definition_by_code, get_customer,
     get_print_template, insert_order_ledger_entry, insert_outbox, insert_stock_movement,
     list_parked_carts, list_price_book_entries, list_promotions, list_tax_rules, load_cart,
-    park_cart, recall_parked_cart, save_cart, NewOrderLedgerEntry, NewOrderLineEntry,
-    NewOrderPaymentEntry, ParkCartInput, StockMovementInput,
+    park_cart, release_cart_reservations, release_line_reservation, save_cart, try_reserve,
+    ClaimOutcome, NewOrderLedgerEntry, NewOrderLineEntry, NewOrderPaymentEntry, ParkCartInput,
+    ReserveInput, ReserveOutcome, StockMovementInput,
 };
 use sqlx::SqlitePool;
 use std::sync::OnceLock;
 use std::time::Instant;
 use uuid::Uuid;
 
+use crate::inventory_realtime::{
+    broadcast_stock_changed, record_oversell_prevented, record_reservation_outcome,
+};
 use crate::pos::AppState;
+use crate::stream::{stream_broadcast, StreamKind};
+
+/// Reservation time-to-live. Abandoned carts release their held stock after this window.
+/// Configurable via `APEX_EDGE_RESERVATION_TTL_SECONDS` (default 3600s = 1h).
+fn reservation_ttl_seconds() -> i64 {
+    static TTL: OnceLock<i64> = OnceLock::new();
+    *TTL.get_or_init(|| {
+        std::env::var("APEX_EDGE_RESERVATION_TTL_SECONDS")
+            .ok()
+            .and_then(|v| v.parse::<i64>().ok())
+            .filter(|v| *v > 0)
+            .unwrap_or(3600)
+    })
+}
+
+fn reservation_expiry() -> chrono::DateTime<chrono::Utc> {
+    chrono::Utc::now() + chrono::Duration::seconds(reservation_ttl_seconds())
+}
 
 fn finalize_timing_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
@@ -488,38 +511,122 @@ pub async fn execute_pos_command(
                     }],
                 };
             };
-            if let Some(stock_error) = item.check_quantity(p.quantity as i64) {
+            // Inactive items are never sellable, regardless of tracked stock.
+            if !item.is_active {
                 metrics::counter!(
                     apex_edge_metrics::CATALOG_STOCK_CHECKS_TOTAL,
                     1u64,
-                    "outcome" => stock_error
+                    "outcome" => "OUT_OF_STOCK"
                 );
-                let message = match stock_error {
-                    "OUT_OF_STOCK" => "Item is out of stock".into(),
-                    "INSUFFICIENT_STOCK" => format!(
-                        "Requested quantity {} exceeds available stock ({})",
-                        p.quantity,
-                        item.available_qty.unwrap_or(0)
-                    ),
-                    other => format!("Stock check failed: {other}"),
-                };
+                record_reservation_outcome("insufficient");
+                record_oversell_prevented();
                 return PosResponseEnvelope {
                     version: ContractVersion::V1_0_0,
                     success: false,
                     idempotency_key,
                     payload: None,
                     errors: vec![PosError {
-                        code: stock_error.into(),
-                        message,
+                        code: "OUT_OF_STOCK".into(),
+                        message: "Item is out of stock".into(),
                         field: None,
                     }],
                 };
             }
-            metrics::counter!(
-                apex_edge_metrics::CATALOG_STOCK_CHECKS_TOTAL,
-                1u64,
-                "outcome" => "ok"
-            );
+            // Real-time reservation: atomically hold stock so concurrent registers cannot
+            // oversell. Tracked items are lazily seeded from their synced baseline so the
+            // guard holds even before startup/sync seeding has run.
+            let line_id = Uuid::new_v4();
+            if let Some(baseline) = item.available_qty {
+                if let Err(e) = ensure_inventory_state(pool, store_id, p.item_id, baseline).await {
+                    return PosResponseEnvelope {
+                        version: ContractVersion::V1_0_0,
+                        success: false,
+                        idempotency_key,
+                        payload: None,
+                        errors: vec![PosError {
+                            code: "INVENTORY_LEDGER_FAILED".into(),
+                            message: e.to_string(),
+                            field: None,
+                        }],
+                    };
+                }
+            }
+            let reserve_outcome = try_reserve(
+                pool,
+                ReserveInput {
+                    store_id,
+                    register_id,
+                    cart_id: p.cart_id,
+                    line_id,
+                    item_id: p.item_id,
+                    qty: p.quantity as i64,
+                    expires_at: Some(reservation_expiry()),
+                },
+            )
+            .await;
+            match reserve_outcome {
+                Ok(ReserveOutcome::Reserved) => {
+                    record_reservation_outcome("reserved");
+                    metrics::counter!(
+                        apex_edge_metrics::CATALOG_STOCK_CHECKS_TOTAL,
+                        1u64,
+                        "outcome" => "ok"
+                    );
+                }
+                Ok(ReserveOutcome::Untracked) => {
+                    record_reservation_outcome("untracked");
+                    metrics::counter!(
+                        apex_edge_metrics::CATALOG_STOCK_CHECKS_TOTAL,
+                        1u64,
+                        "outcome" => "ok"
+                    );
+                }
+                Ok(ReserveOutcome::Insufficient { available }) => {
+                    record_reservation_outcome("insufficient");
+                    record_oversell_prevented();
+                    let (code, message) = if available <= 0 {
+                        ("OUT_OF_STOCK", "Item is out of stock".to_string())
+                    } else {
+                        (
+                            "INSUFFICIENT_STOCK",
+                            format!(
+                                "Requested quantity {} exceeds available stock ({available})",
+                                p.quantity
+                            ),
+                        )
+                    };
+                    metrics::counter!(
+                        apex_edge_metrics::CATALOG_STOCK_CHECKS_TOTAL,
+                        1u64,
+                        "outcome" => code
+                    );
+                    return PosResponseEnvelope {
+                        version: ContractVersion::V1_0_0,
+                        success: false,
+                        idempotency_key,
+                        payload: None,
+                        errors: vec![PosError {
+                            code: code.into(),
+                            message,
+                            field: None,
+                        }],
+                    };
+                }
+                Err(e) => {
+                    record_reservation_outcome("error");
+                    return PosResponseEnvelope {
+                        version: ContractVersion::V1_0_0,
+                        success: false,
+                        idempotency_key,
+                        payload: None,
+                        errors: vec![PosError {
+                            code: "INVENTORY_LEDGER_FAILED".into(),
+                            message: e.to_string(),
+                            field: None,
+                        }],
+                    };
+                }
+            }
             let entries = list_price_book_entries(pool, store_id).await.map_err(|e| {
                 vec![PosError {
                     code: "PRICE_BOOK".into(),
@@ -554,7 +661,6 @@ pub async fn execute_pos_command(
             } else {
                 0
             };
-            let line_id = Uuid::new_v4();
             cart.add_line_item(apex_edge_domain::cart::AddLineItemInput {
                 line_id,
                 item_id: p.item_id,
@@ -566,6 +672,7 @@ pub async fn execute_pos_command(
                 notes: p.notes.clone(),
             });
             if let Err(errors) = run_pricing_pipeline(pool, store_id, &mut cart).await {
+                let _ = release_line_reservation(pool, store_id, line_id).await;
                 return PosResponseEnvelope {
                     version: ContractVersion::V1_0_0,
                     success: false,
@@ -575,6 +682,7 @@ pub async fn execute_pos_command(
                 };
             }
             if let Err(errors) = save_cart_to_db(pool, &cart).await {
+                let _ = release_line_reservation(pool, store_id, line_id).await;
                 return PosResponseEnvelope {
                     version: ContractVersion::V1_0_0,
                     success: false,
@@ -583,6 +691,7 @@ pub async fn execute_pos_command(
                     errors,
                 };
             }
+            broadcast_stock_changed(app, store_id, &[p.item_id]).await;
             let state = build_cart_state(pool, store_id, &cart).await;
             PosResponseEnvelope {
                 version: ContractVersion::V1_0_0,
@@ -632,6 +741,113 @@ pub async fn execute_pos_command(
                     }],
                 };
             }
+            let Some((line_item_id, old_qty)) = cart
+                .lines
+                .iter()
+                .find(|l| l.line_id == p.line_id)
+                .map(|l| (l.item_id, l.quantity))
+            else {
+                return PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors: vec![PosError {
+                        code: "LINE_NOT_FOUND".into(),
+                        message: "Line not found".into(),
+                        field: None,
+                    }],
+                };
+            };
+            // Re-reserve the line at the new quantity: release the current hold, then take
+            // a fresh reservation. If the increase cannot be satisfied, restore the prior
+            // hold and fail without mutating the cart.
+            if p.quantity != old_qty {
+                if let Err(e) = release_line_reservation(pool, store_id, p.line_id).await {
+                    return PosResponseEnvelope {
+                        version: ContractVersion::V1_0_0,
+                        success: false,
+                        idempotency_key,
+                        payload: None,
+                        errors: vec![PosError {
+                            code: "INVENTORY_LEDGER_FAILED".into(),
+                            message: e.to_string(),
+                            field: None,
+                        }],
+                    };
+                }
+                let outcome = try_reserve(
+                    pool,
+                    ReserveInput {
+                        store_id,
+                        register_id,
+                        cart_id: p.cart_id,
+                        line_id: p.line_id,
+                        item_id: line_item_id,
+                        qty: p.quantity as i64,
+                        expires_at: Some(reservation_expiry()),
+                    },
+                )
+                .await;
+                match outcome {
+                    Ok(ReserveOutcome::Reserved) => record_reservation_outcome("reserved"),
+                    Ok(ReserveOutcome::Untracked) => record_reservation_outcome("untracked"),
+                    Ok(ReserveOutcome::Insufficient { available }) => {
+                        record_reservation_outcome("insufficient");
+                        record_oversell_prevented();
+                        // Restore the previous reservation so the cart is unchanged.
+                        let _ = try_reserve(
+                            pool,
+                            ReserveInput {
+                                store_id,
+                                register_id,
+                                cart_id: p.cart_id,
+                                line_id: p.line_id,
+                                item_id: line_item_id,
+                                qty: old_qty as i64,
+                                expires_at: Some(reservation_expiry()),
+                            },
+                        )
+                        .await;
+                        let (code, message) = if available <= 0 {
+                            ("OUT_OF_STOCK", "Item is out of stock".to_string())
+                        } else {
+                            (
+                                "INSUFFICIENT_STOCK",
+                                format!(
+                                    "Requested quantity {} exceeds available stock ({available})",
+                                    p.quantity
+                                ),
+                            )
+                        };
+                        return PosResponseEnvelope {
+                            version: ContractVersion::V1_0_0,
+                            success: false,
+                            idempotency_key,
+                            payload: None,
+                            errors: vec![PosError {
+                                code: code.into(),
+                                message,
+                                field: None,
+                            }],
+                        };
+                    }
+                    Err(e) => {
+                        record_reservation_outcome("error");
+                        return PosResponseEnvelope {
+                            version: ContractVersion::V1_0_0,
+                            success: false,
+                            idempotency_key,
+                            payload: None,
+                            errors: vec![PosError {
+                                code: "INVENTORY_LEDGER_FAILED".into(),
+                                message: e.to_string(),
+                                field: None,
+                            }],
+                        };
+                    }
+                }
+            }
             let Some(line) = cart.lines.iter_mut().find(|l| l.line_id == p.line_id) else {
                 return PosResponseEnvelope {
                     version: ContractVersion::V1_0_0,
@@ -667,6 +883,7 @@ pub async fn execute_pos_command(
                     errors,
                 };
             }
+            broadcast_stock_changed(app, store_id, &[line_item_id]).await;
             let state = build_cart_state(pool, store_id, &cart).await;
             PosResponseEnvelope {
                 version: ContractVersion::V1_0_0,
@@ -1411,6 +1628,7 @@ pub async fn execute_pos_command(
                     }],
                 };
             }
+            let voided_item_ids: Vec<Uuid> = cart.lines.iter().map(|l| l.item_id).collect();
             cart.lines.clear();
             cart.applied_promo_ids.clear();
             cart.applied_coupons.clear();
@@ -1426,6 +1644,9 @@ pub async fn execute_pos_command(
                     errors,
                 };
             }
+            // Release any held stock back to availability and notify registers.
+            let _ = release_cart_reservations(pool, store_id, p.cart_id).await;
+            broadcast_stock_changed(app, store_id, &voided_item_ids).await;
             let state = build_cart_state(pool, store_id, &cart).await;
             PosResponseEnvelope {
                 version: ContractVersion::V1_0_0,
@@ -1503,22 +1724,84 @@ pub async fn execute_pos_command(
             }
         }
         PosCommand::RecallCart(p) => {
-            let Some(data) = recall_parked_cart(pool, p.parked_cart_id)
-                .await
-                .ok()
-                .flatten()
-            else {
-                return PosResponseEnvelope {
-                    version: ContractVersion::V1_0_0,
-                    success: false,
-                    idempotency_key,
-                    payload: None,
-                    errors: vec![PosError {
-                        code: "PARKED_CART_NOT_FOUND".into(),
-                        message: "Parked cart not found".into(),
-                        field: None,
-                    }],
-                };
+            // Atomic claim: only one register can win a concurrent recall (safe handoff).
+            let data = match claim_parked_cart(pool, p.parked_cart_id, register_id).await {
+                Ok(ClaimOutcome::Claimed {
+                    cart_data,
+                    parked_by_register,
+                }) => {
+                    metrics::counter!(
+                        apex_edge_metrics::CART_HANDOFF_TOTAL,
+                        1u64,
+                        "outcome" => "claimed"
+                    );
+                    stream_broadcast(
+                        app,
+                        store_id,
+                        StreamKind::CartHandoff,
+                        serde_json::json!({
+                            "parked_cart_id": p.parked_cart_id.to_string(),
+                            "claimed_by_register": register_id.to_string(),
+                            "parked_by_register": parked_by_register.to_string(),
+                        }),
+                    )
+                    .await;
+                    cart_data
+                }
+                Ok(ClaimOutcome::AlreadyClaimed) => {
+                    metrics::counter!(
+                        apex_edge_metrics::CART_HANDOFF_TOTAL,
+                        1u64,
+                        "outcome" => "conflict"
+                    );
+                    return PosResponseEnvelope {
+                        version: ContractVersion::V1_0_0,
+                        success: false,
+                        idempotency_key,
+                        payload: None,
+                        errors: vec![PosError {
+                            code: "CART_ALREADY_RECALLED".into(),
+                            message: "Parked cart was already recalled by another register".into(),
+                            field: None,
+                        }],
+                    };
+                }
+                Ok(ClaimOutcome::NotFound) => {
+                    metrics::counter!(
+                        apex_edge_metrics::CART_HANDOFF_TOTAL,
+                        1u64,
+                        "outcome" => "not_found"
+                    );
+                    return PosResponseEnvelope {
+                        version: ContractVersion::V1_0_0,
+                        success: false,
+                        idempotency_key,
+                        payload: None,
+                        errors: vec![PosError {
+                            code: "PARKED_CART_NOT_FOUND".into(),
+                            message: "Parked cart not found".into(),
+                            field: None,
+                        }],
+                    };
+                }
+                Err(e) => {
+                    metrics::counter!(
+                        apex_edge_metrics::CART_HANDOFF_TOTAL,
+                        1u64,
+                        "outcome" => "error"
+                    );
+                    return PosResponseEnvelope {
+                        version: ContractVersion::V1_0_0,
+                        success: false,
+                        idempotency_key,
+                        payload: None,
+                        errors: vec![PosError {
+                            code: "RECALL_FAILED".into(),
+                            message: e.to_string(),
+                            field: None,
+                        }],
+                    };
+                }
             };
             let cart: Cart = match serde_json::from_value(data) {
                 Ok(cart) => cart,
@@ -1674,6 +1957,9 @@ pub async fn execute_pos_command(
                     }))
                     .unwrap_or_default();
                     let _ = insert_outbox(pool, movement.id, &payload).await;
+                    // Make the local stock change immediately sellable on the edge.
+                    let _ = apply_local_delta(pool, store_id, p.item_id, p.quantity_delta).await;
+                    broadcast_stock_changed(app, store_id, &[p.item_id]).await;
                     PosResponseEnvelope {
                         version: ContractVersion::V1_0_0,
                         success: true,
@@ -1815,6 +2101,9 @@ pub async fn execute_pos_command(
                 apex_edge_metrics::ORDERS_LEDGER_WRITE_DURATION_SECONDS,
                 ledger_started_at.elapsed().as_secs_f64()
             );
+            // Commit reserved stock as sold so availability reflects the completed sale.
+            let _ = commit_cart_sale(pool, store_id, cart.id).await;
+            let sold_item_ids: Vec<Uuid> = order.lines.iter().map(|l| l.item_id).collect();
             if let Err(e) = insert_outbox(pool, submission_id, &envelope_json).await {
                 return PosResponseEnvelope {
                     version: ContractVersion::V1_0_0,
@@ -1958,6 +2247,7 @@ pub async fn execute_pos_command(
                     finalize_started_at.elapsed().as_millis().to_string(),
                 )],
             );
+            broadcast_stock_changed(app, store_id, &sold_item_ids).await;
             let result = FinalizeResult {
                 order_id,
                 cart_id: cart.id,
@@ -2064,6 +2354,11 @@ pub async fn execute_pos_command(
                     }],
                 };
             }
+            let removed_item_id = cart
+                .lines
+                .iter()
+                .find(|l| l.line_id == p.line_id)
+                .map(|l| l.item_id);
             if let Err(e) = cart.remove_line_item(p.line_id) {
                 return PosResponseEnvelope {
                     version: ContractVersion::V1_0_0,
@@ -2096,6 +2391,11 @@ pub async fn execute_pos_command(
                     payload: None,
                     errors,
                 };
+            }
+            // Return the removed line's held stock to availability and notify registers.
+            let _ = release_line_reservation(pool, store_id, p.line_id).await;
+            if let Some(item_id) = removed_item_id {
+                broadcast_stock_changed(app, store_id, &[item_id]).await;
             }
             let state = build_cart_state(pool, store_id, &cart).await;
             PosResponseEnvelope {

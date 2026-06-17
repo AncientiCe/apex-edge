@@ -35,7 +35,9 @@ import type {
   ProductListResponse,
   DocumentSummary,
 } from './api/types';
+import { useStoreStream } from './api/storeStream';
 import { ConnectionPanel } from './panels/ConnectionPanel';
+import { StorePresenceBar } from './panels/StorePresenceBar';
 import { CatalogPanel } from './panels/CatalogPanel';
 import { CustomerPanel } from './panels/CustomerPanel';
 import { CartPanel } from './panels/CartPanel';
@@ -149,6 +151,23 @@ function AppInner() {
     () => cartState?.lines.reduce((sum, line) => sum + line.quantity, 0) ?? 0,
     [cartState]
   );
+
+  // Live store stream: real-time availability, register presence, and cart handoffs.
+  const storeStream = useStoreStream(baseUrl, storeId, REGISTER_ID, authReady);
+
+  // Overlay live ledger availability onto the synced product list so badges stay current
+  // as other registers reserve/sell stock.
+  const liveProductList = useMemo<ProductListResponse | null>(() => {
+    if (!productList) return null;
+    const live = storeStream.availability;
+    if (Object.keys(live).length === 0) return productList;
+    return {
+      ...productList,
+      items: productList.items.map((item) =>
+        item.id in live ? { ...item, available_to_sell: live[item.id] } : item
+      ),
+    };
+  }, [productList, storeStream.availability]);
 
   const pushToast = useCallback((message: string) => {
     const id = Date.now() + Math.floor(Math.random() * 1000);
@@ -622,6 +641,15 @@ function AppInner() {
     pushToast('Sale completed');
   }, [pushToast]);
 
+  // Surface cart handoffs from other registers as a toast.
+  useEffect(() => {
+    if (storeStream.lastHandoff) {
+      pushToast(
+        `Cart claimed by register ${storeStream.lastHandoff.claimedByRegister.slice(0, 8)}…`
+      );
+    }
+  }, [storeStream.lastHandoff, pushToast]);
+
   // Persist cart ID to localStorage whenever it changes.
   useEffect(() => {
     if (cartId) {
@@ -728,6 +756,7 @@ function AppInner() {
           onCheckHealth={checkHealth}
           onCheckReady={checkReady}
         />
+        {authReady && <StorePresenceBar state={storeStream} registerId={REGISTER_ID} />}
       </header>
 
       <div className="pos-main">
@@ -781,7 +810,7 @@ function AppInner() {
           <CatalogPanel
             baseUrl={baseUrl}
             categories={categories}
-            productList={productList}
+            productList={liveProductList}
             onLoadCategories={onLoadCategories}
             onLoadProducts={onLoadProducts}
             onAddProduct={onAddProduct}

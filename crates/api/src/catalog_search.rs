@@ -62,6 +62,9 @@ pub struct ProductSearchResult {
     pub variation_attributes: Option<serde_json::Value>,
     /// `None` when inventory has not been synced (stock untracked).
     pub available_qty: Option<i64>,
+    /// Real-time available-to-sell from the edge inventory ledger (baseline minus
+    /// reservations and committed sales, plus local deltas). `None` when untracked.
+    pub available_to_sell: Option<i64>,
     pub image_urls: Vec<String>,
 }
 
@@ -199,7 +202,24 @@ fn to_product_result(r: apex_edge_storage::CatalogItemRow) -> ProductSearchResul
             .as_ref()
             .and_then(|item| item.variation_attributes.clone()),
         available_qty: r.available_qty,
+        available_to_sell: None,
         image_urls,
+    }
+}
+
+/// Overlay live `available_to_sell` from the inventory ledger onto product results.
+/// Items without a ledger row (untracked) are left as `None`.
+async fn fill_available_to_sell(state: &AppState, items: &mut [ProductSearchResult]) {
+    if items.is_empty() {
+        return;
+    }
+    let ids: Vec<Uuid> = items.iter().map(|i| i.id).collect();
+    if let Ok(map) =
+        apex_edge_storage::available_to_sell_for_items(&state.pool, state.store_id, &ids).await
+    {
+        for item in items.iter_mut() {
+            item.available_to_sell = map.get(&item.id).copied();
+        }
     }
 }
 
@@ -318,7 +338,8 @@ pub async fn search_products(
         let row = apex_edge_storage::get_catalog_item_by_sku(&state.pool, state.store_id, sku)
             .await
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        let arr: Vec<ProductSearchResult> = row.map(to_product_result).into_iter().collect();
+        let mut arr: Vec<ProductSearchResult> = row.map(to_product_result).into_iter().collect();
+        fill_available_to_sell(&state, &mut arr).await;
         return Ok(Json(
             serde_json::to_value(arr).unwrap_or(serde_json::json!([])),
         ));
@@ -341,7 +362,8 @@ pub async fn search_products(
     )
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let items = items.into_iter().map(to_product_result).collect();
+    let mut items: Vec<ProductSearchResult> = items.into_iter().map(to_product_result).collect();
+    fill_available_to_sell(&state, &mut items).await;
     Ok(Json(
         serde_json::to_value(ProductListResponse {
             items,
@@ -363,7 +385,9 @@ pub async fn get_product_by_id(
     match result {
         Ok(Some(row)) => {
             metrics::counter!(CATALOG_PRODUCT_BY_ID_TOTAL, 1u64, "outcome" => OUTCOME_HIT);
-            Ok(Json(to_product_result(row)))
+            let mut result = to_product_result(row);
+            fill_available_to_sell(&state, std::slice::from_mut(&mut result)).await;
+            Ok(Json(result))
         }
         Ok(None) => {
             metrics::counter!(CATALOG_PRODUCT_BY_ID_TOTAL, 1u64, "outcome" => OUTCOME_NOT_FOUND);
