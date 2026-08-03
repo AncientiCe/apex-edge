@@ -37,6 +37,7 @@ async fn start_app() -> (u16, sqlx::SqlitePool) {
         None,
         vec![],
         apex_edge_api::AuthSettings::default(),
+        apex_edge_api::FiscalSettings::default(),
     );
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let port = listener.local_addr().expect("local addr").port();
@@ -150,6 +151,7 @@ async fn start_app_with_seed() -> (u16, sqlx::SqlitePool) {
         None,
         vec![],
         apex_edge_api::AuthSettings::default(),
+        apex_edge_api::FiscalSettings::default(),
     );
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let port = listener.local_addr().expect("local addr").port();

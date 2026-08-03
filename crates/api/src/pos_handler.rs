@@ -9,15 +9,18 @@ use apex_edge_domain::{
     apply_promos_with_attribution, base_price_cents, check_eligibility, tax_for_line, Cart,
     CartLineItem, LinePriceResult,
 };
+use apex_edge_loyalty::{EarnRequest, LocalLoyaltyProvider, LoyaltyAccount, LoyaltyProvider};
 use apex_edge_printing::generate_document;
 use apex_edge_storage::{
-    apply_local_delta, claim_parked_cart, commit_cart_sale, ensure_inventory_state,
-    fetch_open_shift, get_catalog_item, get_coupon_definition_by_code, get_customer,
-    get_print_template, insert_order_ledger_entry, insert_outbox, insert_stock_movement,
-    list_parked_carts, list_price_book_entries, list_promotions, list_tax_rules, load_cart,
-    park_cart, release_cart_reservations, release_line_reservation, save_cart, try_reserve,
-    ClaimOutcome, NewOrderLedgerEntry, NewOrderLineEntry, NewOrderPaymentEntry, ParkCartInput,
-    ReserveInput, ReserveOutcome, StockMovementInput,
+    activate_gift_card, apply_local_delta, claim_parked_cart, commit_cart_sale,
+    earn_loyalty_points, ensure_inventory_state, fetch_open_shift, get_catalog_item,
+    get_coupon_definition_by_code, get_customer, get_print_template, insert_order_ledger_entry,
+    insert_outbox, insert_stock_movement, issue_gift_card, list_parked_carts,
+    list_price_book_entries, list_promotions, list_tax_rules, load_cart, park_cart,
+    redeem_gift_card, redeem_loyalty_points, release_cart_reservations, release_line_reservation,
+    reload_gift_card, save_cart, try_reserve, ActivateOutcome, ClaimOutcome, IssueOutcome,
+    NewOrderLedgerEntry, NewOrderLineEntry, NewOrderPaymentEntry, ParkCartInput, RedeemOutcome,
+    RedeemPointsOutcome, ReloadOutcome, ReserveInput, ReserveOutcome, StockMovementInput,
 };
 use sqlx::SqlitePool;
 use std::sync::OnceLock;
@@ -126,9 +129,131 @@ fn finalize_result_to_payload(result: &FinalizeResult) -> serde_json::Value {
 fn payment_tender_type(external_reference: &Option<String>) -> String {
     match external_reference.as_deref().map(str::trim) {
         Some(reference) if reference.eq_ignore_ascii_case("cash") => "cash".into(),
+        Some(reference) if reference.starts_with("gift_card:") => "gift_card".into(),
         Some(reference) if !reference.is_empty() => "external".into(),
         _ => "unknown".into(),
     }
+}
+
+fn gift_card_error(
+    idempotency_key: Uuid,
+    code: &str,
+    message: impl Into<String>,
+) -> PosResponseEnvelope<serde_json::Value> {
+    PosResponseEnvelope {
+        version: ContractVersion::V1_0_0,
+        success: false,
+        idempotency_key,
+        payload: None,
+        errors: vec![PosError {
+            code: code.into(),
+            message: message.into(),
+            field: None,
+        }],
+    }
+}
+
+fn gift_card_state_kind(
+    state: &apex_edge_giftcards::GiftCardState,
+) -> apex_edge_contracts::GiftCardStateKind {
+    match state {
+        apex_edge_giftcards::GiftCardState::Issued => {
+            apex_edge_contracts::GiftCardStateKind::Issued
+        }
+        apex_edge_giftcards::GiftCardState::Active => {
+            apex_edge_contracts::GiftCardStateKind::Active
+        }
+        apex_edge_giftcards::GiftCardState::Disabled => {
+            apex_edge_contracts::GiftCardStateKind::Disabled
+        }
+    }
+}
+
+fn gift_card_info_payload(record: &apex_edge_storage::GiftCardRecord) -> serde_json::Value {
+    serde_json::to_value(apex_edge_contracts::GiftCardInfo {
+        gift_card_id: record.id,
+        code: record.code.clone(),
+        balance_cents: record.balance_cents,
+        currency: record.currency.clone(),
+        state: gift_card_state_kind(&record.state),
+    })
+    .unwrap_or(serde_json::Value::Null)
+}
+
+/// Generates a gift card code when the caller doesn't supply one. Not a formal check digit
+/// scheme — just enough entropy to avoid collisions; `issue_gift_card`'s `UNIQUE(code)`
+/// constraint is the actual duplicate guard.
+fn generate_gift_card_code() -> String {
+    let hex = Uuid::new_v4().simple().to_string();
+    format!("GC-{}", hex[..12].to_uppercase())
+}
+
+/// Local loyalty conversion rates. Configurable via `APEX_EDGE_LOYALTY_CENTS_PER_POINT`
+/// (default 100 = $1 spent earns 1 point) and `APEX_EDGE_LOYALTY_CENTS_PER_REDEEMED_POINT`
+/// (default 1 = 1 point redeems for 1 cent). Read once per process, mirroring
+/// `reservation_ttl_seconds` above.
+fn loyalty_provider() -> &'static LocalLoyaltyProvider {
+    static PROVIDER: OnceLock<LocalLoyaltyProvider> = OnceLock::new();
+    PROVIDER.get_or_init(|| {
+        let cents_per_point = std::env::var("APEX_EDGE_LOYALTY_CENTS_PER_POINT")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .filter(|v| *v > 0)
+            .unwrap_or(100);
+        let cents_per_redeemed_point = std::env::var("APEX_EDGE_LOYALTY_CENTS_PER_REDEEMED_POINT")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .filter(|v| *v > 0)
+            .unwrap_or(1);
+        LocalLoyaltyProvider::new(cents_per_point, cents_per_redeemed_point)
+    })
+}
+
+fn loyalty_error(
+    idempotency_key: Uuid,
+    code: &str,
+    message: impl Into<String>,
+) -> PosResponseEnvelope<serde_json::Value> {
+    PosResponseEnvelope {
+        version: ContractVersion::V1_0_0,
+        success: false,
+        idempotency_key,
+        payload: None,
+        errors: vec![PosError {
+            code: code.into(),
+            message: message.into(),
+            field: None,
+        }],
+    }
+}
+
+fn loyalty_info_payload(record: &apex_edge_storage::LoyaltyAccountRecord) -> serde_json::Value {
+    serde_json::to_value(apex_edge_contracts::LoyaltyAccountInfo {
+        customer_id: record.customer_id,
+        points: record.points,
+    })
+    .unwrap_or(serde_json::Value::Null)
+}
+
+/// Computes the value (in cents) of redeeming `points`, via the same conversion trait used
+/// for real redemptions. `redeem_loyalty_points` (storage) already atomically validated and
+/// deducted a sufficient balance; this scratch account (seeded with exactly the redeemed
+/// point count) exists only so the conversion math flows through the injected
+/// `LoyaltyProvider` trait rather than being duplicated here.
+fn loyalty_redeem_value_cents(customer_id: Uuid, points: u64) -> u64 {
+    let mut scratch = LoyaltyAccount {
+        customer_id,
+        points,
+    };
+    loyalty_provider()
+        .redeem(
+            &mut scratch,
+            apex_edge_loyalty::RedeemRequest {
+                customer_id,
+                points,
+            },
+        )
+        .unwrap_or(0)
 }
 
 pub async fn load_cart_from_db(
@@ -2016,6 +2141,53 @@ pub async fn execute_pos_command(
                     };
                 }
             };
+            let fiscal_started_at = Instant::now();
+            let fiscal_signing =
+                app.fiscal
+                    .provider
+                    .sign_receipt(apex_edge_adapters_fiscal::FiscalReceiptRequest {
+                        order_id,
+                        total_cents: order.total_cents,
+                        currency: app.fiscal.currency.clone(),
+                    });
+            metrics::histogram!(
+                apex_edge_metrics::FISCAL_RECEIPT_DURATION_SECONDS,
+                fiscal_started_at.elapsed().as_secs_f64(),
+                "provider" => app.fiscal.provider.provider_code()
+            );
+            let (fiscal_provider, fiscal_id, fiscal_signature) = match fiscal_signing {
+                Ok(receipt) => {
+                    metrics::counter!(
+                        apex_edge_metrics::FISCAL_RECEIPTS_TOTAL,
+                        1u64,
+                        "provider" => receipt.provider.clone(),
+                        "outcome" => apex_edge_metrics::OUTCOME_SUCCESS
+                    );
+                    (Some(receipt.provider), receipt.fiscal_id, receipt.signature)
+                }
+                Err(e) => {
+                    metrics::counter!(
+                        apex_edge_metrics::FISCAL_RECEIPTS_TOTAL,
+                        1u64,
+                        "provider" => app.fiscal.provider.provider_code(),
+                        "outcome" => apex_edge_metrics::OUTCOME_ERROR
+                    );
+                    // Fail closed before any ledger/outbox/stock mutation: a regulated
+                    // deployment (e.g. DE-TSE) that is misconfigured must not complete a sale
+                    // without a fiscal receipt.
+                    return PosResponseEnvelope {
+                        version: ContractVersion::V1_0_0,
+                        success: false,
+                        idempotency_key,
+                        payload: None,
+                        errors: vec![PosError {
+                            code: "FISCAL_SIGNING_FAILED".into(),
+                            message: e.to_string(),
+                            field: None,
+                        }],
+                    };
+                }
+            };
             let hq_payload = order.to_hq_payload();
             let submission_id = Uuid::new_v4();
             let sequence_number = 1u64;
@@ -2072,6 +2244,9 @@ pub async fn execute_pos_command(
                         entry_method: payment.entry_method,
                     })
                     .collect(),
+                fiscal_provider,
+                fiscal_id,
+                fiscal_signature,
             };
             let ledger_started_at = Instant::now();
             if let Err(e) = insert_order_ledger_entry(pool, &ledger_entry).await {
@@ -2101,6 +2276,53 @@ pub async fn execute_pos_command(
                 apex_edge_metrics::ORDERS_LEDGER_WRITE_DURATION_SECONDS,
                 ledger_started_at.elapsed().as_secs_f64()
             );
+            // Auto-earn loyalty points for carts with an attached customer. Best-effort:
+            // unlike fiscal signing, a loyalty storage hiccup must never fail an
+            // otherwise-successful, already-persisted sale.
+            if let Some(customer_id) = cart.customer_id {
+                if order.total_cents > 0 {
+                    let loyalty_started_at = Instant::now();
+                    let mut earn_account = LoyaltyAccount {
+                        customer_id,
+                        points: 0,
+                    };
+                    let earn_outcome = loyalty_provider().earn(
+                        &mut earn_account,
+                        EarnRequest {
+                            customer_id,
+                            spend_cents: order.total_cents,
+                        },
+                    );
+                    let outcome_label = match earn_outcome {
+                        Ok(earned) if earned > 0 => {
+                            match earn_loyalty_points(pool, customer_id, earned).await {
+                                Ok(_) => apex_edge_metrics::OUTCOME_SUCCESS,
+                                Err(e) => {
+                                    tracing::warn!(
+                                        error = %e,
+                                        customer_id = %customer_id,
+                                        "loyalty auto-earn failed to persist"
+                                    );
+                                    apex_edge_metrics::OUTCOME_ERROR
+                                }
+                            }
+                        }
+                        Ok(_) => apex_edge_metrics::OUTCOME_SUCCESS,
+                        Err(_) => apex_edge_metrics::OUTCOME_ERROR,
+                    };
+                    metrics::counter!(
+                        apex_edge_metrics::LOYALTY_OPERATIONS_TOTAL,
+                        1u64,
+                        "operation" => "earn_auto",
+                        "outcome" => outcome_label
+                    );
+                    metrics::histogram!(
+                        apex_edge_metrics::LOYALTY_OPERATION_DURATION_SECONDS,
+                        loyalty_started_at.elapsed().as_secs_f64(),
+                        "operation" => "earn_auto"
+                    );
+                }
+            }
             // Commit reserved stock as sold so availability reflects the completed sale.
             let _ = commit_cart_sale(pool, store_id, cart.id).await;
             let sold_item_ids: Vec<Uuid> = order.lines.iter().map(|l| l.item_id).collect();
@@ -2405,6 +2627,458 @@ pub async fn execute_pos_command(
                 payload: Some(cart_state_to_payload(&state)),
                 errors: vec![],
             }
+        }
+        PosCommand::IssueGiftCard(p) => {
+            let op_started_at = Instant::now();
+            let code = p.code.clone().unwrap_or_else(generate_gift_card_code);
+            let (outcome_label, result) =
+                match issue_gift_card(pool, store_id, &code, &p.currency).await {
+                    Ok((IssueOutcome::Issued, record)) => (
+                        apex_edge_metrics::OUTCOME_SUCCESS,
+                        PosResponseEnvelope {
+                            version: ContractVersion::V1_0_0,
+                            success: true,
+                            idempotency_key,
+                            payload: record.as_ref().map(gift_card_info_payload),
+                            errors: vec![],
+                        },
+                    ),
+                    Ok((IssueOutcome::DuplicateCode, _)) => (
+                        apex_edge_metrics::OUTCOME_ERROR,
+                        gift_card_error(
+                            idempotency_key,
+                            "GIFT_CARD_CODE_EXISTS",
+                            "Gift card code already exists",
+                        ),
+                    ),
+                    Err(e) => (
+                        apex_edge_metrics::OUTCOME_ERROR,
+                        gift_card_error(idempotency_key, "GIFT_CARD_ISSUE_FAILED", e.to_string()),
+                    ),
+                };
+            metrics::counter!(
+                apex_edge_metrics::GIFT_CARD_OPERATIONS_TOTAL,
+                1u64,
+                "operation" => "issue",
+                "outcome" => outcome_label
+            );
+            metrics::histogram!(
+                apex_edge_metrics::GIFT_CARD_OPERATION_DURATION_SECONDS,
+                op_started_at.elapsed().as_secs_f64(),
+                "operation" => "issue"
+            );
+            result
+        }
+        PosCommand::ActivateGiftCard(p) => {
+            let op_started_at = Instant::now();
+            let (outcome_label, result) =
+                match activate_gift_card(pool, &p.code, p.opening_balance_cents).await {
+                    Ok((ActivateOutcome::Activated, record)) => (
+                        apex_edge_metrics::OUTCOME_SUCCESS,
+                        PosResponseEnvelope {
+                            version: ContractVersion::V1_0_0,
+                            success: true,
+                            idempotency_key,
+                            payload: record.as_ref().map(gift_card_info_payload),
+                            errors: vec![],
+                        },
+                    ),
+                    Ok((ActivateOutcome::NotFound, _)) => (
+                        apex_edge_metrics::OUTCOME_ERROR,
+                        gift_card_error(
+                            idempotency_key,
+                            "GIFT_CARD_NOT_FOUND",
+                            "Gift card not found",
+                        ),
+                    ),
+                    Ok((ActivateOutcome::AlreadyActivated, _)) => (
+                        apex_edge_metrics::OUTCOME_ERROR,
+                        gift_card_error(
+                            idempotency_key,
+                            "GIFT_CARD_ALREADY_ACTIVE",
+                            "Gift card has already been activated",
+                        ),
+                    ),
+                    Ok((ActivateOutcome::InvalidAmount, _)) => (
+                        apex_edge_metrics::OUTCOME_ERROR,
+                        gift_card_error(
+                            idempotency_key,
+                            "INVALID_AMOUNT",
+                            "Opening balance must be greater than zero",
+                        ),
+                    ),
+                    Err(e) => (
+                        apex_edge_metrics::OUTCOME_ERROR,
+                        gift_card_error(
+                            idempotency_key,
+                            "GIFT_CARD_ACTIVATE_FAILED",
+                            e.to_string(),
+                        ),
+                    ),
+                };
+            metrics::counter!(
+                apex_edge_metrics::GIFT_CARD_OPERATIONS_TOTAL,
+                1u64,
+                "operation" => "activate",
+                "outcome" => outcome_label
+            );
+            metrics::histogram!(
+                apex_edge_metrics::GIFT_CARD_OPERATION_DURATION_SECONDS,
+                op_started_at.elapsed().as_secs_f64(),
+                "operation" => "activate"
+            );
+            result
+        }
+        PosCommand::ReloadGiftCard(p) => {
+            let op_started_at = Instant::now();
+            let (outcome_label, result) =
+                match reload_gift_card(pool, &p.code, p.amount_cents).await {
+                    Ok((ReloadOutcome::Reloaded, record)) => (
+                        apex_edge_metrics::OUTCOME_SUCCESS,
+                        PosResponseEnvelope {
+                            version: ContractVersion::V1_0_0,
+                            success: true,
+                            idempotency_key,
+                            payload: record.as_ref().map(gift_card_info_payload),
+                            errors: vec![],
+                        },
+                    ),
+                    Ok((ReloadOutcome::NotFound, _)) => (
+                        apex_edge_metrics::OUTCOME_ERROR,
+                        gift_card_error(
+                            idempotency_key,
+                            "GIFT_CARD_NOT_FOUND",
+                            "Gift card not found",
+                        ),
+                    ),
+                    Ok((ReloadOutcome::NotActive, _)) => (
+                        apex_edge_metrics::OUTCOME_ERROR,
+                        gift_card_error(
+                            idempotency_key,
+                            "GIFT_CARD_NOT_ACTIVE",
+                            "Gift card is not active",
+                        ),
+                    ),
+                    Ok((ReloadOutcome::InvalidAmount, _)) => (
+                        apex_edge_metrics::OUTCOME_ERROR,
+                        gift_card_error(
+                            idempotency_key,
+                            "INVALID_AMOUNT",
+                            "Reload amount must be greater than zero",
+                        ),
+                    ),
+                    Err(e) => (
+                        apex_edge_metrics::OUTCOME_ERROR,
+                        gift_card_error(idempotency_key, "GIFT_CARD_RELOAD_FAILED", e.to_string()),
+                    ),
+                };
+            metrics::counter!(
+                apex_edge_metrics::GIFT_CARD_OPERATIONS_TOTAL,
+                1u64,
+                "operation" => "reload",
+                "outcome" => outcome_label
+            );
+            metrics::histogram!(
+                apex_edge_metrics::GIFT_CARD_OPERATION_DURATION_SECONDS,
+                op_started_at.elapsed().as_secs_f64(),
+                "operation" => "reload"
+            );
+            result
+        }
+        PosCommand::RedeemGiftCard(p) => {
+            let op_started_at = Instant::now();
+            let Some(mut cart) = load_cart_from_db(pool, p.cart_id).await.ok().flatten() else {
+                metrics::counter!(
+                    apex_edge_metrics::GIFT_CARD_OPERATIONS_TOTAL,
+                    1u64,
+                    "operation" => "redeem",
+                    "outcome" => apex_edge_metrics::OUTCOME_ERROR
+                );
+                return gift_card_error(idempotency_key, "CART_NOT_FOUND", "Cart not found");
+            };
+            // Validate the cart can accept a payment *before* debiting the card, so a bad
+            // cart state never costs the customer money without recording a payment.
+            if cart.state != CartStateKind::Tendering && cart.state != CartStateKind::Paid {
+                metrics::counter!(
+                    apex_edge_metrics::GIFT_CARD_OPERATIONS_TOTAL,
+                    1u64,
+                    "operation" => "redeem",
+                    "outcome" => apex_edge_metrics::OUTCOME_ERROR
+                );
+                return gift_card_error(
+                    idempotency_key,
+                    "INVALID_PAYMENT",
+                    "Cannot add payment in current state",
+                );
+            }
+            let (outcome_label, result) =
+                match redeem_gift_card(pool, &p.code, p.amount_cents).await {
+                    Ok((RedeemOutcome::Redeemed, _record)) => {
+                        let add_payment_result = cart.add_payment(AddPaymentInput {
+                            tender_id: p.tender_id,
+                            amount_cents: p.amount_cents,
+                            tip_amount_cents: 0,
+                            external_reference: Some(format!("gift_card:{}", p.code)),
+                            provider: Some("gift_card".into()),
+                            provider_payment_id: Some(p.code.clone()),
+                            entry_method: None,
+                        });
+                        if add_payment_result.is_err() {
+                            (
+                                apex_edge_metrics::OUTCOME_ERROR,
+                                gift_card_error(
+                                    idempotency_key,
+                                    "INVALID_PAYMENT",
+                                    "Cannot add payment in current state",
+                                ),
+                            )
+                        } else if let Err(errors) = save_cart_to_db(pool, &cart).await {
+                            (
+                                apex_edge_metrics::OUTCOME_ERROR,
+                                PosResponseEnvelope {
+                                    version: ContractVersion::V1_0_0,
+                                    success: false,
+                                    idempotency_key,
+                                    payload: None,
+                                    errors,
+                                },
+                            )
+                        } else {
+                            let state = build_cart_state(pool, store_id, &cart).await;
+                            (
+                                apex_edge_metrics::OUTCOME_SUCCESS,
+                                PosResponseEnvelope {
+                                    version: ContractVersion::V1_0_0,
+                                    success: true,
+                                    idempotency_key,
+                                    payload: Some(cart_state_to_payload(&state)),
+                                    errors: vec![],
+                                },
+                            )
+                        }
+                    }
+                    Ok((RedeemOutcome::NotFound, _)) => (
+                        apex_edge_metrics::OUTCOME_ERROR,
+                        gift_card_error(
+                            idempotency_key,
+                            "GIFT_CARD_NOT_FOUND",
+                            "Gift card not found",
+                        ),
+                    ),
+                    Ok((RedeemOutcome::NotActive, _)) => (
+                        apex_edge_metrics::OUTCOME_ERROR,
+                        gift_card_error(
+                            idempotency_key,
+                            "GIFT_CARD_NOT_ACTIVE",
+                            "Gift card is not active",
+                        ),
+                    ),
+                    Ok((RedeemOutcome::InsufficientBalance, _)) => (
+                        apex_edge_metrics::OUTCOME_ERROR,
+                        gift_card_error(
+                            idempotency_key,
+                            "INSUFFICIENT_GIFT_CARD_BALANCE",
+                            "Gift card balance is insufficient",
+                        ),
+                    ),
+                    Ok((RedeemOutcome::InvalidAmount, _)) => (
+                        apex_edge_metrics::OUTCOME_ERROR,
+                        gift_card_error(
+                            idempotency_key,
+                            "INVALID_AMOUNT",
+                            "Redeem amount must be greater than zero",
+                        ),
+                    ),
+                    Err(e) => (
+                        apex_edge_metrics::OUTCOME_ERROR,
+                        gift_card_error(idempotency_key, "GIFT_CARD_REDEEM_FAILED", e.to_string()),
+                    ),
+                };
+            metrics::counter!(
+                apex_edge_metrics::GIFT_CARD_OPERATIONS_TOTAL,
+                1u64,
+                "operation" => "redeem",
+                "outcome" => outcome_label
+            );
+            metrics::histogram!(
+                apex_edge_metrics::GIFT_CARD_OPERATION_DURATION_SECONDS,
+                op_started_at.elapsed().as_secs_f64(),
+                "operation" => "redeem"
+            );
+            result
+        }
+        PosCommand::EarnLoyaltyPoints(p) => {
+            let op_started_at = Instant::now();
+            let (outcome_label, result) = if p.spend_cents == 0 {
+                (
+                    apex_edge_metrics::OUTCOME_ERROR,
+                    loyalty_error(
+                        idempotency_key,
+                        "INVALID_AMOUNT",
+                        "Spend amount must be greater than zero",
+                    ),
+                )
+            } else {
+                let mut earn_account = LoyaltyAccount {
+                    customer_id: p.customer_id,
+                    points: 0,
+                };
+                match loyalty_provider().earn(
+                    &mut earn_account,
+                    EarnRequest {
+                        customer_id: p.customer_id,
+                        spend_cents: p.spend_cents,
+                    },
+                ) {
+                    Ok(earned) => match earn_loyalty_points(pool, p.customer_id, earned).await {
+                        Ok(record) => (
+                            apex_edge_metrics::OUTCOME_SUCCESS,
+                            PosResponseEnvelope {
+                                version: ContractVersion::V1_0_0,
+                                success: true,
+                                idempotency_key,
+                                payload: Some(loyalty_info_payload(&record)),
+                                errors: vec![],
+                            },
+                        ),
+                        Err(e) => (
+                            apex_edge_metrics::OUTCOME_ERROR,
+                            loyalty_error(idempotency_key, "LOYALTY_EARN_FAILED", e.to_string()),
+                        ),
+                    },
+                    Err(e) => (
+                        apex_edge_metrics::OUTCOME_ERROR,
+                        loyalty_error(idempotency_key, "INVALID_AMOUNT", e.to_string()),
+                    ),
+                }
+            };
+            metrics::counter!(
+                apex_edge_metrics::LOYALTY_OPERATIONS_TOTAL,
+                1u64,
+                "operation" => "earn",
+                "outcome" => outcome_label
+            );
+            metrics::histogram!(
+                apex_edge_metrics::LOYALTY_OPERATION_DURATION_SECONDS,
+                op_started_at.elapsed().as_secs_f64(),
+                "operation" => "earn"
+            );
+            result
+        }
+        PosCommand::RedeemLoyaltyPoints(p) => {
+            let op_started_at = Instant::now();
+            let Some(mut cart) = load_cart_from_db(pool, p.cart_id).await.ok().flatten() else {
+                metrics::counter!(
+                    apex_edge_metrics::LOYALTY_OPERATIONS_TOTAL,
+                    1u64,
+                    "operation" => "redeem",
+                    "outcome" => apex_edge_metrics::OUTCOME_ERROR
+                );
+                return loyalty_error(idempotency_key, "CART_NOT_FOUND", "Cart not found");
+            };
+            // Validate the cart can accept a payment *before* debiting points, so a bad
+            // cart state never costs the customer points without recording a payment.
+            if cart.state != CartStateKind::Tendering && cart.state != CartStateKind::Paid {
+                metrics::counter!(
+                    apex_edge_metrics::LOYALTY_OPERATIONS_TOTAL,
+                    1u64,
+                    "operation" => "redeem",
+                    "outcome" => apex_edge_metrics::OUTCOME_ERROR
+                );
+                return loyalty_error(
+                    idempotency_key,
+                    "INVALID_PAYMENT",
+                    "Cannot add payment in current state",
+                );
+            }
+            let (outcome_label, result) =
+                match redeem_loyalty_points(pool, p.customer_id, p.points).await {
+                    Ok((RedeemPointsOutcome::Redeemed, _record)) => {
+                        let value_cents = loyalty_redeem_value_cents(p.customer_id, p.points);
+                        let add_payment_result = cart.add_payment(AddPaymentInput {
+                            tender_id: p.tender_id,
+                            amount_cents: value_cents,
+                            tip_amount_cents: 0,
+                            external_reference: Some(format!("loyalty:{}", p.customer_id)),
+                            provider: Some("loyalty".into()),
+                            provider_payment_id: Some(p.points.to_string()),
+                            entry_method: None,
+                        });
+                        if add_payment_result.is_err() {
+                            (
+                                apex_edge_metrics::OUTCOME_ERROR,
+                                loyalty_error(
+                                    idempotency_key,
+                                    "INVALID_PAYMENT",
+                                    "Cannot add payment in current state",
+                                ),
+                            )
+                        } else if let Err(errors) = save_cart_to_db(pool, &cart).await {
+                            (
+                                apex_edge_metrics::OUTCOME_ERROR,
+                                PosResponseEnvelope {
+                                    version: ContractVersion::V1_0_0,
+                                    success: false,
+                                    idempotency_key,
+                                    payload: None,
+                                    errors,
+                                },
+                            )
+                        } else {
+                            let state = build_cart_state(pool, store_id, &cart).await;
+                            (
+                                apex_edge_metrics::OUTCOME_SUCCESS,
+                                PosResponseEnvelope {
+                                    version: ContractVersion::V1_0_0,
+                                    success: true,
+                                    idempotency_key,
+                                    payload: Some(cart_state_to_payload(&state)),
+                                    errors: vec![],
+                                },
+                            )
+                        }
+                    }
+                    Ok((RedeemPointsOutcome::NotFound, _)) => (
+                        apex_edge_metrics::OUTCOME_ERROR,
+                        loyalty_error(
+                            idempotency_key,
+                            "LOYALTY_ACCOUNT_NOT_FOUND",
+                            "Loyalty account not found",
+                        ),
+                    ),
+                    Ok((RedeemPointsOutcome::InsufficientPoints, _)) => (
+                        apex_edge_metrics::OUTCOME_ERROR,
+                        loyalty_error(
+                            idempotency_key,
+                            "INSUFFICIENT_LOYALTY_POINTS",
+                            "Loyalty points balance is insufficient",
+                        ),
+                    ),
+                    Ok((RedeemPointsOutcome::InvalidAmount, _)) => (
+                        apex_edge_metrics::OUTCOME_ERROR,
+                        loyalty_error(
+                            idempotency_key,
+                            "INVALID_AMOUNT",
+                            "Redeem points must be greater than zero",
+                        ),
+                    ),
+                    Err(e) => (
+                        apex_edge_metrics::OUTCOME_ERROR,
+                        loyalty_error(idempotency_key, "LOYALTY_REDEEM_FAILED", e.to_string()),
+                    ),
+                };
+            metrics::counter!(
+                apex_edge_metrics::LOYALTY_OPERATIONS_TOTAL,
+                1u64,
+                "operation" => "redeem",
+                "outcome" => outcome_label
+            );
+            metrics::histogram!(
+                apex_edge_metrics::LOYALTY_OPERATION_DURATION_SECONDS,
+                op_started_at.elapsed().as_secs_f64(),
+                "operation" => "redeem"
+            );
+            result
         }
     };
     result

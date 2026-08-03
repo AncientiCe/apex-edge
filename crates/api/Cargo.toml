@@ -12,6 +12,9 @@ apex-edge-domain = { path = "../domain" }
 apex-edge-storage = { path = "../storage" }
 apex-edge-outbox = { path = "../outbox" }
 apex-edge-printing = { path = "../printing" }
+apex-edge-adapters-fiscal = { path = "../adapters/fiscal" }
+apex-edge-giftcards = { path = "../giftcards" }
+apex-edge-loyalty = { path = "../loyalty" }
 axum = { version = "0.7", features = ["json", "ws"] }
 futures-util = "0.3"
 async-stream = "0.3"

@@ -147,6 +147,9 @@ async fn order_ledger_roundtrips_lines_payments_and_shift_cash_totals() {
                 provider_payment_id: Some("pi_ledger_test".into()),
                 entry_method: Some(apex_edge_contracts::PaymentEntryMethod::Contactless),
             }],
+            fiscal_provider: Some("de_tse".into()),
+            fiscal_id: Some("tse_receipt_123".into()),
+            fiscal_signature: Some("sig_abc".into()),
         },
     )
     .await
@@ -175,6 +178,9 @@ async fn order_ledger_roundtrips_lines_payments_and_shift_cash_totals() {
         order.payments[0].entry_method,
         Some(apex_edge_contracts::PaymentEntryMethod::Contactless)
     );
+    assert_eq!(order.fiscal_provider.as_deref(), Some("de_tse"));
+    assert_eq!(order.fiscal_id.as_deref(), Some("tse_receipt_123"));
+    assert_eq!(order.fiscal_signature.as_deref(), Some("sig_abc"));
 
     let by_shift = list_order_ledger_entries(&pool, store_id, Some(shift_id))
         .await
@@ -186,6 +192,76 @@ async fn order_ledger_roundtrips_lines_payments_and_shift_cash_totals() {
         .await
         .expect("cash sales for shift");
     assert_eq!(cash_sales, 1_150);
+}
+
+/// Regression test: a payment with no `provider`/`provider_payment_id` (e.g. plain cash) must
+/// round-trip as `None`, not `Some("")`. `sqlx`'s SQLite driver happily decodes a NULL TEXT
+/// column into `String` as an empty string, so reading a nullable column into a `String`
+/// target and only converting the error case with `.ok()` silently turns NULL into `Some("")`
+/// instead of `None` on the None branch itself.
+#[tokio::test]
+async fn order_payment_without_provider_roundtrips_as_none_not_empty_string() {
+    let pool = test_pool().await;
+    let store_id = Uuid::new_v4();
+    let register_id = Uuid::new_v4();
+    let order_id = Uuid::new_v4();
+    let cart_id = Uuid::new_v4();
+    let item_id = Uuid::new_v4();
+    let line_id = Uuid::new_v4();
+    let tender_id = Uuid::new_v4();
+
+    insert_order_ledger_entry(
+        &pool,
+        &NewOrderLedgerEntry {
+            order_id,
+            cart_id,
+            store_id,
+            register_id,
+            shift_id: None,
+            subtotal_cents: 500,
+            discount_cents: 0,
+            tax_cents: 0,
+            total_cents: 500,
+            submission_id: None,
+            lines: vec![NewOrderLineEntry {
+                line_id,
+                item_id,
+                sku: "SKU-CASH".into(),
+                name: "Cash Item".into(),
+                quantity: 1,
+                unit_price_cents: 500,
+                line_total_cents: 500,
+                discount_cents: 0,
+                tax_cents: 0,
+            }],
+            payments: vec![NewOrderPaymentEntry {
+                tender_id,
+                tender_type: "cash".into(),
+                amount_cents: 500,
+                tip_amount_cents: 0,
+                external_reference: Some("cash".into()),
+                provider: None,
+                provider_payment_id: None,
+                entry_method: Some(apex_edge_contracts::PaymentEntryMethod::Cash),
+            }],
+            fiscal_provider: None,
+            fiscal_id: None,
+            fiscal_signature: None,
+        },
+    )
+    .await
+    .expect("insert order ledger entry");
+
+    let order = fetch_order_ledger_entry(&pool, order_id)
+        .await
+        .expect("fetch order")
+        .expect("order exists");
+    assert_eq!(order.payments.len(), 1);
+    assert_eq!(order.payments[0].provider, None);
+    assert_eq!(order.payments[0].provider_payment_id, None);
+    assert_eq!(order.fiscal_provider, None);
+    assert_eq!(order.fiscal_id, None);
+    assert_eq!(order.fiscal_signature, None);
 }
 
 #[tokio::test]

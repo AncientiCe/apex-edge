@@ -59,6 +59,7 @@ async fn start_auth_server() -> (u16, Uuid) {
             pairing_code_length: 6,
             pairing_max_attempts: 3,
         },
+        apex_edge_api::FiscalSettings::default(),
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await

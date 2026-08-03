@@ -49,6 +49,12 @@ fn pos_operation_label(cmd: &PosCommand) -> &'static str {
         PosCommand::ReceiveStock(_) => "receive_stock",
         PosCommand::TransferStock(_) => "transfer_stock",
         PosCommand::AdjustStock(_) => "adjust_stock",
+        PosCommand::IssueGiftCard(_) => "issue_gift_card",
+        PosCommand::ActivateGiftCard(_) => "activate_gift_card",
+        PosCommand::ReloadGiftCard(_) => "reload_gift_card",
+        PosCommand::RedeemGiftCard(_) => "redeem_gift_card",
+        PosCommand::EarnLoyaltyPoints(_) => "earn_loyalty_points",
+        PosCommand::RedeemLoyaltyPoints(_) => "redeem_loyalty_points",
     }
 }
 
@@ -166,4 +172,6 @@ pub struct AppState {
     pub stream: crate::stream::StreamHub,
     /// Role of this hub instance (primary or standby) for HA deployments.
     pub role: crate::role::HubRole,
+    /// Fiscal provider called during order finalize (NoOp by default; DE-TSE etc. opt-in).
+    pub fiscal: crate::fiscal::FiscalSettings,
 }

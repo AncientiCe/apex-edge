@@ -70,6 +70,7 @@ mod tests {
             auth: crate::auth::AuthSettings::default(),
             stream: crate::stream::StreamHub::new(),
             role: crate::role::HubRole::Primary,
+            fiscal: crate::fiscal::FiscalSettings::default(),
         };
         let r = ready(State(state)).await.expect("ready endpoint");
         assert_eq!(r.0.status, "ready");

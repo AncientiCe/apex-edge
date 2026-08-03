@@ -9,6 +9,66 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.2.0] — 2026-08-03
+
+"Activation": wires the Fiscal, Gift Card, and Loyalty domain/adapter crates — built and
+unit-tested since `[1.0.0]`/`[0.9.0]` but never called from the running binary — into the
+live `PosCommand` surface, plus closes release-hygiene debt (security advisories, changelog
+and version drift) blocking the project's own quality gates.
+
+### Added
+
+- Fiscal receipt signing wired into `FinalizeOrder`: env-selected `FiscalProvider`
+  (`APEX_EDGE_FISCAL_PROVIDER`, default `noop`; `de_tse` opt-in via
+  `APEX_EDGE_FISCAL_DE_TSE_CONFIGURED`), called before any ledger/outbox/stock mutation so a
+  misconfigured regulated provider fails the whole finalize closed. Signed receipts persist
+  as `fiscal_provider`/`fiscal_id`/`fiscal_signature` on the order row.
+- Gift cards wired into POS commands: `IssueGiftCard`, `ActivateGiftCard`, `ReloadGiftCard`,
+  `RedeemGiftCard`. Redemption debits the card and records a `gift_card` tender on the cart
+  in one atomic step. Balance/state mutations use guarded atomic SQL (`UPDATE ... WHERE
+  balance_cents >= ?`) so concurrent redemptions against the same card can never overdraw.
+- Loyalty wired into POS commands: `EarnLoyaltyPoints`, `RedeemLoyaltyPoints`, plus automatic
+  point earning on `FinalizeOrder` for any cart with an attached customer (best-effort — a
+  loyalty storage hiccup never fails an already-persisted sale). Redemption records a
+  `loyalty` tender on the cart. Conversion rates configurable via
+  `APEX_EDGE_LOYALTY_CENTS_PER_POINT` / `APEX_EDGE_LOYALTY_CENTS_PER_REDEEMED_POINT`.
+- Fiscal, gift card, and loyalty observability metrics:
+  `apex_edge_fiscal_receipt_duration_seconds`, `apex_edge_gift_card_operation_duration_seconds`,
+  and `apex_edge_loyalty_operation_duration_seconds` histograms alongside the existing
+  `_total` counters (all labelled by `operation`/`provider` and `outcome`).
+- OpenAPI coverage for the new gift card / loyalty response schemas (`GiftCardInfo`,
+  `LoyaltyAccountInfo`) and an updated `/pos/command` description covering the new commands.
+
+### Changed
+
+- `crates/api/src/openapi.rs` `info.version` now tracks the real release version
+  (`APEX_EDGE_RELEASE_VERSION`) instead of a stale hardcoded `"0.7.0"`.
+- `docs/runbook/README.md` de-pinned from "v0.1.0 Internal Alpha" language to a
+  version-agnostic release/deployment runbook.
+- `docs/architecture/README.md` §28 (Gift Cards and Loyalty) and §32 (Fiscal Provider
+  Boundary) rewritten from "reserved for future wiring" to describe the live command flow.
+
+### Fixed
+
+- `cargo audit` advisories: bumped `metrics-exporter-prometheus` (`0.13` → `0.15`, resolving
+  the `crossbeam-epoch` advisory) and updated `quinn-proto` in the lockfile.
+- `sqlx` was decoding `NULL` SQLite `TEXT` columns as `Some("")` instead of `None` for
+  `Option<String>` payment/fiscal fields when read via `.ok()`; `row_to_order` now uses
+  `try_get` directly so `NULL` round-trips as `None`.
+- Backfilled missing `## [1.0.0]` and `## [1.1.0]` changelog sections: both releases were
+  tagged without ever splitting their content out of `[Unreleased]`.
+
+### Migrations
+
+- Additive `orders.fiscal_provider` / `orders.fiscal_id` / `orders.fiscal_signature` columns.
+- Additive `gift_cards.store_id` column (reporting only; `code` stays globally unique so
+  cards remain redeemable at any store).
+
+## [1.1.0] — 2026-06-18
+
+"Edge Store Brain": real-time inventory, multi-register coordination, and continuity hardening
+for concurrent-register stores.
+
 ### Added
 
 - Edge Store Brain: real-time inventory ledger (`inventory_state` + `stock_reservations`) that prevents oversell across concurrent registers via atomic guarded reservations, with live `available_to_sell` surfaced on catalog APIs and `StockChanged` stream events.
@@ -17,6 +77,19 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Continuity hardening: bounded sync staleness + degraded-mode flag on `GET /sync/status` and the POS UI, reservation TTL sweeper with crash recovery, and stream resnapshot via a bounded history ring (`since` replay) plus a `GET /pos/snapshot` full-state endpoint.
 - OpenAPI coverage for the new real-time endpoints (`/pos/registers`, `/pos/snapshot`, `/pos/returns/lookup`) plus `register_id`/`since` parameters on `/pos/stream` and `/pos/events`.
 - Inventory/continuity observability metrics: `apex_edge_inventory_reservations_total`, `apex_edge_inventory_oversell_prevented_total`, `apex_edge_inventory_reconcile_total`, `apex_edge_inventory_reconcile_duration_seconds`, `apex_edge_inventory_drift_total`, `apex_edge_inventory_reservations_expired_total`, `apex_edge_register_presence`, `apex_edge_cart_handoff_total`, `apex_edge_sync_staleness_seconds`, and `apex_edge_edge_degraded_mode`.
+
+### Migrations
+
+- `021_inventory_ledger.sql` and `021_inventory_ledger.down.sql` (real-time inventory ledger + reservations).
+- Additive `parked_carts.recalled_by_register_id` column for safe cross-register cart handoff.
+
+## [1.0.0] — 2026-05-01
+
+"GA foundations": payment, tax, hardware, cloud, and fiscal adapter crates; store operations;
+gift cards and loyalty domain logic; multi-destination outbox; GDPR admin routes; and first-run
+packaging scaffolding.
+
+### Added
 
 - Payment provider adapter crate with `PaymentProvider`, `CashPaymentProvider`, and hosted terminal reference implementations for Stripe Terminal and Adyen Terminal.
 - POS payment metadata fields for provider payment ids, entry method, and tip amounts, preserved through cart state, order ledger, receipts, and HQ submission payloads.
@@ -46,8 +119,11 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `018_outbox_destinations.sql` and `018_outbox_destinations.down.sql`.
 - `019_api_tokens_webhooks.sql` and `019_api_tokens_webhooks.down.sql`.
 - `020_stock_movements.sql` and `020_stock_movements.down.sql`.
-- `021_inventory_ledger.sql` and `021_inventory_ledger.down.sql` (real-time inventory ledger + reservations).
-- Additive `parked_carts.recalled_by_register_id` column for safe cross-register cart handoff.
+
+### Notes
+
+- At the time these two releases were tagged (`v1.0.0`, `v1.1.0`), this changelog was not updated with matching version headings — all of the above stayed under `[Unreleased]`. This entry backfills that gap; no code changed as part of the backfill.
+- The adapter crates listed above (payment, tax, hardware, cloud, fiscal) and the gift card/loyalty domain crates shipped as tested library code in this release but were not yet called from the running `apex-edge` binary. See `[1.2.0]` for Fiscal, Gift Cards, and Loyalty activation.
 
 ## [0.7.0] — 2026-04-29
 
@@ -393,7 +469,12 @@ Internal alpha release for team-only testing in a controlled environment.
 - Mock NDJSON sync server served raw bytes for catalog items; updated to serve valid
   `CatalogItem` JSON payloads so `apply_entity_batch` deserialization succeeds in tests.
 
-[Unreleased]: https://github.com/AncientiCe/apex-edge/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/AncientiCe/apex-edge/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/AncientiCe/apex-edge/compare/v1.1.0...v1.2.0
+[1.1.0]: https://github.com/AncientiCe/apex-edge/releases/tag/v1.1.0
+[1.0.0]: https://github.com/AncientiCe/apex-edge/releases/tag/v1.0.0
+[0.7.0]: https://github.com/AncientiCe/apex-edge/releases/tag/v0.7.0
+[0.6.0]: https://github.com/AncientiCe/apex-edge/releases/tag/v0.6.0
 [0.5.0]: https://github.com/AncientiCe/apex-edge/releases/tag/v0.5.0
 [0.4.0]: https://github.com/AncientiCe/apex-edge/releases/tag/v0.4.0
 [0.3.0]: https://github.com/AncientiCe/apex-edge/releases/tag/v0.3.0

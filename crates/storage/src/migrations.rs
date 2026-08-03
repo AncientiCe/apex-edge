@@ -282,6 +282,47 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), MigrationError> {
             }
         }
     }
+    // Migration 022 (additive, 1.2.0): fiscal receipt fields recorded at finalize time.
+    for (table, column, ddl) in &[
+        (
+            "orders",
+            "fiscal_provider",
+            "ALTER TABLE orders ADD COLUMN fiscal_provider TEXT",
+        ),
+        (
+            "orders",
+            "fiscal_id",
+            "ALTER TABLE orders ADD COLUMN fiscal_id TEXT",
+        ),
+        (
+            "orders",
+            "fiscal_signature",
+            "ALTER TABLE orders ADD COLUMN fiscal_signature TEXT",
+        ),
+    ] {
+        if !column_exists(pool, table, column).await? {
+            if let Err(e) = sqlx::query(ddl).execute(pool).await {
+                if !e.to_string().contains("duplicate column name") {
+                    return Err(e.into());
+                }
+            }
+        }
+    }
+    // Migration 023 (additive, 1.2.0): gift cards are scoped to the issuing store for
+    // reporting, even though `code` remains globally unique (redeemable at any store).
+    for (table, column, ddl) in &[(
+        "gift_cards",
+        "store_id",
+        "ALTER TABLE gift_cards ADD COLUMN store_id TEXT NOT NULL DEFAULT ''",
+    )] {
+        if !column_exists(pool, table, column).await? {
+            if let Err(e) = sqlx::query(ddl).execute(pool).await {
+                if !e.to_string().contains("duplicate column name") {
+                    return Err(e.into());
+                }
+            }
+        }
+    }
     Ok(())
 }
 

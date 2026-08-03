@@ -19,6 +19,7 @@ async fn app_with_ephemeral_db() -> axum::Router {
         None,
         vec![],
         apex_edge_api::AuthSettings::default(),
+        apex_edge_api::FiscalSettings::default(),
     )
 }
 

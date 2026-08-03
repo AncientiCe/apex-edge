@@ -1,7 +1,8 @@
 //! ApexEdge: store hub orchestrator. POS <-> ApexEdge <-> HQ.
 
 use apex_edge::build_router;
-use apex_edge_api::AuthSettings;
+use apex_edge_adapters_fiscal::{DeTseFiscalProvider, FiscalProvider, NoOpFiscalProvider};
+use apex_edge_api::{AuthSettings, FiscalSettings};
 use apex_edge_contracts::ContractVersion;
 use apex_edge_outbox::run_dispatcher_loop;
 use apex_edge_storage::{
@@ -109,6 +110,34 @@ fn default_sync_entities() -> Vec<SyncEntityConfig> {
             path: "/sync/ndjson/print_templates".into(),
         },
     ]
+}
+
+/// Pure provider selection so it's testable without mutating process-global env vars.
+fn fiscal_provider_from_config(
+    provider_name: Option<&str>,
+    de_tse_configured: bool,
+) -> std::sync::Arc<dyn FiscalProvider + Send + Sync> {
+    match provider_name {
+        Some("de_tse") => std::sync::Arc::new(DeTseFiscalProvider::new(de_tse_configured)),
+        _ => std::sync::Arc::new(NoOpFiscalProvider),
+    }
+}
+
+/// Selects the fiscal provider and currency from environment configuration.
+/// Defaults to `NoOpFiscalProvider` (no fiscal signing) with currency `USD`, matching
+/// deployments in non-fiscalized markets (US/CA). Set `APEX_EDGE_FISCAL_PROVIDER=de_tse`
+/// plus `APEX_EDGE_FISCAL_DE_TSE_CONFIGURED=true` once TSE certification is in place;
+/// leaving it unconfigured makes fiscal signing fail closed at finalize time.
+fn fiscal_settings_from_env() -> FiscalSettings {
+    let currency = std::env::var("APEX_EDGE_CURRENCY").unwrap_or_else(|_| "USD".into());
+    let de_tse_configured = std::env::var("APEX_EDGE_FISCAL_DE_TSE_CONFIGURED")
+        .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+        .unwrap_or(false);
+    let provider = fiscal_provider_from_config(
+        std::env::var("APEX_EDGE_FISCAL_PROVIDER").ok().as_deref(),
+        de_tse_configured,
+    );
+    FiscalSettings { provider, currency }
 }
 
 /// Run one sync cycle; log outcome. Caller ensures config is some.
@@ -286,12 +315,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             .and_then(|v| v.parse::<i64>().ok())
             .unwrap_or(3),
     };
+    let fiscal_settings = fiscal_settings_from_env();
+    tracing::info!(
+        "Fiscal provider: {} (currency={})",
+        fiscal_settings.provider.provider_code(),
+        fiscal_settings.currency
+    );
     let app = build_router(
         pool,
         Uuid::nil(),
         Some(metrics_handle),
         allowed_origins,
         auth_settings,
+        fiscal_settings,
     );
 
     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], 3000));
@@ -302,7 +338,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{default_sync_entities, parse_sync_interval_seconds};
+    use super::{default_sync_entities, fiscal_provider_from_config, parse_sync_interval_seconds};
+    use apex_edge_adapters_fiscal::{FiscalError, FiscalReceiptRequest};
+    use uuid::Uuid;
 
     #[test]
     fn default_entities_sync_inventory_before_optional_entities() {
@@ -342,5 +380,43 @@ mod tests {
     fn sync_interval_parser_accepts_positive_seconds() {
         assert_eq!(parse_sync_interval_seconds(Some("60")), 60);
         assert_eq!(parse_sync_interval_seconds(Some("900")), 900);
+    }
+
+    #[test]
+    fn fiscal_provider_defaults_to_noop_when_unset() {
+        let provider = fiscal_provider_from_config(None, false);
+        assert_eq!(provider.provider_code(), "noop");
+    }
+
+    #[test]
+    fn fiscal_provider_selects_de_tse_when_configured() {
+        let provider = fiscal_provider_from_config(Some("de_tse"), true);
+        assert_eq!(provider.provider_code(), "de_tse");
+        let receipt = provider
+            .sign_receipt(FiscalReceiptRequest {
+                order_id: Uuid::new_v4(),
+                total_cents: 500,
+                currency: "EUR".into(),
+            })
+            .expect("configured de_tse should sign");
+        assert!(receipt.fiscal_id.is_some());
+    }
+
+    #[test]
+    fn fiscal_provider_de_tse_fails_closed_when_not_configured() {
+        let provider = fiscal_provider_from_config(Some("de_tse"), false);
+        let err = provider
+            .sign_receipt(FiscalReceiptRequest {
+                order_id: Uuid::new_v4(),
+                total_cents: 500,
+                currency: "EUR".into(),
+            })
+            .expect_err("unconfigured de_tse must fail closed");
+        assert_eq!(
+            err,
+            FiscalError::NotConfigured {
+                provider: "de_tse".into()
+            }
+        );
     }
 }

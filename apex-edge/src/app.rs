@@ -9,7 +9,7 @@ use apex_edge_api::{
     lookup_order_for_return, openapi_handler, openapi_ui_handler, pair_device, pos_snapshot,
     pos_stream_sse, pos_stream_ws, ready, receive_webhook, refresh_session, revoke_session,
     role::standby_guard_middleware, search_customers, search_products, serve_metrics, sync_status,
-    verify_audit_chain, AppState, AuthSettings,
+    verify_audit_chain, AppState, AuthSettings, FiscalSettings,
 };
 use axum::middleware;
 use axum::routing::post;
@@ -45,6 +45,7 @@ use crate::http_metrics_layer::HttpMetricsLayer;
 ///     None,
 ///     vec![],
 ///     apex_edge_api::AuthSettings::default(),
+///     apex_edge_api::FiscalSettings::default(),
 /// );
 /// # }
 /// ```
@@ -54,6 +55,7 @@ pub fn build_router(
     metrics_handle: Option<apex_edge_metrics::PrometheusHandle>,
     allowed_origins: Vec<HeaderValue>,
     auth: AuthSettings,
+    fiscal: FiscalSettings,
 ) -> Router {
     let app_state = AppState {
         store_id,
@@ -62,6 +64,7 @@ pub fn build_router(
         auth,
         stream: apex_edge_api::StreamHub::new(),
         role: apex_edge_api::HubRole::from_env(),
+        fiscal,
     };
     apex_edge_api::report_role(app_state.role);
     let cors_origin = if allowed_origins.is_empty() {
@@ -133,7 +136,7 @@ pub fn build_router(
 #[cfg(test)]
 mod tests {
     use super::build_router;
-    use apex_edge_api::AuthSettings;
+    use apex_edge_api::{AuthSettings, FiscalSettings};
     use apex_edge_storage::{create_sqlite_pool, run_migrations};
     use uuid::Uuid;
 
@@ -141,7 +144,14 @@ mod tests {
     async fn router_exposes_health_and_ready_routes() {
         let pool = create_sqlite_pool("sqlite::memory:").await.expect("pool");
         run_migrations(&pool).await.expect("migrations");
-        let app = build_router(pool, Uuid::nil(), None, vec![], AuthSettings::default());
+        let app = build_router(
+            pool,
+            Uuid::nil(),
+            None,
+            vec![],
+            AuthSettings::default(),
+            FiscalSettings::default(),
+        );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind");
@@ -178,6 +188,7 @@ mod tests {
             Some(handle),
             vec![],
             AuthSettings::default(),
+            FiscalSettings::default(),
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await

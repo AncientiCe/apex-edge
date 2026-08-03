@@ -3,7 +3,9 @@
 //! These tests drive commands through `execute_pos_command`, asserting state machine,
 //! approval gating, HQ envelope generation (outbox), and audit chain growth.
 
-use apex_edge_api::{pos_handler::execute_pos_command, AppState, AuthSettings, HubRole, StreamHub};
+use apex_edge_api::{
+    pos_handler::execute_pos_command, AppState, AuthSettings, FiscalSettings, HubRole, StreamHub,
+};
 use apex_edge_contracts::{
     CashCountPayload, CloseTillPayload, ContractVersion, FinalizeReturnPayload, NoSalePayload,
     OpenTillPayload, PaidInPayload, PaidOutPayload, PosCommand, PosRequestEnvelope,
@@ -27,6 +29,7 @@ fn state_for(pool: sqlx::SqlitePool) -> AppState {
         auth: AuthSettings::default(),
         stream: StreamHub::new(),
         role: HubRole::Primary,
+        fiscal: FiscalSettings::default(),
     }
 }
 
@@ -564,6 +567,9 @@ async fn x_report_and_close_till_include_ledger_cash_sales_and_refunds() {
                 provider_payment_id: None,
                 entry_method: None,
             }],
+            fiscal_provider: None,
+            fiscal_id: None,
+            fiscal_signature: None,
         },
     )
     .await

@@ -64,6 +64,14 @@ pub enum PosCommand {
     ReceiveStock(StockMovementPayload),
     TransferStock(StockMovementPayload),
     AdjustStock(StockMovementPayload),
+    // --- v1.2.0 Gift cards ---
+    IssueGiftCard(IssueGiftCardPayload),
+    ActivateGiftCard(ActivateGiftCardPayload),
+    ReloadGiftCard(ReloadGiftCardPayload),
+    RedeemGiftCard(RedeemGiftCardPayload),
+    // --- v1.2.0 Loyalty ---
+    EarnLoyaltyPoints(EarnLoyaltyPointsPayload),
+    RedeemLoyaltyPoints(RedeemLoyaltyPointsPayload),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -98,6 +106,81 @@ pub struct StockMovementPayload {
     pub quantity_delta: i64,
     pub reason: String,
     pub reference: Option<String>,
+}
+
+// --- Gift card payloads ---
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IssueGiftCardPayload {
+    /// If omitted, a code is generated server-side and returned in `GiftCardInfo`.
+    pub code: Option<String>,
+    pub currency: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActivateGiftCardPayload {
+    pub code: String,
+    pub opening_balance_cents: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReloadGiftCardPayload {
+    pub code: String,
+    pub amount_cents: u64,
+}
+
+/// Redeem a gift card as a tender against an open cart, e.g. at checkout. This both
+/// debits the card and records a payment on the cart in one command, the same way a
+/// terminal-reported card payment is recorded via `AddPayment`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RedeemGiftCardPayload {
+    pub cart_id: Uuid,
+    pub tender_id: Uuid,
+    pub code: String,
+    pub amount_cents: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GiftCardStateKind {
+    Issued,
+    Active,
+    Disabled,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GiftCardInfo {
+    pub gift_card_id: Uuid,
+    pub code: String,
+    pub balance_cents: u64,
+    pub currency: String,
+    pub state: GiftCardStateKind,
+}
+
+// --- Loyalty payloads ---
+
+/// Manually credit points to a customer's loyalty account (e.g. goodwill points, or
+/// backfilling a sale not captured by auto-earn). `FinalizeOrder` also auto-earns points
+/// for carts with an attached customer, without a separate command.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EarnLoyaltyPointsPayload {
+    pub customer_id: Uuid,
+    pub spend_cents: u64,
+}
+
+/// Redeem loyalty points as a tender against an open cart, mirroring `RedeemGiftCard`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RedeemLoyaltyPointsPayload {
+    pub cart_id: Uuid,
+    pub tender_id: Uuid,
+    pub customer_id: Uuid,
+    pub points: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LoyaltyAccountInfo {
+    pub customer_id: Uuid,
+    pub points: u64,
 }
 
 // --- Returns & Refunds payloads ---

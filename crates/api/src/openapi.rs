@@ -9,12 +9,18 @@ use axum::response::{Html, Json};
 
 pub const OPENAPI_VERSION: &str = "3.1.0";
 
+/// Product release version shown in `info.version`. This crate is versioned independently
+/// from the `apex-edge` binary, so this constant cannot be derived at compile time — it
+/// must be bumped by hand alongside `apex-edge/Cargo.toml` and `CHANGELOG.md` as part of
+/// every release (tracked in the release checklist).
+pub const APEX_EDGE_RELEASE_VERSION: &str = "1.2.0";
+
 fn spec() -> serde_json::Value {
     serde_json::json!({
         "openapi": OPENAPI_VERSION,
         "info": {
             "title": "ApexEdge",
-            "version": "0.7.0",
+            "version": APEX_EDGE_RELEASE_VERSION,
             "summary": "Store hub orchestrator: POS/MPOS <-> ApexEdge <-> HQ.",
             "description": "Offline-first, contract-driven retail orchestrator. Returns, till/shift, supervisor approvals, tamper-evident audit, real-time POS push, HA-ready.",
             "license": { "name": "MIT OR Apache-2.0" }
@@ -28,7 +34,7 @@ fn spec() -> serde_json::Value {
             "/pos/command": {
                 "post": {
                     "summary": "POS command",
-                    "description": "Idempotent cart/checkout/return/shift commands. See contracts crate for payload shapes.",
+                    "description": "Idempotent cart/checkout/return/shift/gift-card/loyalty commands (tagged union on `action`; see contracts crate for payload shapes). Gift card commands (`issue_gift_card`, `activate_gift_card`, `reload_gift_card`, `redeem_gift_card`) return a GiftCardInfo payload, and loyalty's `earn_loyalty_points` returns a LoyaltyAccountInfo payload, except `redeem_gift_card`/`redeem_loyalty_points` which return the updated CartState after applying the tender. FinalizeOrder also auto-earns loyalty points for carts with an attached customer.",
                     "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object" } } } },
                     "responses": { "200": { "description": "PosResponseEnvelope" } }
                 }
@@ -103,6 +109,25 @@ fn spec() -> serde_json::Value {
                         "registers": { "type": "array", "items": { "type": "string", "format": "uuid" } }
                     }
                 },
+                "GiftCardInfo": {
+                    "type": "object",
+                    "required": ["gift_card_id", "code", "balance_cents", "currency", "state"],
+                    "properties": {
+                        "gift_card_id": { "type": "string", "format": "uuid" },
+                        "code": { "type": "string" },
+                        "balance_cents": { "type": "integer", "format": "int64" },
+                        "currency": { "type": "string" },
+                        "state": { "type": "string", "enum": ["issued", "active", "disabled"] }
+                    }
+                },
+                "LoyaltyAccountInfo": {
+                    "type": "object",
+                    "required": ["customer_id", "points"],
+                    "properties": {
+                        "customer_id": { "type": "string", "format": "uuid" },
+                        "points": { "type": "integer", "format": "int64" }
+                    }
+                },
                 "StoreSnapshot": {
                     "type": "object",
                     "required": ["store_id", "seq", "stock", "registers", "parked_carts"],
@@ -149,7 +174,7 @@ mod tests {
         assert!(v["paths"]["/pos/command"]["post"].is_object());
         assert!(v["paths"]["/audit/verify"]["get"].is_object());
         assert!(v["paths"]["/pos/stream"]["get"].is_object());
-        assert_eq!(v["info"]["version"], "0.7.0");
+        assert_eq!(v["info"]["version"], APEX_EDGE_RELEASE_VERSION);
         assert!(v["paths"]["/catalog/prices"]["get"].is_object());
         assert!(v["paths"]["/auth/pairing-codes"]["post"].is_object());
         assert!(v["paths"]["/orders"]["get"].is_object());
@@ -159,6 +184,8 @@ mod tests {
         assert!(v["paths"]["/admin/customers/{id}/erase"]["post"].is_object());
         assert!(v["paths"]["/webhooks/{connector_id}"]["post"].is_object());
         assert!(v["paths"]["/docs"]["get"].is_object());
+        assert!(v["components"]["schemas"]["GiftCardInfo"].is_object());
+        assert!(v["components"]["schemas"]["LoyaltyAccountInfo"].is_object());
     }
 
     #[test]

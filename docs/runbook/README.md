@@ -1,7 +1,8 @@
-# ApexEdge v0.1.0 — Operational Runbook
+# ApexEdge — Operational Runbook
 
 This runbook covers deployment, startup, health checking, troubleshooting, and the
-go/no-go checklist for the v0.1.0 internal-alpha release.
+go/no-go checklist for ApexEdge releases. See `CHANGELOG.md` for the version currently
+being deployed.
 
 Related: [README](../../README.md) · [Architecture](../architecture/README.md) · [Contracts](../contracts/README.md) · [Contributing](../../CONTRIBUTING.md) · [Security](../../SECURITY.md)
 
@@ -268,9 +269,9 @@ make observability-down
 
 ---
 
-## 8. Go / No-Go Checklist (v0.1.0 Internal Alpha)
+## 8. Go / No-Go Checklist (Release Deployment)
 
-Before deploying to internal-alpha testers, verify each item:
+Before deploying a new release, verify each item:
 
 ### Runtime Correctness
 - [ ] `cargo test --workspace --all-features` — all tests pass (0 failures).
@@ -297,10 +298,10 @@ Before deploying to internal-alpha testers, verify each item:
 ### Documentation
 - [ ] `docs/architecture/README.md` reflects current runtime components and CORS posture.
 - [ ] `docs/runbook/README.md` (this file) is accurate for the deployed configuration.
-- [ ] `CHANGELOG.md` entry for `[0.1.0]` is present and accurate.
+- [ ] `CHANGELOG.md` entry for the release version being deployed is present and accurate; `apex-edge/Cargo.toml` version and `crates/api/src/openapi.rs::APEX_EDGE_RELEASE_VERSION` match it.
 
 ### Operational
 - [ ] DB path points to a durable volume (not `/tmp` or in-memory).
 - [ ] Log output is captured (stdout/stderr to a persistent sink or journal).
 - [ ] A process supervisor (systemd, Docker, etc.) will restart apex-edge on crash.
-- [ ] Internal testers have been briefed: this is alpha; data may be reset between releases.
+- [ ] Stakeholders have been briefed on the release scope, any migrations, and rollback plan.

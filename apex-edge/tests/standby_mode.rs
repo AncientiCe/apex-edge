@@ -19,7 +19,14 @@ async fn spawn_standby() -> u16 {
     std::env::set_var("APEX_EDGE_STANDBY", "1");
     let pool = create_sqlite_pool("sqlite::memory:").await.unwrap();
     run_migrations(&pool).await.unwrap();
-    let app = build_router(pool, Uuid::nil(), None, vec![], AuthSettings::default());
+    let app = build_router(
+        pool,
+        Uuid::nil(),
+        None,
+        vec![],
+        AuthSettings::default(),
+        apex_edge_api::FiscalSettings::default(),
+    );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     tokio::spawn(async move {

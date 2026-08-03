@@ -221,8 +221,13 @@ pub const STORE_OPERATION_DURATION_SECONDS: &str = "apex_edge_store_operation_du
 // ---------- Gift cards and loyalty ----------
 /// Counter: gift card operations by operation and outcome.
 pub const GIFT_CARD_OPERATIONS_TOTAL: &str = "apex_edge_gift_card_operations_total";
+/// Histogram: gift card operation latency in seconds, labelled by operation.
+pub const GIFT_CARD_OPERATION_DURATION_SECONDS: &str =
+    "apex_edge_gift_card_operation_duration_seconds";
 /// Counter: loyalty operations by operation and outcome.
 pub const LOYALTY_OPERATIONS_TOTAL: &str = "apex_edge_loyalty_operations_total";
+/// Histogram: loyalty operation latency in seconds, labelled by operation.
+pub const LOYALTY_OPERATION_DURATION_SECONDS: &str = "apex_edge_loyalty_operation_duration_seconds";
 
 // ---------- Cloud connectors ----------
 /// Counter: cloud connector deliveries by connector and outcome.
@@ -266,6 +271,8 @@ pub const EDGE_DEGRADED_MODE: &str = "apex_edge_edge_degraded_mode";
 // ---------- Fiscal providers ----------
 /// Counter: fiscal receipt signing by provider and outcome.
 pub const FISCAL_RECEIPTS_TOTAL: &str = "apex_edge_fiscal_receipts_total";
+/// Histogram: fiscal receipt signing latency in seconds, labelled by provider.
+pub const FISCAL_RECEIPT_DURATION_SECONDS: &str = "apex_edge_fiscal_receipt_duration_seconds";
 
 // ---------- Documents (api::documents) ----------
 /// Counter: document operations. Labels: operation, outcome.

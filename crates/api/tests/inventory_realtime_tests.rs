@@ -4,7 +4,9 @@
 //! separate carts (registers) cannot oversell, that releasing/voiding returns stock,
 //! that finalizing commits the sale, and that local stock receipts become sellable.
 
-use apex_edge_api::{pos_handler::execute_pos_command, AppState, AuthSettings, HubRole, StreamHub};
+use apex_edge_api::{
+    pos_handler::execute_pos_command, AppState, AuthSettings, FiscalSettings, HubRole, StreamHub,
+};
 use apex_edge_contracts::{
     AddLineItemPayload, ContractVersion, CreateCartPayload, ParkCartPayload, PosCommand,
     PosRequestEnvelope, RecallCartPayload, StockMovementPayload, VoidCartPayload,
@@ -42,6 +44,7 @@ async fn setup_with_item(available_qty: i64) -> (AppState, Uuid) {
         auth: AuthSettings::default(),
         stream: StreamHub::new(),
         role: HubRole::Primary,
+        fiscal: FiscalSettings::default(),
     };
     (state, item_id)
 }
@@ -272,6 +275,7 @@ async fn untracked_item_is_not_constrained() {
         auth: AuthSettings::default(),
         stream: StreamHub::new(),
         role: HubRole::Primary,
+        fiscal: FiscalSettings::default(),
     };
     let reg = Uuid::new_v4();
     let cart = create_cart(&state, reg).await;

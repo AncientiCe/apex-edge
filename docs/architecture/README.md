@@ -936,27 +936,45 @@ flowchart TB
 - **Failure path:** Missing cart returns `CART_NOT_FOUND`; missing parked cart returns `PARKED_CART_NOT_FOUND`; clock-out without an open entry returns `CLOCK_ENTRY_NOT_FOUND`.
 - **Metrics:** `apex_edge_store_operations_total{operation,outcome}` and `apex_edge_store_operation_duration_seconds{operation}` are reserved for suspended sale and time-clock paths.
 
-### 28. Gift Cards and Loyalty (v0.9.0)
+### 28. Gift Cards and Loyalty (domain v0.9.0, wired into POS commands v1.2.0)
 
-**Purpose:** Add local-first stored-value and loyalty primitives that can work offline and later reconcile through cloud connectors.
+**Purpose:** Local-first stored-value and loyalty primitives, callable from POS as first-class `PosCommand`s and usable as checkout tenders, working fully offline.
 
 ```mermaid
-flowchart TB
-    POS[POS_MPOS] --> Gift[GiftCardStateMachine]
-    POS --> Loyalty[LoyaltyProvider]
-    Gift --> GiftStore[(gift_cards)]
-    Loyalty --> LoyaltyStore[(loyalty_accounts)]
-    Gift --> Tender[GiftCardTender]
-    Loyalty --> Discounts[LoyaltyRedeemDiscount]
-    Tender --> Cart[CartPayment]
-    Discounts --> Cart
+sequenceDiagram
+    participant POS
+    participant API as ApexEdgeAPI
+    participant DB as SQLite
+
+    POS->>API: IssueGiftCard / ActivateGiftCard / ReloadGiftCard
+    API->>DB: guarded atomic UPDATE gift_cards (state/balance)
+    API-->>POS: GiftCardInfo
+
+    POS->>API: RedeemGiftCard{cart_id, tender_id, code, amount_cents}
+    API->>DB: UPDATE gift_cards SET balance -= amount WHERE balance >= amount
+    API->>API: cart.add_payment(provider="gift_card")
+    API-->>POS: updated CartState
+
+    POS->>API: FinalizeOrder{cart_id}
+    API->>DB: insert order ledger
+    alt cart has customer_id
+        API->>API: LoyaltyProvider.earn(spend_cents)
+        API->>DB: loyalty_accounts.points += earned (best-effort)
+    end
+    API-->>POS: FinalizeResult
+
+    POS->>API: RedeemLoyaltyPoints{cart_id, tender_id, customer_id, points}
+    API->>DB: UPDATE loyalty_accounts SET points -= n WHERE points >= n
+    API->>API: cart.add_payment(provider="loyalty")
+    API-->>POS: updated CartState
 ```
 
 **Notes:**
-- **Inputs:** Gift card issue/activate/reload/redeem operations; loyalty earn based on spend and redeem based on points.
-- **Outputs:** Gift card balance/state and loyalty points are held locally with additive storage tables for later cloud reconciliation.
-- **Failure path:** Gift cards reject inactive, zero-value, and over-balance redemptions; loyalty rejects zero-point and over-balance redemptions.
-- **Metrics:** `apex_edge_gift_card_operations_total{operation,outcome}` and `apex_edge_loyalty_operations_total{operation,outcome}` are reserved for stored-value and points operations.
+- **Inputs:** `IssueGiftCard`/`ActivateGiftCard`/`ReloadGiftCard`/`RedeemGiftCard` and `EarnLoyaltyPoints`/`RedeemLoyaltyPoints` `PosCommand`s (see `crates/contracts/src/pos.rs`). `FinalizeOrder` also auto-earns for any cart with `customer_id` set, with no separate command needed.
+- **Outputs:** Gift card balance/state (`GiftCardInfo`) and loyalty points (`LoyaltyAccountInfo`) held in `gift_cards`/`loyalty_accounts`; both redemption paths append a `PaymentRecord` to the cart (`provider = "gift_card"` / `"loyalty"`) so they flow through to `order_payments` on finalize like any other tender.
+- **Concurrency:** balance/point mutations are guarded atomic `UPDATE ... WHERE balance/points >= ?` statements (`crates/storage/src/gift_cards.rs`, `crates/storage/src/loyalty.rs`), the same oversell-guard pattern as the real-time inventory ledger — concurrent redemptions against the same card or account can never go negative.
+- **Failure path:** Gift cards reject unknown codes, double activation, inactive-card operations, zero amounts, and over-balance redemptions (`GIFT_CARD_NOT_FOUND`, `GIFT_CARD_ALREADY_ACTIVE`, `GIFT_CARD_NOT_ACTIVE`, `INVALID_AMOUNT`, `INSUFFICIENT_GIFT_CARD_BALANCE`). Loyalty rejects zero-point/spend and over-balance redemptions (`LOYALTY_ACCOUNT_NOT_FOUND`, `INVALID_AMOUNT`, `INSUFFICIENT_LOYALTY_POINTS`). Both tender commands validate the cart is `Tendering`/`Paid` *before* debiting, so a bad cart state never costs the customer money or points. Auto-earn on finalize is best-effort: a loyalty storage failure logs a warning but never fails an already-persisted sale (unlike fiscal signing, which fails closed).
+- **Metrics:** `apex_edge_gift_card_operations_total{operation,outcome}` / `apex_edge_gift_card_operation_duration_seconds{operation}` and `apex_edge_loyalty_operations_total{operation,outcome}` / `apex_edge_loyalty_operation_duration_seconds{operation}` are emitted on every issue/activate/reload/redeem/earn call (`operation` values: `issue`, `activate`, `reload`, `redeem`, `earn`, `earn_auto`).
 
 ### 29. Cloud Connector Framework (v0.10.0)
 
@@ -1026,25 +1044,35 @@ flowchart TB
 - **Failure path:** Zero quantity or blank reason returns `INVALID_STOCK_MOVEMENT`; storage failure returns `STOCK_MOVEMENT_FAILED`.
 - **Metrics:** `apex_edge_stock_operations_total{operation,outcome}` is reserved for stock command outcomes.
 
-### 32. Fiscal Provider Boundary (v1.0.0)
+### 32. Fiscal Provider Boundary (adapter v1.0.0, wired into finalize v1.2.0)
 
-**Purpose:** Keep country-specific fiscal certification outside the core checkout engine through a stable `FiscalProvider` trait.
+**Purpose:** Keep country-specific fiscal certification outside the core checkout engine through a stable `FiscalProvider` trait, and gate order finalize on a valid fiscal receipt in regulated deployments.
 
 ```mermaid
-flowchart TB
-    Finalize[finalize_order] --> FiscalProvider[FiscalProvider]
-    FiscalProvider --> NoOp[NoOpFiscalProvider]
-    FiscalProvider --> DETSE[DeTseFiscalProvider]
-    FiscalProvider --> Receipt[FiscalReceiptMetadata]
-    Receipt --> Documents[ReceiptDocuments]
-    Receipt --> Outbox[HQSubmission]
+sequenceDiagram
+    participant POS
+    participant API as ApexEdgeAPI
+    participant Fiscal as FiscalProvider
+    participant DB as SQLite (orders)
+
+    POS->>API: PosCommand::FinalizeOrder
+    API->>API: build Order from paid cart
+    API->>Fiscal: sign_receipt(order_id, total_cents, currency)
+    alt signed (NoOp or configured DE-TSE)
+        Fiscal-->>API: FiscalReceipt{provider, fiscal_id?, signature?}
+        API->>DB: INSERT orders (..., fiscal_provider, fiscal_id, fiscal_signature)
+        API-->>POS: success + FinalizeResult
+    else NotConfigured / InvalidTotal
+        Fiscal-->>API: FiscalError
+        API-->>POS: FISCAL_SIGNING_FAILED (no ledger/outbox/stock mutation)
+    end
 ```
 
 **Notes:**
-- **Inputs:** Order id, total amount, and currency in `FiscalReceiptRequest`.
-- **Outputs:** `FiscalReceipt` with provider, optional fiscal id, and optional signature.
-- **Failure path:** NoOp is the default for US/CA and non-fiscal deployments; DE-TSE fails closed with `NotConfigured` until certified configuration is provided.
-- **Metrics:** `apex_edge_fiscal_receipts_total{provider,outcome}` is reserved for fiscal signing outcomes.
+- **Inputs:** Order id, total amount, and currency in `FiscalReceiptRequest`. The provider and currency are chosen at startup via `APEX_EDGE_FISCAL_PROVIDER` (`noop` default, or `de_tse`), `APEX_EDGE_FISCAL_DE_TSE_CONFIGURED`, and `APEX_EDGE_CURRENCY` (see `docs/runbook/README.md`).
+- **Outputs:** `FiscalReceipt` with provider, optional fiscal id, and optional signature, persisted on the `orders` row (`fiscal_provider`/`fiscal_id`/`fiscal_signature`, additive columns) and returned by `GET /orders/:id`.
+- **Failure path:** Signing happens before any ledger, outbox, or stock-commit write, so a failure fails the whole finalize closed with `FISCAL_SIGNING_FAILED` and leaves no order behind. NoOp (the default for US/CA and other non-fiscal deployments) always succeeds; DE-TSE fails closed with `NotConfigured` until certified configuration is provided — this prevents completing a sale in a regulated market with a broken/misconfigured signer.
+- **Metrics:** `apex_edge_fiscal_receipts_total{provider,outcome}` (counter) and `apex_edge_fiscal_receipt_duration_seconds{provider}` (histogram) are emitted on every finalize attempt.
 
 ### 33. GDPR Customer Export and Erase (v1.0.0)
 

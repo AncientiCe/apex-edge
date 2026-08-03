@@ -22,6 +22,7 @@ async fn start_app_with_origins(allowed_origins: Vec<HeaderValue>) -> u16 {
         None,
         allowed_origins,
         apex_edge_api::AuthSettings::default(),
+        apex_edge_api::FiscalSettings::default(),
     );
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let port = listener.local_addr().expect("local addr").port();
