@@ -13,7 +13,7 @@ pub const OPENAPI_VERSION: &str = "3.1.0";
 /// from the `apex-edge` binary, so this constant cannot be derived at compile time — it
 /// must be bumped by hand alongside `apex-edge/Cargo.toml` and `CHANGELOG.md` as part of
 /// every release (tracked in the release checklist).
-pub const APEX_EDGE_RELEASE_VERSION: &str = "1.2.0";
+pub const APEX_EDGE_RELEASE_VERSION: &str = "2.0.0";
 
 fn spec() -> serde_json::Value {
     serde_json::json!({

@@ -9,6 +9,81 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.0.0] — 2026-08-23
+
+"Prove It": turns the dormant adapter crates into live, verifiable code paths — real card
+payments, real receipt printing, multi-jurisdiction fiscalization — plus the security,
+identity, and release-engineering work that lets a stranger actually run this thing. Every
+integration below has a zero-cost, zero-hardware verification path.
+
+### Added
+
+- **Payments are real.** `PaymentProvider` redesigned as async `authorize`/`capture`/`void`/
+  `refund` with partial approvals, timeouts, and provider-side idempotency keys, wired into
+  `AddPayment`/`RefundTender`. `SimulatedTerminalProvider` (deterministic approve/decline/
+  timeout/partial/reversal, no hardware) and `StripeTerminalProvider` (server-driven REST
+  against a `simulated-wpe` reader) are both available; a new `payment_intents` table plus a
+  background reversal loop guarantee a sale that's captured-but-never-finalized gets voided,
+  not lost. Metrics: `apex_edge_payment_attempts_total`, `_duration_seconds`,
+  `_reversals_total`, `_reversals_pending`.
+- **Printing is real.** ESC/POS and Star Line Mode encoders with TCP 9100, Windows raw-port,
+  and in-repo `CaptureSink` transports. New `tools/virtual-printer` decodes the byte stream and
+  renders the receipt as text/PNG so anyone cloning the repo sees output with no device. New
+  `PrintDocument` POS command plus cash-drawer kick on finalize. Metric:
+  `apex_edge_hardware_operations_total`.
+- **Fiscal compliance is real, for seven jurisdictions.** `FiscalProvider` redesigned around a
+  full fiscal transaction (line items, tax rates, tenders, transaction type), with an offline
+  sign-later queue so a TSE outage never blocks checkout (`apex_edge_fiscal_queue_depth`,
+  `_sign_later_total`). `FiskalyProvider` covers DE/AT/ES/IT/FR/PT/SE against the free sandbox
+  with RKSV and VeriFactu QR generation. Vendor-free, fully unit-tested exports: DSFinV-K
+  cash-point-closing (triggered off `CloseTill`) and EN 16931 UBL/CII with XRechnung and
+  Factur-X profiles, Schematron-validated in tests.
+- **Outbox fan-out.** `outbox_destinations` and `outbox_delivery_attempts` activated: durable
+  per-destination delivery with independent backoff and a dead-letter queue, so one broken
+  Peppol/KSeF endpoint can't stall HQ delivery or silently drop a submission.
+- **Real hub identity.** `resolve_hub_identity` replaces the hardcoded `Uuid::nil()` store id:
+  `APEX_EDGE_STORE_ID`/`APEX_EDGE_REGISTER_ID` win when set and are persisted (`hub_identity`
+  table), otherwise the hub reuses whatever it generated on first boot.
+- **Auth is on by default.** `APEX_EDGE_AUTH_ENABLED` now defaults to `true` (opt out, not
+  in); API token scopes (`required_scope_for_path`/`token_scopes_allow`) are enforced on every
+  request, not just stored.
+- **TLS and mTLS.** Optional HTTPS listener (`APEX_EDGE_TLS_CERT_PATH`/`KEY_PATH`) via
+  `axum-server` + `rustls`; setting `APEX_EDGE_TLS_CLIENT_CA_PATH` additionally requires and
+  verifies a client certificate before the handshake completes. Plain HTTP remains the default
+  so local dev and CI are unaffected. Metric: `apex_edge_tls_enabled{client_auth}`.
+- **Rate limiting** on `/auth/*` and `/pos/*`, sliding 60s window per client IP
+  (`APEX_EDGE_RATE_LIMIT_AUTH_PER_MINUTE`/`_POS_PER_MINUTE`, either disable with `0`). Metrics:
+  `apex_edge_rate_limit_decisions_total`, `_rejected_total`.
+- Cross-platform release workflow (`.github/workflows/release.yml`): tag-triggered Linux
+  `.deb`/`.rpm` and Windows `.msi` builds with checksums, published as a GitHub Release.
+
+### Changed
+
+- `apex-edge/src/main.rs` no longer hand-rolls auth settings or hardcodes identity/rate-limit
+  config — it now calls the real `AuthSettings::from_env()`, `resolve_hub_identity`, and
+  `RateLimitSettings::from_env()` that the API/storage crates already provided.
+- Both the plain-HTTP and TLS listeners now serve via
+  `into_make_service_with_connect_info::<SocketAddr>()`; rate limiting depends on
+  `ConnectInfo` and was previously never receiving it.
+- `docs/architecture/README.md` and `docs/runbook/README.md` updated for hub identity,
+  TLS/mTLS, rate limiting, and auth-on-by-default (new architecture §42).
+- Migrated cert/key loading from `rustls-pemfile` (unmaintained, RUSTSEC-2025-0134) to
+  `rustls-pki-types`'s `PemObject` trait directly.
+
+### Removed
+
+- Orphaned, unimported frontend panels: `CheckoutPanel.tsx`, `LookupPanel.tsx`,
+  `DocumentsPanel.tsx`.
+
+### Fixed
+
+- `crates/storage/src/lib.rs` was missing the `gift_cards` module declaration (dropped when
+  other modules were inserted alphabetically around it) — the sole compile break blocking this
+  release.
+- `.github/workflows/smoke-release.yml` now pins `APEX_EDGE_AUTH_ENABLED=false` and a nil
+  `APEX_EDGE_STORE_ID`/`REGISTER_ID` so the Docker smoke test keeps working now that both
+  default differently.
+
 ## [1.2.0] — 2026-08-03
 
 "Activation": wires the Fiscal, Gift Card, and Loyalty domain/adapter crates — built and
