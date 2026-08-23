@@ -28,6 +28,9 @@ pub struct NewOrderLedgerEntry {
     pub fiscal_provider: Option<String>,
     pub fiscal_id: Option<String>,
     pub fiscal_signature: Option<String>,
+    pub fiscal_qr_payload: Option<String>,
+    pub fiscal_signed_at: Option<DateTime<Utc>>,
+    pub fiscal_pending: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -75,6 +78,9 @@ pub struct OrderLedgerEntry {
     pub fiscal_provider: Option<String>,
     pub fiscal_id: Option<String>,
     pub fiscal_signature: Option<String>,
+    pub fiscal_qr_payload: Option<String>,
+    pub fiscal_signed_at: Option<DateTime<Utc>>,
+    pub fiscal_pending: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -141,11 +147,12 @@ pub async fn insert_order_ledger_entry(
     let mut tx = pool.begin().await?;
     let now = Utc::now().to_rfc3339();
     sqlx::query(
-        "INSERT INTO orders (id, cart_id, store_id, register_id, shift_id, state, subtotal_cents, discount_cents, tax_cents, total_cents, submission_id, created_at, finalized_at, fiscal_provider, fiscal_id, fiscal_signature) \
-         VALUES (?, ?, ?, ?, ?, 'finalized', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+        "INSERT INTO orders (id, cart_id, store_id, register_id, shift_id, state, subtotal_cents, discount_cents, tax_cents, total_cents, submission_id, created_at, finalized_at, fiscal_provider, fiscal_id, fiscal_signature, fiscal_qr_payload, fiscal_signed_at, fiscal_pending) \
+         VALUES (?, ?, ?, ?, ?, 'finalized', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
          ON CONFLICT(id) DO UPDATE SET shift_id = excluded.shift_id, state = excluded.state, subtotal_cents = excluded.subtotal_cents, \
             discount_cents = excluded.discount_cents, tax_cents = excluded.tax_cents, total_cents = excluded.total_cents, submission_id = excluded.submission_id, \
-            fiscal_provider = excluded.fiscal_provider, fiscal_id = excluded.fiscal_id, fiscal_signature = excluded.fiscal_signature",
+            fiscal_provider = excluded.fiscal_provider, fiscal_id = excluded.fiscal_id, fiscal_signature = excluded.fiscal_signature, \
+            fiscal_qr_payload = excluded.fiscal_qr_payload, fiscal_signed_at = excluded.fiscal_signed_at, fiscal_pending = excluded.fiscal_pending",
     )
     .bind(order.order_id.to_string())
     .bind(order.cart_id.to_string())
@@ -162,6 +169,9 @@ pub async fn insert_order_ledger_entry(
     .bind(&order.fiscal_provider)
     .bind(&order.fiscal_id)
     .bind(&order.fiscal_signature)
+    .bind(&order.fiscal_qr_payload)
+    .bind(order.fiscal_signed_at.map(|ts| ts.to_rfc3339()))
+    .bind(i64::from(order.fiscal_pending))
     .execute(&mut *tx)
     .await?;
 
@@ -328,11 +338,18 @@ fn row_to_order(row: sqlx::sqlite::SqliteRow) -> Result<OrderLedgerEntry, PoolEr
             .and_then(|id| Uuid::parse_str(id).ok()),
         created_at: parse_datetime(&created_at),
         finalized_at: parse_datetime(&finalized_at),
-        lines: vec![],
-        payments: vec![],
         fiscal_provider: row.try_get("fiscal_provider")?,
         fiscal_id: row.try_get("fiscal_id")?,
         fiscal_signature: row.try_get("fiscal_signature")?,
+        fiscal_qr_payload: row.try_get("fiscal_qr_payload").unwrap_or(None),
+        fiscal_signed_at: row
+            .try_get::<Option<String>, _>("fiscal_signed_at")
+            .ok()
+            .flatten()
+            .map(|s| parse_datetime(&s)),
+        fiscal_pending: row.try_get::<i64, _>("fiscal_pending").unwrap_or(0) != 0,
+        lines: vec![],
+        payments: vec![],
     })
 }
 

@@ -108,33 +108,18 @@ pub async fn generate_document(
                             render_html_started_at.elapsed().as_millis().to_string(),
                         )],
                     );
-                    metrics::counter!(
-                        METRIC_DOCUMENT_RENDER_TOTAL,
-                        1u64,
-                        "document_type" => document_type_label(document_type),
-                        "outcome" => "ok"
-                    );
+                    metrics::counter!(METRIC_DOCUMENT_RENDER_TOTAL, "document_type" => document_type_label(document_type), "outcome" => "ok").increment(1);
                     let content = BASE64.encode(&pdf_bytes);
                     (content, "application/pdf")
                 }
                 Err(e) => {
-                    metrics::counter!(
-                        METRIC_DOCUMENT_RENDER_TOTAL,
-                        1u64,
-                        "document_type" => document_type_label(document_type),
-                        "outcome" => OUTCOME_PDF_ERROR
-                    );
+                    metrics::counter!(METRIC_DOCUMENT_RENDER_TOTAL, "document_type" => document_type_label(document_type), "outcome" => OUTCOME_PDF_ERROR).increment(1);
                     mark_failed(pool, document_id, &e.to_string()).await?;
                     return Ok(());
                 }
             },
             Err(e) => {
-                metrics::counter!(
-                    METRIC_DOCUMENT_RENDER_TOTAL,
-                    1u64,
-                    "document_type" => document_type_label(document_type),
-                    "outcome" => OUTCOME_TEMPLATE_ERROR
-                );
+                metrics::counter!(METRIC_DOCUMENT_RENDER_TOTAL, "document_type" => document_type_label(document_type), "outcome" => OUTCOME_TEMPLATE_ERROR).increment(1);
                 mark_failed(pool, document_id, &e.to_string()).await?;
                 return Ok(());
             }
@@ -142,32 +127,18 @@ pub async fn generate_document(
     } else {
         match render(template_body, &payload) {
             Ok(bytes) => {
-                metrics::counter!(
-                    METRIC_DOCUMENT_RENDER_TOTAL,
-                    1u64,
-                    "document_type" => document_type_label(document_type),
-                    "outcome" => "ok"
-                );
+                metrics::counter!(METRIC_DOCUMENT_RENDER_TOTAL, "document_type" => document_type_label(document_type), "outcome" => "ok").increment(1);
                 let content = String::from_utf8_lossy(&bytes).to_string();
                 (content, mime_type)
             }
             Err(e) => {
-                metrics::counter!(
-                    METRIC_DOCUMENT_RENDER_TOTAL,
-                    1u64,
-                    "document_type" => document_type_label(document_type),
-                    "outcome" => OUTCOME_TEMPLATE_ERROR
-                );
+                metrics::counter!(METRIC_DOCUMENT_RENDER_TOTAL, "document_type" => document_type_label(document_type), "outcome" => OUTCOME_TEMPLATE_ERROR).increment(1);
                 mark_failed(pool, document_id, &e.to_string()).await?;
                 return Ok(());
             }
         }
     };
-    metrics::histogram!(
-        METRIC_DOCUMENT_RENDER_DURATION_SECONDS,
-        start.elapsed().as_secs_f64(),
-        "document_type" => document_type_label(document_type)
-    );
+    metrics::histogram!(METRIC_DOCUMENT_RENDER_DURATION_SECONDS, "document_type" => document_type_label(document_type)).record(start.elapsed().as_secs_f64());
     log_finalize_timing(
         "render_pipeline_done",
         &[

@@ -153,7 +153,7 @@ impl StreamHub {
             hist.push_back(envelope.clone());
         }
         let _ = ch.tx.send(envelope);
-        metrics::counter!(STREAM_MESSAGES_TOTAL, 1u64, "kind" => kind.as_str());
+        metrics::counter!(STREAM_MESSAGES_TOTAL, "kind" => kind.as_str()).increment(1);
         seq
     }
 
@@ -231,7 +231,7 @@ impl StreamHub {
 
     fn refresh_presence_gauge(guard: &HashMap<Uuid, HashMap<Uuid, u32>>) {
         let total: usize = guard.values().map(|s| s.len()).sum();
-        metrics::gauge!(REGISTER_PRESENCE, total as f64);
+        metrics::gauge!(REGISTER_PRESENCE).set(total as f64);
     }
 }
 
@@ -354,7 +354,7 @@ async fn handle_ws(
     register_id: Option<Uuid>,
     since: Option<u64>,
 ) {
-    metrics::increment_gauge!(STREAM_CONNECTIONS, 1.0);
+    metrics::gauge!(STREAM_CONNECTIONS).increment(1.0);
     let _presence = PresenceGuard::new(&state.stream, store_id, register_id);
     // Subscribe before computing replay so no event published in between is lost.
     let mut rx = state.stream.subscribe(store_id);
@@ -375,7 +375,7 @@ async fn handle_ws(
         .await
         .is_err()
     {
-        metrics::decrement_gauge!(STREAM_CONNECTIONS, 1.0);
+        metrics::gauge!(STREAM_CONNECTIONS).decrement(1.0);
         return;
     }
 
@@ -387,7 +387,7 @@ async fn handle_ws(
             sent_through = sent_through.max(env.seq);
             let text = serde_json::to_string(env).unwrap_or_else(|_| "{}".into());
             if sender.send(Message::Text(text)).await.is_err() {
-                metrics::decrement_gauge!(STREAM_CONNECTIONS, 1.0);
+                metrics::gauge!(STREAM_CONNECTIONS).decrement(1.0);
                 return;
             }
         }
@@ -423,7 +423,7 @@ async fn handle_ws(
     }
 
     forward.abort();
-    metrics::decrement_gauge!(STREAM_CONNECTIONS, 1.0);
+    metrics::gauge!(STREAM_CONNECTIONS).decrement(1.0);
 }
 
 /// GET /pos/events?store_id=...&since=N — SSE fallback for environments without WS.
@@ -434,7 +434,7 @@ pub async fn pos_stream_sse(
     let store_id = q.store_id.unwrap_or(state.store_id);
     // Subscribe before computing replay so no event published in between is lost.
     let rx = state.stream.subscribe(store_id);
-    metrics::increment_gauge!(STREAM_CONNECTIONS, 1.0);
+    metrics::gauge!(STREAM_CONNECTIONS).increment(1.0);
     // Held by the stream closure so presence is released when the SSE connection drops.
     let presence = PresenceGuard::new(&state.stream, store_id, q.register_id);
 

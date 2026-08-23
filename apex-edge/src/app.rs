@@ -5,11 +5,13 @@ use apex_edge_api::{
     create_pairing_code, deny_approval_handler, erase_customer_data, exchange_session,
     export_customer_data, get_approval_handler, get_cart_state_handler, get_document,
     get_order_handler, get_prices, get_product_by_id, grant_approval_handler, handle_pos_command,
-    health, list_categories, list_order_documents, list_orders_handler, list_registers,
-    lookup_order_for_return, openapi_handler, openapi_ui_handler, pair_device, pos_snapshot,
-    pos_stream_sse, pos_stream_ws, ready, receive_webhook, refresh_session, revoke_session,
-    role::standby_guard_middleware, search_customers, search_products, serve_metrics, sync_status,
-    verify_audit_chain, AppState, AuthSettings, FiscalSettings,
+    health, list_categories, list_order_documents, list_orders_handler, list_outbox_dead_letters,
+    list_outbox_destinations, list_registers, lookup_order_for_return, openapi_handler,
+    openapi_ui_handler, pair_device, pos_snapshot, pos_stream_sse, pos_stream_ws,
+    rate_limit_middleware, ready, receive_webhook, refresh_session, retry_outbox_dead_letter,
+    revoke_session, role::standby_guard_middleware, search_customers, search_products,
+    serve_metrics, sync_status, verify_audit_chain, AppState, AuthSettings, FiscalSettings,
+    HardwareSettings, PaymentSettings, RateLimiter,
 };
 use axum::middleware;
 use axum::routing::post;
@@ -19,16 +21,47 @@ use uuid::Uuid;
 
 use crate::http_metrics_layer::HttpMetricsLayer;
 
+/// Everything the hub needs beyond its database pool.
+///
+/// Grouping these keeps adding an adapter from rippling through every call site;
+/// callers set only what they need: `HubConfig { store_id, ..Default::default() }`.
+pub struct HubConfig {
+    pub store_id: Uuid,
+    pub register_id: Uuid,
+    /// From `apex_edge_metrics::install_recorder()`. `None` disables `/metrics`.
+    pub metrics_handle: Option<apex_edge_metrics::PrometheusHandle>,
+    /// Empty allows any origin, which is suitable for local development only.
+    pub allowed_origins: Vec<HeaderValue>,
+    pub auth: AuthSettings,
+    pub fiscal: FiscalSettings,
+    pub payments: PaymentSettings,
+    pub hardware: HardwareSettings,
+    pub rate_limit: apex_edge_api::RateLimitSettings,
+}
+
+impl Default for HubConfig {
+    fn default() -> Self {
+        Self {
+            store_id: Uuid::nil(),
+            register_id: Uuid::nil(),
+            metrics_handle: None,
+            allowed_origins: vec![],
+            auth: AuthSettings::default(),
+            fiscal: FiscalSettings::default(),
+            payments: PaymentSettings::default(),
+            hardware: HardwareSettings::default(),
+            rate_limit: apex_edge_api::RateLimitSettings::default(),
+        }
+    }
+}
+
 /// Builds the Axum router with all routes and shared state.
 /// Caller is responsible for DB pool creation, migrations, and binding the server.
-/// Pass `Some(handle)` from `apex_edge_metrics::install_recorder()` to expose `/metrics`.
-/// Pass a non-empty `allowed_origins` to restrict CORS to specific origins; an empty
-/// list allows all origins (wildcard — suitable for local dev only).
 ///
 /// # Examples
 ///
 /// ```no_run
-/// use apex_edge::build_router;
+/// use apex_edge::{build_router, HubConfig};
 /// use sqlx::sqlite::SqlitePoolOptions;
 /// use uuid::Uuid;
 ///
@@ -39,32 +72,33 @@ use crate::http_metrics_layer::HttpMetricsLayer;
 ///     .connect("sqlite::memory:")
 ///     .await
 ///     .unwrap();
-/// let _app = build_router(
-///     pool,
-///     Uuid::nil(),
-///     None,
-///     vec![],
-///     apex_edge_api::AuthSettings::default(),
-///     apex_edge_api::FiscalSettings::default(),
-/// );
+/// let _app = build_router(pool, HubConfig::default());
 /// # }
 /// ```
-pub fn build_router(
-    pool: sqlx::SqlitePool,
-    store_id: Uuid,
-    metrics_handle: Option<apex_edge_metrics::PrometheusHandle>,
-    allowed_origins: Vec<HeaderValue>,
-    auth: AuthSettings,
-    fiscal: FiscalSettings,
-) -> Router {
+pub fn build_router(pool: sqlx::SqlitePool, config: HubConfig) -> Router {
+    let HubConfig {
+        store_id,
+        register_id,
+        metrics_handle,
+        allowed_origins,
+        auth,
+        fiscal,
+        payments,
+        hardware,
+        rate_limit,
+    } = config;
     let app_state = AppState {
         store_id,
+        register_id,
         pool,
         metrics_handle,
         auth,
         stream: apex_edge_api::StreamHub::new(),
         role: apex_edge_api::HubRole::from_env(),
         fiscal,
+        payments,
+        hardware,
+        rate_limiter: RateLimiter::new(rate_limit),
     };
     apex_edge_api::report_role(app_state.role);
     let cors_origin = if allowed_origins.is_empty() {
@@ -79,7 +113,10 @@ pub fn build_router(
             axum::http::Method::POST,
             axum::http::Method::OPTIONS,
         ])
-        .allow_headers([axum::http::header::CONTENT_TYPE]);
+        .allow_headers([
+            axum::http::header::CONTENT_TYPE,
+            axum::http::header::AUTHORIZATION,
+        ]);
     let routes = Router::new()
         .route("/health", get(health))
         .route("/ready", get(ready))
@@ -113,6 +150,12 @@ pub fn build_router(
         .route("/admin/api-tokens", post(create_api_token))
         .route("/admin/customers/:id/export", get(export_customer_data))
         .route("/admin/customers/:id/erase", post(erase_customer_data))
+        .route("/admin/outbox/destinations", get(list_outbox_destinations))
+        .route("/admin/outbox/dead-letters", get(list_outbox_dead_letters))
+        .route(
+            "/admin/outbox/dead-letters/:attempt_id/retry",
+            post(retry_outbox_dead_letter),
+        )
         .route("/webhooks/:connector_id", post(receive_webhook))
         .route("/pos/stream", get(pos_stream_ws))
         .route("/pos/events", get(pos_stream_sse))
@@ -129,29 +172,24 @@ pub fn build_router(
             app_state.clone(),
             standby_guard_middleware,
         ))
+        .route_layer(middleware::from_fn_with_state(
+            app_state.clone(),
+            rate_limit_middleware,
+        ))
         .with_state(app_state);
     routes.layer(cors).layer(HttpMetricsLayer)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::build_router;
-    use apex_edge_api::{AuthSettings, FiscalSettings};
+    use super::{build_router, HubConfig};
     use apex_edge_storage::{create_sqlite_pool, run_migrations};
-    use uuid::Uuid;
 
     #[tokio::test]
     async fn router_exposes_health_and_ready_routes() {
         let pool = create_sqlite_pool("sqlite::memory:").await.expect("pool");
         run_migrations(&pool).await.expect("migrations");
-        let app = build_router(
-            pool,
-            Uuid::nil(),
-            None,
-            vec![],
-            AuthSettings::default(),
-            FiscalSettings::default(),
-        );
+        let app = build_router(pool, HubConfig::default());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind");
@@ -184,11 +222,10 @@ mod tests {
         run_migrations(&pool).await.expect("migrations");
         let app = build_router(
             pool,
-            Uuid::nil(),
-            Some(handle),
-            vec![],
-            AuthSettings::default(),
-            FiscalSettings::default(),
+            HubConfig {
+                metrics_handle: Some(handle),
+                ..HubConfig::default()
+            },
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await

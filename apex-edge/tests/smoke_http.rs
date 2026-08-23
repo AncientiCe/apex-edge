@@ -1,6 +1,6 @@
 //! Smoke tests: spin up the app in-process, hit /health, /ready, and one POS path.
 
-use apex_edge::build_router;
+use apex_edge::{build_router, HubConfig};
 use apex_edge_contracts::{ContractVersion, CreateCartPayload, PosCommand, PosRequestEnvelope};
 use apex_edge_storage::{create_sqlite_pool, run_migrations};
 use axum::http::StatusCode;
@@ -13,14 +13,7 @@ async fn app_with_ephemeral_db() -> axum::Router {
         .await
         .expect("pool");
     run_migrations(&pool).await.expect("migrations");
-    build_router(
-        pool,
-        Uuid::nil(),
-        None,
-        vec![],
-        apex_edge_api::AuthSettings::default(),
-        apex_edge_api::FiscalSettings::default(),
-    )
+    build_router(pool, HubConfig::default())
 }
 
 #[tokio::test]

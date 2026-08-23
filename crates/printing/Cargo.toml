@@ -6,7 +6,7 @@ edition = "2021"
 [dependencies]
 apex-edge-contracts = { path = "../contracts" }
 apex-edge-storage = { path = "../storage" }
-metrics = "0.21"
+metrics = "0.23"
 base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
 serde = { version = "1.0", features = ["derive"] }

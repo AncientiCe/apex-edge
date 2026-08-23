@@ -51,25 +51,22 @@ where
         let path = req.uri().path().to_string();
         let route = request_path_to_route(&path);
         let route_labels = [("route", route)];
-        metrics::increment_gauge!(HTTP_REQUESTS_IN_FLIGHT, 1.0, &route_labels);
+        metrics::gauge!(HTTP_REQUESTS_IN_FLIGHT, &route_labels).increment(1.0);
 
         let start = Instant::now();
         let mut inner = self.inner.clone();
         let fut = async move {
             let res = inner.call(req).await;
             let status = res.as_ref().map(|r| r.status().as_u16()).unwrap_or(500);
-            metrics::decrement_gauge!(HTTP_REQUESTS_IN_FLIGHT, 1.0, &route_labels);
+            metrics::gauge!(HTTP_REQUESTS_IN_FLIGHT, &route_labels).decrement(1.0);
             let counter_labels = [
                 ("method", method),
                 ("route", route.to_string()),
                 ("status_class", status_class(status).to_string()),
             ];
-            metrics::counter!(HTTP_REQUESTS_TOTAL, 1u64, &counter_labels);
-            metrics::histogram!(
-                HTTP_REQUEST_DURATION_SECONDS,
-                start.elapsed().as_secs_f64(),
-                &route_labels
-            );
+            metrics::counter!(HTTP_REQUESTS_TOTAL, &counter_labels).increment(1);
+            metrics::histogram!(HTTP_REQUEST_DURATION_SECONDS, &route_labels)
+                .record(start.elapsed().as_secs_f64());
             res
         };
         Box::pin(fut)

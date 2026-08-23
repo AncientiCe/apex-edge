@@ -7,12 +7,15 @@ edition = "2021"
 apex-edge-contracts = { path = "../contracts" }
 chrono = { version = "0.4", features = ["serde"] }
 apex-edge-metrics = { path = "../metrics" }
-metrics = "0.21"
+metrics = "0.23"
 apex-edge-domain = { path = "../domain" }
 apex-edge-storage = { path = "../storage" }
 apex-edge-outbox = { path = "../outbox" }
 apex-edge-printing = { path = "../printing" }
 apex-edge-adapters-fiscal = { path = "../adapters/fiscal" }
+async-trait = "0.1"
+apex-edge-adapters-payment = { path = "../adapters/payment" }
+apex-edge-adapters-hardware = { path = "../adapters/hardware" }
 apex-edge-giftcards = { path = "../giftcards" }
 apex-edge-loyalty = { path = "../loyalty" }
 axum = { version = "0.7", features = ["json", "ws"] }
@@ -24,7 +27,7 @@ tokio = { version = "1", features = ["full"] }
 tower-http = { version = "0.5", features = ["trace"] }
 tracing = "0.1"
 thiserror = "1.0"
-uuid = { version = "1.0", features = ["v4", "serde"] }
+uuid = { version = "1.0", features = ["v4", "v5", "serde"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 jsonwebtoken = "9"

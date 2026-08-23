@@ -1,0 +1,24 @@
+# Golden Star Line Mode byte stream for the same receipt as receipt_escpos.hex.
+#
+# Star Line Mode is not ESC/POS: alignment is ESC GS a, emphasis is a pair of
+# single commands rather than a parameter, and there is no ESC d feed command,
+# so line feeds are plain LF.
+
+1B 40                 # ESC @        initialise printer
+1B 1D 74 00           # ESC GS t 0   select the normal code page
+
+1B 1D 61 01           # ESC GS a 1   centre
+1B 45                 # ESC E        emphasis on
+1B 69 01 01           # ESC i 1 1    double height and double width
+"APEX STORE" 0A
+1B 46                 # ESC F        emphasis off
+1B 69 00 00           # ESC i 0 0    back to normal size
+"Order 1001" 0A
+
+1B 1D 61 00           # ESC GS a 0   left
+2D*32 0A              # divider across the full 32-column paper
+"Coffee" 20*22 "3.50" 0A
+"TOTAL" 20*23 "3.50" 0A
+
+0A 0A                 #              feed two lines
+1B 64 03              # ESC d 3      feed to cut position, partial cut

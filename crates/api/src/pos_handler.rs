@@ -1,5 +1,8 @@
 //! POS command execution: load/save cart, run pricing pipeline, return payloads.
 
+use apex_edge_adapters_payment::{
+    AuthorizationOutcome, AuthorizeRequest, CaptureRequest, PaymentProviderError,
+};
 use apex_edge_contracts::{
     build_submission_envelope, AddPaymentInput, AppliedPromoInfo, CartState, CartStateKind,
     ContractVersion, FinalizeResult, ManualDiscountInfo, ManualDiscountKind, PosCommand, PosError,
@@ -13,14 +16,18 @@ use apex_edge_loyalty::{EarnRequest, LocalLoyaltyProvider, LoyaltyAccount, Loyal
 use apex_edge_printing::generate_document;
 use apex_edge_storage::{
     activate_gift_card, apply_local_delta, claim_parked_cart, commit_cart_sale,
-    earn_loyalty_points, ensure_inventory_state, fetch_open_shift, get_catalog_item,
+    earn_loyalty_points, ensure_inventory_state, fetch_open_shift,
+    flag_payment_intent_for_reversal, flag_payment_intents_for_reversal, get_catalog_item,
     get_coupon_definition_by_code, get_customer, get_print_template, insert_order_ledger_entry,
-    insert_outbox, insert_stock_movement, issue_gift_card, list_parked_carts,
-    list_price_book_entries, list_promotions, list_tax_rules, load_cart, park_cart,
-    redeem_gift_card, redeem_loyalty_points, release_cart_reservations, release_line_reservation,
-    reload_gift_card, save_cart, try_reserve, ActivateOutcome, ClaimOutcome, IssueOutcome,
-    NewOrderLedgerEntry, NewOrderLineEntry, NewOrderPaymentEntry, ParkCartInput, RedeemOutcome,
-    RedeemPointsOutcome, ReloadOutcome, ReserveInput, ReserveOutcome, StockMovementInput,
+    insert_outbox, insert_payment_intent, insert_stock_movement, issue_gift_card,
+    list_parked_carts, list_price_book_entries, list_promotions, list_tax_rules, load_cart,
+    mark_payment_intent_captured, mark_payment_intent_declined, mark_payment_intent_failed,
+    park_cart, redeem_gift_card, redeem_loyalty_points, release_cart_reservations,
+    release_line_reservation, reload_gift_card, save_cart, settle_payment_intents_for_cart,
+    try_reserve, ActivateOutcome, ClaimOutcome, IssueOutcome, NewOrderLedgerEntry,
+    NewOrderLineEntry, NewOrderPaymentEntry, NewPaymentIntent, ParkCartInput, PaymentIntentState,
+    RedeemOutcome, RedeemPointsOutcome, ReloadOutcome, ReserveInput, ReserveOutcome,
+    StockMovementInput,
 };
 use sqlx::SqlitePool;
 use std::sync::OnceLock;
@@ -30,6 +37,7 @@ use uuid::Uuid;
 use crate::inventory_realtime::{
     broadcast_stock_changed, record_oversell_prevented, record_reservation_outcome,
 };
+use crate::payments::{provider_idempotency_key, ProviderChoice, MANUAL_PROVIDER};
 use crate::pos::AppState;
 use crate::stream::{stream_broadcast, StreamKind};
 
@@ -80,6 +88,296 @@ fn log_finalize_timing(event: &str, fields: &[(&str, String)]) {
 
 fn cart_state_to_payload(state: &CartState) -> serde_json::Value {
     serde_json::to_value(state).unwrap_or(serde_json::Value::Null)
+}
+
+/// Everything the payment path needs to identify one tender attempt.
+struct TakePaymentContext {
+    idempotency_key: Uuid,
+    store_id: Uuid,
+    register_id: Uuid,
+    cart_id: Uuid,
+    tender_id: Uuid,
+    amount_cents: u64,
+    tip_amount_cents: u64,
+    requested_provider: Option<String>,
+}
+
+/// A tender the store actually holds, ready to be recorded on the cart.
+struct CapturedTender {
+    /// `None` for manual tenders, which contact no provider.
+    intent_id: Option<Uuid>,
+    provider: Option<String>,
+    provider_payment_id: Option<String>,
+    entry_method: Option<apex_edge_contracts::PaymentEntryMethod>,
+    /// What the provider approved, which may be less than what was asked for.
+    amount_cents: u64,
+    tip_amount_cents: u64,
+    metric_outcome: &'static str,
+}
+
+struct PaymentFailure {
+    code: &'static str,
+    message: String,
+    metric_outcome: &'static str,
+}
+
+/// Obtain funds for one tender.
+///
+/// Manual tenders (no provider named) are passed straight through, preserving the
+/// behaviour cash, gift cards, and externally captured cards rely on. Provider-backed
+/// tenders authorize, then capture, writing a durable intent at each step so a crash
+/// leaves evidence of money that may have moved.
+async fn take_payment(
+    app: &AppState,
+    ctx: &TakePaymentContext,
+) -> Result<CapturedTender, PaymentFailure> {
+    let provider = match app.payments.resolve(ctx.requested_provider.as_deref()) {
+        ProviderChoice::ManualTender => {
+            return Ok(CapturedTender {
+                intent_id: None,
+                provider: ctx.requested_provider.clone(),
+                provider_payment_id: None,
+                entry_method: None,
+                amount_cents: ctx.amount_cents,
+                tip_amount_cents: ctx.tip_amount_cents,
+                metric_outcome: apex_edge_metrics::OUTCOME_SUCCESS,
+            });
+        }
+        ProviderChoice::Unknown(code) => {
+            return Err(PaymentFailure {
+                code: "PAYMENT_PROVIDER_UNKNOWN",
+                message: format!("Payment provider '{code}' is not configured on this hub"),
+                metric_outcome: apex_edge_metrics::OUTCOME_UNKNOWN_PROVIDER,
+            });
+        }
+        ProviderChoice::Provider(provider) => provider,
+    };
+
+    let intent = insert_payment_intent(
+        &app.pool,
+        NewPaymentIntent {
+            store_id: ctx.store_id,
+            register_id: ctx.register_id,
+            cart_id: ctx.cart_id,
+            tender_id: ctx.tender_id,
+            idempotency_key: ctx.idempotency_key,
+            provider: provider.provider_code().to_string(),
+            amount_cents: ctx.amount_cents,
+            tip_amount_cents: ctx.tip_amount_cents,
+        },
+    )
+    .await
+    .map_err(|e| PaymentFailure {
+        code: "PAYMENT_LEDGER_UNAVAILABLE",
+        message: format!("Could not record the payment attempt: {e}"),
+        metric_outcome: apex_edge_metrics::OUTCOME_ERROR,
+    })?;
+
+    // A retried command finds its intent already captured. Answer from the ledger rather
+    // than asking the provider for money a second time.
+    if intent.state == PaymentIntentState::Captured || intent.state == PaymentIntentState::Settled {
+        return Ok(CapturedTender {
+            intent_id: Some(intent.id),
+            provider: Some(intent.provider.clone()),
+            provider_payment_id: intent.provider_payment_id.clone(),
+            entry_method: None,
+            amount_cents: intent.approved_cents,
+            tip_amount_cents: intent.tip_amount_cents,
+            metric_outcome: apex_edge_metrics::OUTCOME_SUCCESS,
+        });
+    }
+
+    let authorization = provider
+        .authorize(AuthorizeRequest {
+            idempotency_key: provider_idempotency_key(
+                ctx.idempotency_key,
+                ctx.tender_id,
+                "authorize",
+            ),
+            cart_id: ctx.cart_id,
+            store_id: ctx.store_id,
+            register_id: ctx.register_id,
+            amount_cents: ctx.amount_cents,
+            tip_amount_cents: ctx.tip_amount_cents,
+            currency: app.payments.currency.clone(),
+        })
+        .await;
+
+    let authorization = match authorization {
+        Ok(authorization) => authorization,
+        Err(e) if e.requires_reversal_check() => {
+            // The provider may have taken the card. Queue it for the sweeper instead of
+            // telling the operator the payment simply failed.
+            let _ = flag_payment_intent_for_reversal(
+                &app.pool,
+                intent.id,
+                indeterminate_payment_id(&e),
+                &e.to_string(),
+            )
+            .await;
+            return Err(PaymentFailure {
+                code: "PAYMENT_INDETERMINATE",
+                message: format!(
+                    "The terminal did not confirm the payment and it is being reconciled: {e}"
+                ),
+                metric_outcome: apex_edge_metrics::OUTCOME_INDETERMINATE,
+            });
+        }
+        Err(e) => {
+            let _ = mark_payment_intent_failed(&app.pool, intent.id, &e.to_string()).await;
+            return Err(PaymentFailure {
+                code: "PAYMENT_FAILED",
+                message: e.to_string(),
+                metric_outcome: apex_edge_metrics::OUTCOME_ERROR,
+            });
+        }
+    };
+
+    if !authorization.is_approved() {
+        let (code, message) = authorization
+            .declined_reason()
+            .unwrap_or(("declined", "The payment was declined."));
+        let _ = mark_payment_intent_declined(&app.pool, intent.id, code).await;
+        return Err(PaymentFailure {
+            code: "PAYMENT_DECLINED",
+            message: message.to_string(),
+            metric_outcome: apex_edge_metrics::OUTCOME_DECLINED,
+        });
+    }
+
+    let partial = matches!(
+        authorization.outcome,
+        AuthorizationOutcome::PartiallyApproved { .. }
+    );
+
+    let capture = provider
+        .capture(CaptureRequest {
+            idempotency_key: provider_idempotency_key(
+                ctx.idempotency_key,
+                ctx.tender_id,
+                "capture",
+            ),
+            provider_payment_id: authorization.provider_payment_id.clone(),
+            amount_cents: authorization.approved_cents,
+        })
+        .await;
+
+    let capture = match capture {
+        Ok(capture) => capture,
+        Err(e) => {
+            metrics::counter!(apex_edge_metrics::PAYMENT_CAPTURES_TOTAL, "provider" => provider.provider_code(), "outcome" => apex_edge_metrics::OUTCOME_ERROR).increment(1);
+            if e.requires_reversal_check() {
+                let _ = flag_payment_intent_for_reversal(
+                    &app.pool,
+                    intent.id,
+                    Some(authorization.provider_payment_id.as_str()),
+                    &e.to_string(),
+                )
+                .await;
+                return Err(PaymentFailure {
+                    code: "PAYMENT_INDETERMINATE",
+                    message: format!("The capture did not confirm and is being reconciled: {e}"),
+                    metric_outcome: apex_edge_metrics::OUTCOME_INDETERMINATE,
+                });
+            }
+            // The authorization was never captured, so nothing is owed back; it will
+            // expire on the provider side.
+            let _ = mark_payment_intent_failed(&app.pool, intent.id, &e.to_string()).await;
+            return Err(PaymentFailure {
+                code: "PAYMENT_FAILED",
+                message: e.to_string(),
+                metric_outcome: apex_edge_metrics::OUTCOME_ERROR,
+            });
+        }
+    };
+
+    metrics::counter!(apex_edge_metrics::PAYMENT_CAPTURES_TOTAL, "provider" => provider.provider_code(), "outcome" => apex_edge_metrics::OUTCOME_SUCCESS).increment(1);
+
+    if let Err(e) = mark_payment_intent_captured(
+        &app.pool,
+        intent.id,
+        &capture.provider_payment_id,
+        capture.captured_cents,
+    )
+    .await
+    {
+        // The money is taken but we failed to write that down. Log loudly: this is the
+        // one case the sweeper cannot recover from on its own.
+        tracing::error!(
+            intent_id = %intent.id,
+            provider_payment_id = %capture.provider_payment_id,
+            error = %e,
+            "captured a payment but could not record the capture"
+        );
+    }
+
+    Ok(CapturedTender {
+        intent_id: Some(intent.id),
+        provider: Some(capture.provider),
+        provider_payment_id: Some(capture.provider_payment_id),
+        entry_method: capture.receipt.entry_method,
+        amount_cents: capture.captured_cents,
+        tip_amount_cents: authorization.tip_amount_cents,
+        metric_outcome: if partial {
+            apex_edge_metrics::OUTCOME_PARTIAL
+        } else {
+            apex_edge_metrics::OUTCOME_SUCCESS
+        },
+    })
+}
+
+fn indeterminate_payment_id(error: &PaymentProviderError) -> Option<&str> {
+    match error {
+        PaymentProviderError::Indeterminate {
+            provider_payment_id,
+            ..
+        } => provider_payment_id.as_deref(),
+        _ => None,
+    }
+}
+
+/// Hand every captured payment on a cart to the reversal sweeper, because the sale the
+/// customer paid for did not happen.
+async fn flag_cart_payments_for_reversal(
+    pool: &SqlitePool,
+    store_id: Uuid,
+    cart_id: Uuid,
+    reason: &str,
+) {
+    match flag_payment_intents_for_reversal(pool, store_id, cart_id, reason).await {
+        Ok(0) => {}
+        Ok(flagged) => tracing::warn!(
+            cart_id = %cart_id,
+            flagged,
+            reason,
+            "flagged captured payments for reversal after a failed sale"
+        ),
+        Err(e) => {
+            tracing::error!(cart_id = %cart_id, error = %e, "could not flag captured payments for reversal")
+        }
+    }
+}
+
+/// Hand a captured tender to the reversal sweeper. Manual tenders have no provider to
+/// give money back, so they are skipped.
+async fn flag_captured_tender_for_reversal(
+    pool: &SqlitePool,
+    tender: &CapturedTender,
+    reason: &str,
+) {
+    let Some(intent_id) = tender.intent_id else {
+        return;
+    };
+    if let Err(e) = flag_payment_intent_for_reversal(
+        pool,
+        intent_id,
+        tender.provider_payment_id.as_deref(),
+        reason,
+    )
+    .await
+    {
+        tracing::error!(intent_id = %intent_id, error = %e, "could not flag a captured payment for reversal");
+    }
 }
 
 /// Build a `CartState` from a `Cart`.
@@ -519,6 +817,20 @@ pub async fn execute_pos_command(
     let register_id = envelope.register_id;
     let pool = &app.pool;
 
+    if store_id != app.store_id {
+        return PosResponseEnvelope {
+            version: ContractVersion::V1_0_0,
+            success: false,
+            idempotency_key,
+            payload: None,
+            errors: vec![apex_edge_contracts::PosError {
+                code: "STORE_MISMATCH".into(),
+                message: "store_id does not match this hub".into(),
+                field: Some("store_id".into()),
+            }],
+        };
+    }
+
     let result = match &envelope.payload {
         PosCommand::CreateCart(p) => {
             let cart_id = p.cart_id.unwrap_or_else(Uuid::new_v4);
@@ -638,11 +950,7 @@ pub async fn execute_pos_command(
             };
             // Inactive items are never sellable, regardless of tracked stock.
             if !item.is_active {
-                metrics::counter!(
-                    apex_edge_metrics::CATALOG_STOCK_CHECKS_TOTAL,
-                    1u64,
-                    "outcome" => "OUT_OF_STOCK"
-                );
+                metrics::counter!(apex_edge_metrics::CATALOG_STOCK_CHECKS_TOTAL, "outcome" => "OUT_OF_STOCK").increment(1);
                 record_reservation_outcome("insufficient");
                 record_oversell_prevented();
                 return PosResponseEnvelope {
@@ -692,19 +1000,11 @@ pub async fn execute_pos_command(
             match reserve_outcome {
                 Ok(ReserveOutcome::Reserved) => {
                     record_reservation_outcome("reserved");
-                    metrics::counter!(
-                        apex_edge_metrics::CATALOG_STOCK_CHECKS_TOTAL,
-                        1u64,
-                        "outcome" => "ok"
-                    );
+                    metrics::counter!(apex_edge_metrics::CATALOG_STOCK_CHECKS_TOTAL, "outcome" => "ok").increment(1);
                 }
                 Ok(ReserveOutcome::Untracked) => {
                     record_reservation_outcome("untracked");
-                    metrics::counter!(
-                        apex_edge_metrics::CATALOG_STOCK_CHECKS_TOTAL,
-                        1u64,
-                        "outcome" => "ok"
-                    );
+                    metrics::counter!(apex_edge_metrics::CATALOG_STOCK_CHECKS_TOTAL, "outcome" => "ok").increment(1);
                 }
                 Ok(ReserveOutcome::Insufficient { available }) => {
                     record_reservation_outcome("insufficient");
@@ -720,11 +1020,7 @@ pub async fn execute_pos_command(
                             ),
                         )
                     };
-                    metrics::counter!(
-                        apex_edge_metrics::CATALOG_STOCK_CHECKS_TOTAL,
-                        1u64,
-                        "outcome" => code
-                    );
+                    metrics::counter!(apex_edge_metrics::CATALOG_STOCK_CHECKS_TOTAL, "outcome" => code).increment(1);
                     return PosResponseEnvelope {
                         version: ContractVersion::V1_0_0,
                         success: false,
@@ -1641,14 +1937,9 @@ pub async fn execute_pos_command(
         }
         PosCommand::AddPayment(p) => {
             let payment_started_at = Instant::now();
-            let payment_provider = p.provider.as_deref().unwrap_or("manual");
+            let payment_provider = p.provider.as_deref().unwrap_or(MANUAL_PROVIDER);
             let Some(mut cart) = load_cart_from_db(pool, p.cart_id).await.ok().flatten() else {
-                metrics::counter!(
-                    apex_edge_metrics::PAYMENT_ATTEMPTS_TOTAL,
-                    1u64,
-                    "provider" => payment_provider.to_string(),
-                    "outcome" => apex_edge_metrics::OUTCOME_ERROR
-                );
+                metrics::counter!(apex_edge_metrics::PAYMENT_ATTEMPTS_TOTAL, "provider" => payment_provider.to_string(), "outcome" => apex_edge_metrics::OUTCOME_ERROR).increment(1);
                 return PosResponseEnvelope {
                     version: ContractVersion::V1_0_0,
                     success: false,
@@ -1661,24 +1952,66 @@ pub async fn execute_pos_command(
                     }],
                 };
             };
-            if cart
-                .add_payment(AddPaymentInput {
+
+            // Ask the provider for the money before recording anything on the cart, so a
+            // decline can never leave a tender the store did not actually receive.
+            let tender = match take_payment(
+                app,
+                &TakePaymentContext {
+                    idempotency_key,
+                    store_id,
+                    register_id,
+                    cart_id: p.cart_id,
                     tender_id: p.tender_id,
                     amount_cents: p.amount_cents,
                     tip_amount_cents: p.tip_amount_cents,
+                    requested_provider: p.provider.clone(),
+                },
+            )
+            .await
+            {
+                Ok(tender) => tender,
+                Err(error) => {
+                    metrics::counter!(apex_edge_metrics::PAYMENT_ATTEMPTS_TOTAL, "provider" => payment_provider.to_string(), "outcome" => error.metric_outcome).increment(1);
+                    metrics::histogram!(apex_edge_metrics::PAYMENT_DURATION_SECONDS, "provider" => payment_provider.to_string()).record(payment_started_at.elapsed().as_secs_f64());
+                    return PosResponseEnvelope {
+                        version: ContractVersion::V1_0_0,
+                        success: false,
+                        idempotency_key,
+                        payload: None,
+                        errors: vec![PosError {
+                            code: error.code.into(),
+                            message: error.message,
+                            field: None,
+                        }],
+                    };
+                }
+            };
+
+            if cart
+                .add_payment(AddPaymentInput {
+                    tender_id: p.tender_id,
+                    amount_cents: tender.amount_cents,
+                    tip_amount_cents: tender.tip_amount_cents,
                     external_reference: p.external_reference.clone(),
-                    provider: p.provider.clone(),
-                    provider_payment_id: p.provider_payment_id.clone(),
-                    entry_method: p.entry_method,
+                    provider: tender.provider.clone(),
+                    provider_payment_id: tender
+                        .provider_payment_id
+                        .clone()
+                        .or_else(|| p.provider_payment_id.clone()),
+                    entry_method: tender.entry_method.or(p.entry_method),
                 })
                 .is_err()
             {
-                metrics::counter!(
-                    apex_edge_metrics::PAYMENT_ATTEMPTS_TOTAL,
-                    1u64,
-                    "provider" => payment_provider.to_string(),
-                    "outcome" => apex_edge_metrics::OUTCOME_ERROR
-                );
+                // The provider already has the money but the cart will not accept it, so
+                // this is exactly the case the reversal sweeper exists for.
+                flag_captured_tender_for_reversal(
+                    pool,
+                    &tender,
+                    "cart rejected the tender after capture",
+                )
+                .await;
+                metrics::counter!(apex_edge_metrics::PAYMENT_ATTEMPTS_TOTAL, "provider" => payment_provider.to_string(), "outcome" => apex_edge_metrics::OUTCOME_ERROR).increment(1);
                 return PosResponseEnvelope {
                     version: ContractVersion::V1_0_0,
                     success: false,
@@ -1692,12 +2025,13 @@ pub async fn execute_pos_command(
                 };
             }
             if let Err(errors) = save_cart_to_db(pool, &cart).await {
-                metrics::counter!(
-                    apex_edge_metrics::PAYMENT_ATTEMPTS_TOTAL,
-                    1u64,
-                    "provider" => payment_provider.to_string(),
-                    "outcome" => apex_edge_metrics::OUTCOME_ERROR
-                );
+                flag_captured_tender_for_reversal(
+                    pool,
+                    &tender,
+                    "cart could not be saved after capture",
+                )
+                .await;
+                metrics::counter!(apex_edge_metrics::PAYMENT_ATTEMPTS_TOTAL, "provider" => payment_provider.to_string(), "outcome" => apex_edge_metrics::OUTCOME_ERROR).increment(1);
                 return PosResponseEnvelope {
                     version: ContractVersion::V1_0_0,
                     success: false,
@@ -1706,17 +2040,8 @@ pub async fn execute_pos_command(
                     errors,
                 };
             }
-            metrics::counter!(
-                apex_edge_metrics::PAYMENT_ATTEMPTS_TOTAL,
-                1u64,
-                "provider" => payment_provider.to_string(),
-                "outcome" => apex_edge_metrics::OUTCOME_SUCCESS
-            );
-            metrics::histogram!(
-                apex_edge_metrics::PAYMENT_DURATION_SECONDS,
-                payment_started_at.elapsed().as_secs_f64(),
-                "provider" => payment_provider.to_string()
-            );
+            metrics::counter!(apex_edge_metrics::PAYMENT_ATTEMPTS_TOTAL, "provider" => payment_provider.to_string(), "outcome" => tender.metric_outcome).increment(1);
+            metrics::histogram!(apex_edge_metrics::PAYMENT_DURATION_SECONDS, "provider" => payment_provider.to_string()).record(payment_started_at.elapsed().as_secs_f64());
             let state = build_cart_state(pool, store_id, &cart).await;
             PosResponseEnvelope {
                 version: ContractVersion::V1_0_0,
@@ -1855,11 +2180,7 @@ pub async fn execute_pos_command(
                     cart_data,
                     parked_by_register,
                 }) => {
-                    metrics::counter!(
-                        apex_edge_metrics::CART_HANDOFF_TOTAL,
-                        1u64,
-                        "outcome" => "claimed"
-                    );
+                    metrics::counter!(apex_edge_metrics::CART_HANDOFF_TOTAL, "outcome" => "claimed").increment(1);
                     stream_broadcast(
                         app,
                         store_id,
@@ -1874,11 +2195,7 @@ pub async fn execute_pos_command(
                     cart_data
                 }
                 Ok(ClaimOutcome::AlreadyClaimed) => {
-                    metrics::counter!(
-                        apex_edge_metrics::CART_HANDOFF_TOTAL,
-                        1u64,
-                        "outcome" => "conflict"
-                    );
+                    metrics::counter!(apex_edge_metrics::CART_HANDOFF_TOTAL, "outcome" => "conflict").increment(1);
                     return PosResponseEnvelope {
                         version: ContractVersion::V1_0_0,
                         success: false,
@@ -1892,11 +2209,7 @@ pub async fn execute_pos_command(
                     };
                 }
                 Ok(ClaimOutcome::NotFound) => {
-                    metrics::counter!(
-                        apex_edge_metrics::CART_HANDOFF_TOTAL,
-                        1u64,
-                        "outcome" => "not_found"
-                    );
+                    metrics::counter!(apex_edge_metrics::CART_HANDOFF_TOTAL, "outcome" => "not_found").increment(1);
                     return PosResponseEnvelope {
                         version: ContractVersion::V1_0_0,
                         success: false,
@@ -1910,11 +2223,8 @@ pub async fn execute_pos_command(
                     };
                 }
                 Err(e) => {
-                    metrics::counter!(
-                        apex_edge_metrics::CART_HANDOFF_TOTAL,
-                        1u64,
-                        "outcome" => "error"
-                    );
+                    metrics::counter!(apex_edge_metrics::CART_HANDOFF_TOTAL, "outcome" => "error")
+                        .increment(1);
                     return PosResponseEnvelope {
                         version: ContractVersion::V1_0_0,
                         success: false,
@@ -2141,40 +2451,38 @@ pub async fn execute_pos_command(
                     };
                 }
             };
-            let fiscal_started_at = Instant::now();
+            let shift_id = fetch_open_shift(pool, store_id, register_id)
+                .await
+                .ok()
+                .flatten()
+                .map(|shift| shift.id);
+            let fiscal_transaction = crate::fiscal::sale_transaction(
+                pool,
+                &order,
+                store_id,
+                register_id,
+                shift_id,
+                &app.fiscal.currency,
+            )
+            .await;
             let fiscal_signing =
-                app.fiscal
-                    .provider
-                    .sign_receipt(apex_edge_adapters_fiscal::FiscalReceiptRequest {
-                        order_id,
-                        total_cents: order.total_cents,
-                        currency: app.fiscal.currency.clone(),
-                    });
-            metrics::histogram!(
-                apex_edge_metrics::FISCAL_RECEIPT_DURATION_SECONDS,
-                fiscal_started_at.elapsed().as_secs_f64(),
-                "provider" => app.fiscal.provider.provider_code()
-            );
-            let (fiscal_provider, fiscal_id, fiscal_signature) = match fiscal_signing {
-                Ok(receipt) => {
-                    metrics::counter!(
-                        apex_edge_metrics::FISCAL_RECEIPTS_TOTAL,
-                        1u64,
-                        "provider" => receipt.provider.clone(),
-                        "outcome" => apex_edge_metrics::OUTCOME_SUCCESS
-                    );
-                    (Some(receipt.provider), receipt.fiscal_id, receipt.signature)
+                crate::fiscal::sign_or_queue(app, "order", order_id, &fiscal_transaction).await;
+            let fiscal_fields = match fiscal_signing {
+                Ok(outcome) => {
+                    crate::fiscal::fields_from_outcome(app.fiscal.provider.provider_code(), outcome)
                 }
                 Err(e) => {
-                    metrics::counter!(
-                        apex_edge_metrics::FISCAL_RECEIPTS_TOTAL,
-                        1u64,
-                        "provider" => app.fiscal.provider.provider_code(),
-                        "outcome" => apex_edge_metrics::OUTCOME_ERROR
-                    );
                     // Fail closed before any ledger/outbox/stock mutation: a regulated
                     // deployment (e.g. DE-TSE) that is misconfigured must not complete a sale
-                    // without a fiscal receipt.
+                    // without a fiscal receipt. The customer's card was already captured,
+                    // so hand it to the reversal sweeper rather than keeping the money.
+                    flag_cart_payments_for_reversal(
+                        pool,
+                        store_id,
+                        cart.id,
+                        "fiscal signing failed",
+                    )
+                    .await;
                     return PosResponseEnvelope {
                         version: ContractVersion::V1_0_0,
                         success: false,
@@ -2199,11 +2507,6 @@ pub async fn execute_pos_command(
                 hq_payload.clone(),
             );
             let envelope_json = serde_json::to_string(&envelope_hq).unwrap_or_default();
-            let shift_id = fetch_open_shift(pool, store_id, register_id)
-                .await
-                .ok()
-                .flatten()
-                .map(|shift| shift.id);
             let ledger_entry = NewOrderLedgerEntry {
                 order_id,
                 cart_id: cart.id,
@@ -2244,17 +2547,27 @@ pub async fn execute_pos_command(
                         entry_method: payment.entry_method,
                     })
                     .collect(),
-                fiscal_provider,
-                fiscal_id,
-                fiscal_signature,
+                fiscal_provider: fiscal_fields.provider,
+                fiscal_id: fiscal_fields.fiscal_id,
+                fiscal_signature: fiscal_fields.signature,
+                fiscal_qr_payload: fiscal_fields.qr_payload,
+                fiscal_signed_at: fiscal_fields.signed_at,
+                fiscal_pending: fiscal_fields.pending,
             };
+            let took_cash = ledger_entry
+                .payments
+                .iter()
+                .any(|payment| payment.tender_type.eq_ignore_ascii_case("cash"));
             let ledger_started_at = Instant::now();
             if let Err(e) = insert_order_ledger_entry(pool, &ledger_entry).await {
-                metrics::counter!(
-                    apex_edge_metrics::ORDERS_FINALIZED_TOTAL,
-                    1u64,
-                    "outcome" => apex_edge_metrics::OUTCOME_ERROR
-                );
+                metrics::counter!(apex_edge_metrics::ORDERS_FINALIZED_TOTAL, "outcome" => apex_edge_metrics::OUTCOME_ERROR).increment(1);
+                flag_cart_payments_for_reversal(
+                    pool,
+                    store_id,
+                    cart.id,
+                    "order ledger write failed",
+                )
+                .await;
                 return PosResponseEnvelope {
                     version: ContractVersion::V1_0_0,
                     success: false,
@@ -2267,15 +2580,15 @@ pub async fn execute_pos_command(
                     }],
                 };
             }
-            metrics::counter!(
-                apex_edge_metrics::ORDERS_FINALIZED_TOTAL,
-                1u64,
-                "outcome" => apex_edge_metrics::OUTCOME_SUCCESS
-            );
-            metrics::histogram!(
-                apex_edge_metrics::ORDERS_LEDGER_WRITE_DURATION_SECONDS,
-                ledger_started_at.elapsed().as_secs_f64()
-            );
+            // The order is durable, so the money is earned. Past this point the sweeper
+            // must never touch these payments, even if a later best-effort step fails.
+            if let Err(e) = settle_payment_intents_for_cart(pool, store_id, cart.id, order_id).await
+            {
+                tracing::error!(order_id = %order_id, error = %e, "could not settle payment intents");
+            }
+            metrics::counter!(apex_edge_metrics::ORDERS_FINALIZED_TOTAL, "outcome" => apex_edge_metrics::OUTCOME_SUCCESS).increment(1);
+            metrics::histogram!(apex_edge_metrics::ORDERS_LEDGER_WRITE_DURATION_SECONDS)
+                .record(ledger_started_at.elapsed().as_secs_f64());
             // Auto-earn loyalty points for carts with an attached customer. Best-effort:
             // unlike fiscal signing, a loyalty storage hiccup must never fail an
             // otherwise-successful, already-persisted sale.
@@ -2310,17 +2623,8 @@ pub async fn execute_pos_command(
                         Ok(_) => apex_edge_metrics::OUTCOME_SUCCESS,
                         Err(_) => apex_edge_metrics::OUTCOME_ERROR,
                     };
-                    metrics::counter!(
-                        apex_edge_metrics::LOYALTY_OPERATIONS_TOTAL,
-                        1u64,
-                        "operation" => "earn_auto",
-                        "outcome" => outcome_label
-                    );
-                    metrics::histogram!(
-                        apex_edge_metrics::LOYALTY_OPERATION_DURATION_SECONDS,
-                        loyalty_started_at.elapsed().as_secs_f64(),
-                        "operation" => "earn_auto"
-                    );
+                    metrics::counter!(apex_edge_metrics::LOYALTY_OPERATIONS_TOTAL, "operation" => "earn_auto", "outcome" => outcome_label).increment(1);
+                    metrics::histogram!(apex_edge_metrics::LOYALTY_OPERATION_DURATION_SECONDS, "operation" => "earn_auto").record(loyalty_started_at.elapsed().as_secs_f64());
                 }
             }
             // Commit reserved stock as sold so availability reflects the completed sale.
@@ -2388,6 +2692,7 @@ pub async fn execute_pos_command(
                 })).collect::<Vec<_>>(),
                 "payments": order.payments.iter().map(|payment| serde_json::json!({
                     "tender_id": payment.tender_id.to_string(),
+                    "tender_type": payment_tender_type(&payment.external_reference),
                     "amount_cents": payment.amount_cents,
                     "tip_amount_cents": payment.tip_amount_cents,
                     "provider": payment.provider.clone(),
@@ -2470,11 +2775,17 @@ pub async fn execute_pos_command(
                 )],
             );
             broadcast_stock_changed(app, store_id, &sold_item_ids).await;
+
+            // Past this point the sale is complete and irreversible. A printer that is
+            // out of paper or unplugged is reported, never allowed to undo a sale.
+            let print_error = print_receipt_after_finalize(app, &receipt_payload, took_cash);
+
             let result = FinalizeResult {
                 order_id,
                 cart_id: cart.id,
                 total_cents: order.total_cents,
                 print_job_ids: vec![doc_id],
+                print_error,
             };
             PosResponseEnvelope {
                 version: ContractVersion::V1_0_0,
@@ -2656,17 +2967,8 @@ pub async fn execute_pos_command(
                         gift_card_error(idempotency_key, "GIFT_CARD_ISSUE_FAILED", e.to_string()),
                     ),
                 };
-            metrics::counter!(
-                apex_edge_metrics::GIFT_CARD_OPERATIONS_TOTAL,
-                1u64,
-                "operation" => "issue",
-                "outcome" => outcome_label
-            );
-            metrics::histogram!(
-                apex_edge_metrics::GIFT_CARD_OPERATION_DURATION_SECONDS,
-                op_started_at.elapsed().as_secs_f64(),
-                "operation" => "issue"
-            );
+            metrics::counter!(apex_edge_metrics::GIFT_CARD_OPERATIONS_TOTAL, "operation" => "issue", "outcome" => outcome_label).increment(1);
+            metrics::histogram!(apex_edge_metrics::GIFT_CARD_OPERATION_DURATION_SECONDS, "operation" => "issue").record(op_started_at.elapsed().as_secs_f64());
             result
         }
         PosCommand::ActivateGiftCard(p) => {
@@ -2716,17 +3018,8 @@ pub async fn execute_pos_command(
                         ),
                     ),
                 };
-            metrics::counter!(
-                apex_edge_metrics::GIFT_CARD_OPERATIONS_TOTAL,
-                1u64,
-                "operation" => "activate",
-                "outcome" => outcome_label
-            );
-            metrics::histogram!(
-                apex_edge_metrics::GIFT_CARD_OPERATION_DURATION_SECONDS,
-                op_started_at.elapsed().as_secs_f64(),
-                "operation" => "activate"
-            );
+            metrics::counter!(apex_edge_metrics::GIFT_CARD_OPERATIONS_TOTAL, "operation" => "activate", "outcome" => outcome_label).increment(1);
+            metrics::histogram!(apex_edge_metrics::GIFT_CARD_OPERATION_DURATION_SECONDS, "operation" => "activate").record(op_started_at.elapsed().as_secs_f64());
             result
         }
         PosCommand::ReloadGiftCard(p) => {
@@ -2772,39 +3065,20 @@ pub async fn execute_pos_command(
                         gift_card_error(idempotency_key, "GIFT_CARD_RELOAD_FAILED", e.to_string()),
                     ),
                 };
-            metrics::counter!(
-                apex_edge_metrics::GIFT_CARD_OPERATIONS_TOTAL,
-                1u64,
-                "operation" => "reload",
-                "outcome" => outcome_label
-            );
-            metrics::histogram!(
-                apex_edge_metrics::GIFT_CARD_OPERATION_DURATION_SECONDS,
-                op_started_at.elapsed().as_secs_f64(),
-                "operation" => "reload"
-            );
+            metrics::counter!(apex_edge_metrics::GIFT_CARD_OPERATIONS_TOTAL, "operation" => "reload", "outcome" => outcome_label).increment(1);
+            metrics::histogram!(apex_edge_metrics::GIFT_CARD_OPERATION_DURATION_SECONDS, "operation" => "reload").record(op_started_at.elapsed().as_secs_f64());
             result
         }
         PosCommand::RedeemGiftCard(p) => {
             let op_started_at = Instant::now();
             let Some(mut cart) = load_cart_from_db(pool, p.cart_id).await.ok().flatten() else {
-                metrics::counter!(
-                    apex_edge_metrics::GIFT_CARD_OPERATIONS_TOTAL,
-                    1u64,
-                    "operation" => "redeem",
-                    "outcome" => apex_edge_metrics::OUTCOME_ERROR
-                );
+                metrics::counter!(apex_edge_metrics::GIFT_CARD_OPERATIONS_TOTAL, "operation" => "redeem", "outcome" => apex_edge_metrics::OUTCOME_ERROR).increment(1);
                 return gift_card_error(idempotency_key, "CART_NOT_FOUND", "Cart not found");
             };
             // Validate the cart can accept a payment *before* debiting the card, so a bad
             // cart state never costs the customer money without recording a payment.
             if cart.state != CartStateKind::Tendering && cart.state != CartStateKind::Paid {
-                metrics::counter!(
-                    apex_edge_metrics::GIFT_CARD_OPERATIONS_TOTAL,
-                    1u64,
-                    "operation" => "redeem",
-                    "outcome" => apex_edge_metrics::OUTCOME_ERROR
-                );
+                metrics::counter!(apex_edge_metrics::GIFT_CARD_OPERATIONS_TOTAL, "operation" => "redeem", "outcome" => apex_edge_metrics::OUTCOME_ERROR).increment(1);
                 return gift_card_error(
                     idempotency_key,
                     "INVALID_PAYMENT",
@@ -2894,17 +3168,8 @@ pub async fn execute_pos_command(
                         gift_card_error(idempotency_key, "GIFT_CARD_REDEEM_FAILED", e.to_string()),
                     ),
                 };
-            metrics::counter!(
-                apex_edge_metrics::GIFT_CARD_OPERATIONS_TOTAL,
-                1u64,
-                "operation" => "redeem",
-                "outcome" => outcome_label
-            );
-            metrics::histogram!(
-                apex_edge_metrics::GIFT_CARD_OPERATION_DURATION_SECONDS,
-                op_started_at.elapsed().as_secs_f64(),
-                "operation" => "redeem"
-            );
+            metrics::counter!(apex_edge_metrics::GIFT_CARD_OPERATIONS_TOTAL, "operation" => "redeem", "outcome" => outcome_label).increment(1);
+            metrics::histogram!(apex_edge_metrics::GIFT_CARD_OPERATION_DURATION_SECONDS, "operation" => "redeem").record(op_started_at.elapsed().as_secs_f64());
             result
         }
         PosCommand::EarnLoyaltyPoints(p) => {
@@ -2952,39 +3217,20 @@ pub async fn execute_pos_command(
                     ),
                 }
             };
-            metrics::counter!(
-                apex_edge_metrics::LOYALTY_OPERATIONS_TOTAL,
-                1u64,
-                "operation" => "earn",
-                "outcome" => outcome_label
-            );
-            metrics::histogram!(
-                apex_edge_metrics::LOYALTY_OPERATION_DURATION_SECONDS,
-                op_started_at.elapsed().as_secs_f64(),
-                "operation" => "earn"
-            );
+            metrics::counter!(apex_edge_metrics::LOYALTY_OPERATIONS_TOTAL, "operation" => "earn", "outcome" => outcome_label).increment(1);
+            metrics::histogram!(apex_edge_metrics::LOYALTY_OPERATION_DURATION_SECONDS, "operation" => "earn").record(op_started_at.elapsed().as_secs_f64());
             result
         }
         PosCommand::RedeemLoyaltyPoints(p) => {
             let op_started_at = Instant::now();
             let Some(mut cart) = load_cart_from_db(pool, p.cart_id).await.ok().flatten() else {
-                metrics::counter!(
-                    apex_edge_metrics::LOYALTY_OPERATIONS_TOTAL,
-                    1u64,
-                    "operation" => "redeem",
-                    "outcome" => apex_edge_metrics::OUTCOME_ERROR
-                );
+                metrics::counter!(apex_edge_metrics::LOYALTY_OPERATIONS_TOTAL, "operation" => "redeem", "outcome" => apex_edge_metrics::OUTCOME_ERROR).increment(1);
                 return loyalty_error(idempotency_key, "CART_NOT_FOUND", "Cart not found");
             };
             // Validate the cart can accept a payment *before* debiting points, so a bad
             // cart state never costs the customer points without recording a payment.
             if cart.state != CartStateKind::Tendering && cart.state != CartStateKind::Paid {
-                metrics::counter!(
-                    apex_edge_metrics::LOYALTY_OPERATIONS_TOTAL,
-                    1u64,
-                    "operation" => "redeem",
-                    "outcome" => apex_edge_metrics::OUTCOME_ERROR
-                );
+                metrics::counter!(apex_edge_metrics::LOYALTY_OPERATIONS_TOTAL, "operation" => "redeem", "outcome" => apex_edge_metrics::OUTCOME_ERROR).increment(1);
                 return loyalty_error(
                     idempotency_key,
                     "INVALID_PAYMENT",
@@ -3067,21 +3313,107 @@ pub async fn execute_pos_command(
                         loyalty_error(idempotency_key, "LOYALTY_REDEEM_FAILED", e.to_string()),
                     ),
                 };
-            metrics::counter!(
-                apex_edge_metrics::LOYALTY_OPERATIONS_TOTAL,
-                1u64,
-                "operation" => "redeem",
-                "outcome" => outcome_label
-            );
-            metrics::histogram!(
-                apex_edge_metrics::LOYALTY_OPERATION_DURATION_SECONDS,
-                op_started_at.elapsed().as_secs_f64(),
-                "operation" => "redeem"
-            );
+            metrics::counter!(apex_edge_metrics::LOYALTY_OPERATIONS_TOTAL, "operation" => "redeem", "outcome" => outcome_label).increment(1);
+            metrics::histogram!(apex_edge_metrics::LOYALTY_OPERATION_DURATION_SECONDS, "operation" => "redeem").record(op_started_at.elapsed().as_secs_f64());
             result
         }
+        PosCommand::PrintDocument(p) => print_document_command(app, idempotency_key, p).await,
     };
     result
+}
+
+/// Prints the receipt for a just-finalized sale and opens the drawer if policy says so.
+///
+/// Returns the message to hand back to the operator, or `None` when there was nothing to
+/// report — either it printed, or this hub has no printer, which is the normal case.
+fn print_receipt_after_finalize(
+    app: &AppState,
+    receipt_payload: &serde_json::Value,
+    took_cash: bool,
+) -> Option<String> {
+    let print_error = match app.hardware.print_receipt(receipt_payload) {
+        Ok(_) => None,
+        Err(e) => Some(e.to_string()),
+    };
+    // The drawer is attached to the printer, so a failed receipt does not mean a failed
+    // kick: cash still has to go somewhere.
+    if app.hardware.should_kick_drawer(took_cash) {
+        if let Err(e) = app.hardware.kick_drawer() {
+            tracing::error!(error = %e, "cash drawer did not open");
+            return Some(print_error.map_or_else(
+                || e.to_string(),
+                |printed| format!("{printed}; cash drawer: {e}"),
+            ));
+        }
+    }
+    print_error
+}
+
+/// Reprints a document the hub has already generated.
+async fn print_document_command(
+    app: &AppState,
+    idempotency_key: Uuid,
+    payload: &apex_edge_contracts::PrintDocumentPayload,
+) -> PosResponseEnvelope<serde_json::Value> {
+    let print_error = |code: &str, message: String| PosResponseEnvelope {
+        version: ContractVersion::V1_0_0,
+        success: false,
+        idempotency_key,
+        payload: None,
+        errors: vec![PosError {
+            code: code.into(),
+            message,
+            field: None,
+        }],
+    };
+
+    if app.hardware.device.is_none() {
+        // Silently succeeding would let an operator stand at a printer that will never
+        // produce paper, waiting.
+        return print_error(
+            "PRINTER_NOT_CONFIGURED",
+            "This hub has no printer; fetch the document and print it from the POS".into(),
+        );
+    }
+
+    let document = match apex_edge_storage::get_document(&app.pool, payload.document_id).await {
+        Ok(Some(document)) => document,
+        Ok(None) => {
+            return print_error("DOCUMENT_NOT_FOUND", "Document not found".into());
+        }
+        Err(e) => {
+            return print_error("DOCUMENT_LOOKUP_FAILED", e.to_string());
+        }
+    };
+
+    let receipt_payload = serde_json::from_str::<serde_json::Value>(&document.payload)
+        .unwrap_or(serde_json::Value::Null);
+    let encoder = match app.hardware.print_receipt(&receipt_payload) {
+        Ok(encoder) => encoder,
+        Err(e) => return print_error("PRINT_FAILED", e.to_string()),
+    };
+
+    let drawer_opened = if payload.open_drawer {
+        match app.hardware.kick_drawer() {
+            Ok(opened) => opened,
+            Err(e) => return print_error("DRAWER_FAILED", e.to_string()),
+        }
+    } else {
+        false
+    };
+
+    PosResponseEnvelope {
+        version: ContractVersion::V1_0_0,
+        success: true,
+        idempotency_key,
+        payload: Some(serde_json::json!({
+            "document_id": payload.document_id.to_string(),
+            "document_type": document.document_type,
+            "encoder": encoder,
+            "drawer_opened": drawer_opened,
+        })),
+        errors: vec![],
+    }
 }
 
 #[cfg(test)]

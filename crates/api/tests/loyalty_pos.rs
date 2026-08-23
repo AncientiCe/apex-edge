@@ -24,15 +24,7 @@ async fn test_state() -> (AppState, Uuid, Uuid) {
     run_migrations(&pool).await.expect("migrations");
     let store_id = Uuid::nil();
     let register_id = Uuid::new_v4();
-    let state = AppState {
-        store_id,
-        pool,
-        metrics_handle: None,
-        auth: apex_edge_api::AuthSettings::default(),
-        stream: apex_edge_api::StreamHub::new(),
-        role: apex_edge_api::HubRole::Primary,
-        fiscal: apex_edge_api::FiscalSettings::default(),
-    };
+    let state = AppState::new(pool, store_id);
     (state, store_id, register_id)
 }
 
@@ -48,6 +40,7 @@ async fn send(
 ) {
     let resp = handle_pos_command(
         State(state.clone()),
+        None,
         Json(PosRequestEnvelope {
             version: ContractVersion::V1_0_0,
             idempotency_key: Uuid::new_v4(),

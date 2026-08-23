@@ -140,6 +140,8 @@ export interface FinalizeResult {
   cart_id: string;
   total_cents: number;
   print_job_ids: string[];
+  /** Set when the sale succeeded but the hub's own printer refused the receipt. */
+  print_error?: string;
 }
 
 export interface ProductSearchResult {

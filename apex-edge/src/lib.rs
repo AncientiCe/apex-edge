@@ -3,4 +3,4 @@
 pub mod app;
 pub mod http_metrics_layer;
 
-pub use app::build_router;
+pub use app::{build_router, HubConfig};

@@ -102,8 +102,9 @@ pub async fn get_document(pool: &SqlitePool, id: Uuid) -> Result<Option<Document
     } else {
         DB_OUTCOME_ERROR
     };
-    metrics::counter!(DB_OPERATIONS_TOTAL, 1u64, "operation" => OP, "outcome" => outcome);
-    metrics::histogram!(DB_OPERATION_DURATION_SECONDS, start.elapsed().as_secs_f64(), "operation" => OP);
+    metrics::counter!(DB_OPERATIONS_TOTAL, "operation" => OP, "outcome" => outcome).increment(1);
+    metrics::histogram!(DB_OPERATION_DURATION_SECONDS, "operation" => OP)
+        .record(start.elapsed().as_secs_f64());
     let row = result?;
 
     Ok(row.map(
@@ -154,8 +155,9 @@ pub async fn list_documents_for_order(
     } else {
         DB_OUTCOME_ERROR
     };
-    metrics::counter!(DB_OPERATIONS_TOTAL, 1u64, "operation" => OP, "outcome" => outcome);
-    metrics::histogram!(DB_OPERATION_DURATION_SECONDS, start.elapsed().as_secs_f64(), "operation" => OP);
+    metrics::counter!(DB_OPERATIONS_TOTAL, "operation" => OP, "outcome" => outcome).increment(1);
+    metrics::histogram!(DB_OPERATION_DURATION_SECONDS, "operation" => OP)
+        .record(start.elapsed().as_secs_f64());
     let rows = rows_result?;
 
     Ok(rows

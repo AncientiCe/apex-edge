@@ -1,0 +1,22 @@
+# Golden ESC/POS byte stream for a QR code followed by a Code 128 barcode.
+#
+# Both are centred, because a barcode printed hard against the left edge of the
+# paper is the kind of thing you only notice after a thousand receipts.
+
+1B 40                 # ESC @        initialise printer
+1B 74 00              # ESC t 0      select code page 437
+
+1B 61 01              # ESC a 1      centre
+
+1D 28 6B 04 00 31 41 32 00   # GS ( k, fn 65: QR model 2
+1D 28 6B 03 00 31 43 06      # GS ( k, fn 67: module size 6 dots
+1D 28 6B 03 00 31 45 31      # GS ( k, fn 69: error correction level M
+1D 28 6B 1E 00 31 50 30      # GS ( k, fn 80: store 27 data bytes (27 + 3 = 30)
+"https://apex.example/r/1001"
+1D 28 6B 03 00 31 51 30      # GS ( k, fn 81: print the stored symbol
+
+1D 68 3C              # GS h 60      barcode height 60 dots
+1D 77 02              # GS w 2       narrow module width
+1D 48 02              # GS H 2       human readable text below the bars
+1D 6B 49 06           # GS k 73 6    Code 128, 6 data bytes follow
+"{B1001"              #              "{B" selects Code 128 code set B

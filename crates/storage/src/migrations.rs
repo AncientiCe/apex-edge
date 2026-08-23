@@ -22,6 +22,10 @@ const MIGRATION_018: &str = include_str!("../migrations/018_outbox_destinations.
 const MIGRATION_019: &str = include_str!("../migrations/019_api_tokens_webhooks.sql");
 const MIGRATION_020: &str = include_str!("../migrations/020_stock_movements.sql");
 const MIGRATION_021: &str = include_str!("../migrations/021_inventory_ledger.sql");
+const MIGRATION_024: &str = include_str!("../migrations/024_payment_intents.sql");
+const MIGRATION_025: &str = include_str!("../migrations/025_outbox_fanout.sql");
+const MIGRATION_026: &str = include_str!("../migrations/026_fiscal_queue.sql");
+const MIGRATION_027: &str = include_str!("../migrations/027_hub_identity.sql");
 
 const DOWN_010: &str = include_str!("../migrations/010_returns.down.sql");
 const DOWN_011: &str = include_str!("../migrations/011_shifts.down.sql");
@@ -35,6 +39,10 @@ const DOWN_018: &str = include_str!("../migrations/018_outbox_destinations.down.
 const DOWN_019: &str = include_str!("../migrations/019_api_tokens_webhooks.down.sql");
 const DOWN_020: &str = include_str!("../migrations/020_stock_movements.down.sql");
 const DOWN_021: &str = include_str!("../migrations/021_inventory_ledger.down.sql");
+const DOWN_024: &str = include_str!("../migrations/024_payment_intents.down.sql");
+const DOWN_025: &str = include_str!("../migrations/025_outbox_fanout.down.sql");
+const DOWN_026: &str = include_str!("../migrations/026_fiscal_queue.down.sql");
+const DOWN_027: &str = include_str!("../migrations/027_hub_identity.down.sql");
 
 fn strip_sql_comment_lines(sql: &str) -> String {
     sql.lines()
@@ -323,6 +331,80 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), MigrationError> {
             }
         }
     }
+    // Migration 024 (2.0.0): durable payment intent ledger backing reversal safety.
+    // Migration 025 (2.0.0): indexes that make per-destination outbox fan-out safe.
+    // Migration 026 (2.0.0): fiscal sign-later queue plus receipt metadata on orders/returns.
+    // Migration 027 (2.0.0): durable hub store/register identity.
+    for migration in [MIGRATION_024, MIGRATION_025, MIGRATION_026, MIGRATION_027] {
+        let sql_no_comments = strip_sql_comment_lines(migration);
+        for stmt in sql_no_comments.split(';').filter(|s| !s.trim().is_empty()) {
+            let stmt = stmt.trim();
+            if stmt.is_empty() {
+                continue;
+            }
+            sqlx::query(stmt).execute(pool).await?;
+        }
+    }
+    for (table, column, ddl) in &[
+        (
+            "orders",
+            "fiscal_qr_payload",
+            "ALTER TABLE orders ADD COLUMN fiscal_qr_payload TEXT",
+        ),
+        (
+            "orders",
+            "fiscal_signed_at",
+            "ALTER TABLE orders ADD COLUMN fiscal_signed_at TEXT",
+        ),
+        (
+            "orders",
+            "fiscal_pending",
+            "ALTER TABLE orders ADD COLUMN fiscal_pending INTEGER NOT NULL DEFAULT 0",
+        ),
+        (
+            "returns",
+            "fiscal_provider",
+            "ALTER TABLE returns ADD COLUMN fiscal_provider TEXT",
+        ),
+        (
+            "returns",
+            "fiscal_id",
+            "ALTER TABLE returns ADD COLUMN fiscal_id TEXT",
+        ),
+        (
+            "returns",
+            "fiscal_signature",
+            "ALTER TABLE returns ADD COLUMN fiscal_signature TEXT",
+        ),
+        (
+            "returns",
+            "fiscal_qr_payload",
+            "ALTER TABLE returns ADD COLUMN fiscal_qr_payload TEXT",
+        ),
+        (
+            "returns",
+            "fiscal_signed_at",
+            "ALTER TABLE returns ADD COLUMN fiscal_signed_at TEXT",
+        ),
+        (
+            "returns",
+            "fiscal_pending",
+            "ALTER TABLE returns ADD COLUMN fiscal_pending INTEGER NOT NULL DEFAULT 0",
+        ),
+        (
+            "trusted_devices",
+            "register_id",
+            "ALTER TABLE trusted_devices ADD COLUMN register_id TEXT",
+        ),
+    ] {
+        if !column_exists(pool, table, column).await? {
+            if let Err(e) = sqlx::query(ddl).execute(pool).await {
+                if !e.to_string().contains("duplicate column name") {
+                    return Err(e.into());
+                }
+            }
+        }
+    }
     Ok(())
 }
 
@@ -338,8 +420,8 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), MigrationError> {
 /// check is idempotent when those columns already exist.
 pub async fn run_down_v0_6_0(pool: &SqlitePool) -> Result<(), MigrationError> {
     for sql in &[
-        DOWN_021, DOWN_020, DOWN_019, DOWN_018, DOWN_017, DOWN_016, DOWN_015, DOWN_014, DOWN_013,
-        DOWN_012, DOWN_011, DOWN_010,
+        DOWN_027, DOWN_026, DOWN_025, DOWN_024, DOWN_021, DOWN_020, DOWN_019, DOWN_018, DOWN_017,
+        DOWN_016, DOWN_015, DOWN_014, DOWN_013, DOWN_012, DOWN_011, DOWN_010,
     ] {
         let sql_no_comments = strip_sql_comment_lines(sql);
         for stmt in sql_no_comments.split(';').filter(|s| !s.trim().is_empty()) {

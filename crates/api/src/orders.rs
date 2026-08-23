@@ -30,30 +30,15 @@ pub async fn lookup_order_for_return(
 ) -> Result<Json<apex_edge_storage::OrderLedgerEntry>, StatusCode> {
     match fetch_order_ledger_entry(&app.pool, query.order_id).await {
         Ok(Some(order)) => {
-            metrics::counter!(
-                apex_edge_metrics::ORDERS_LOOKUP_TOTAL,
-                1u64,
-                "operation" => "return_lookup",
-                "outcome" => apex_edge_metrics::OUTCOME_HIT
-            );
+            metrics::counter!(apex_edge_metrics::ORDERS_LOOKUP_TOTAL, "operation" => "return_lookup", "outcome" => apex_edge_metrics::OUTCOME_HIT).increment(1);
             Ok(Json(order))
         }
         Ok(None) => {
-            metrics::counter!(
-                apex_edge_metrics::ORDERS_LOOKUP_TOTAL,
-                1u64,
-                "operation" => "return_lookup",
-                "outcome" => apex_edge_metrics::OUTCOME_NOT_FOUND
-            );
+            metrics::counter!(apex_edge_metrics::ORDERS_LOOKUP_TOTAL, "operation" => "return_lookup", "outcome" => apex_edge_metrics::OUTCOME_NOT_FOUND).increment(1);
             Err(StatusCode::NOT_FOUND)
         }
         Err(_) => {
-            metrics::counter!(
-                apex_edge_metrics::ORDERS_LOOKUP_TOTAL,
-                1u64,
-                "operation" => "return_lookup",
-                "outcome" => apex_edge_metrics::OUTCOME_ERROR
-            );
+            metrics::counter!(apex_edge_metrics::ORDERS_LOOKUP_TOTAL, "operation" => "return_lookup", "outcome" => apex_edge_metrics::OUTCOME_ERROR).increment(1);
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }
@@ -65,30 +50,15 @@ pub async fn get_order_handler(
 ) -> Result<Json<apex_edge_storage::OrderLedgerEntry>, StatusCode> {
     match fetch_order_ledger_entry(&app.pool, order_id).await {
         Ok(Some(order)) => {
-            metrics::counter!(
-                apex_edge_metrics::ORDERS_LOOKUP_TOTAL,
-                1u64,
-                "operation" => "get_order",
-                "outcome" => apex_edge_metrics::OUTCOME_HIT
-            );
+            metrics::counter!(apex_edge_metrics::ORDERS_LOOKUP_TOTAL, "operation" => "get_order", "outcome" => apex_edge_metrics::OUTCOME_HIT).increment(1);
             Ok(Json(order))
         }
         Ok(None) => {
-            metrics::counter!(
-                apex_edge_metrics::ORDERS_LOOKUP_TOTAL,
-                1u64,
-                "operation" => "get_order",
-                "outcome" => apex_edge_metrics::OUTCOME_NOT_FOUND
-            );
+            metrics::counter!(apex_edge_metrics::ORDERS_LOOKUP_TOTAL, "operation" => "get_order", "outcome" => apex_edge_metrics::OUTCOME_NOT_FOUND).increment(1);
             Err(StatusCode::NOT_FOUND)
         }
         Err(_) => {
-            metrics::counter!(
-                apex_edge_metrics::ORDERS_LOOKUP_TOTAL,
-                1u64,
-                "operation" => "get_order",
-                "outcome" => apex_edge_metrics::OUTCOME_ERROR
-            );
+            metrics::counter!(apex_edge_metrics::ORDERS_LOOKUP_TOTAL, "operation" => "get_order", "outcome" => apex_edge_metrics::OUTCOME_ERROR).increment(1);
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }
@@ -100,21 +70,11 @@ pub async fn list_orders_handler(
 ) -> Result<Json<Vec<apex_edge_storage::OrderLedgerSummary>>, StatusCode> {
     match list_order_ledger_entries(&app.pool, app.store_id, query.shift_id).await {
         Ok(orders) => {
-            metrics::counter!(
-                apex_edge_metrics::ORDERS_LOOKUP_TOTAL,
-                1u64,
-                "operation" => "list_orders",
-                "outcome" => apex_edge_metrics::OUTCOME_SUCCESS
-            );
+            metrics::counter!(apex_edge_metrics::ORDERS_LOOKUP_TOTAL, "operation" => "list_orders", "outcome" => apex_edge_metrics::OUTCOME_SUCCESS).increment(1);
             Ok(Json(orders))
         }
         Err(_) => {
-            metrics::counter!(
-                apex_edge_metrics::ORDERS_LOOKUP_TOTAL,
-                1u64,
-                "operation" => "list_orders",
-                "outcome" => apex_edge_metrics::OUTCOME_ERROR
-            );
+            metrics::counter!(apex_edge_metrics::ORDERS_LOOKUP_TOTAL, "operation" => "list_orders", "outcome" => apex_edge_metrics::OUTCOME_ERROR).increment(1);
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }

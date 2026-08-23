@@ -71,18 +71,8 @@ pub async fn ingest_batch(
         Err(IngestError::InvalidPayload) => OUTCOME_INVALID_PAYLOAD,
         Err(IngestError::Storage(_)) => OUTCOME_ERROR,
     };
-    metrics::counter!(
-        SYNC_INGEST_BATCHES_TOTAL,
-        1u64,
-        "entity" => entity.to_string(),
-        "outcome" => outcome,
-        "policy" => format!("{:?}", policy),
-        "version" => version.to_string()
-    );
-    metrics::histogram!(
-        SYNC_INGEST_DURATION_SECONDS,
-        start.elapsed().as_secs_f64(),
-        "entity" => entity.to_string()
-    );
+    metrics::counter!(SYNC_INGEST_BATCHES_TOTAL, "entity" => entity.to_string(), "outcome" => outcome, "policy" => format!("{:?}", policy), "version" => version.to_string()).increment(1);
+    metrics::histogram!(SYNC_INGEST_DURATION_SECONDS, "entity" => entity.to_string())
+        .record(start.elapsed().as_secs_f64());
     result
 }

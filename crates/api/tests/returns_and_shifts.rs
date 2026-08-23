@@ -3,9 +3,7 @@
 //! These tests drive commands through `execute_pos_command`, asserting state machine,
 //! approval gating, HQ envelope generation (outbox), and audit chain growth.
 
-use apex_edge_api::{
-    pos_handler::execute_pos_command, AppState, AuthSettings, FiscalSettings, HubRole, StreamHub,
-};
+use apex_edge_api::{pos_handler::execute_pos_command, AppState};
 use apex_edge_contracts::{
     CashCountPayload, CloseTillPayload, ContractVersion, FinalizeReturnPayload, NoSalePayload,
     OpenTillPayload, PaidInPayload, PaidOutPayload, PosCommand, PosRequestEnvelope,
@@ -22,15 +20,7 @@ use std::collections::BTreeMap;
 use uuid::Uuid;
 
 fn state_for(pool: sqlx::SqlitePool) -> AppState {
-    AppState {
-        store_id: Uuid::nil(),
-        pool,
-        metrics_handle: None,
-        auth: AuthSettings::default(),
-        stream: StreamHub::new(),
-        role: HubRole::Primary,
-        fiscal: FiscalSettings::default(),
-    }
+    AppState::new(pool, Uuid::nil())
 }
 
 async fn setup() -> AppState {
@@ -53,7 +43,7 @@ fn env<T>(store_id: Uuid, register_id: Uuid, payload: T) -> PosRequestEnvelope<T
 #[tokio::test]
 async fn blind_return_requires_approval_and_succeeds_when_granted() {
     let state = setup().await;
-    let store = Uuid::new_v4();
+    let store = Uuid::nil();
     let register = Uuid::new_v4();
 
     // Without approval: fails.
@@ -113,7 +103,7 @@ async fn blind_return_requires_approval_and_succeeds_when_granted() {
 #[tokio::test]
 async fn full_return_flow_updates_outbox_and_audit() {
     let state = setup().await;
-    let store = Uuid::new_v4();
+    let store = Uuid::nil();
     let register = Uuid::new_v4();
 
     let start = execute_pos_command(
@@ -219,7 +209,7 @@ async fn full_return_flow_updates_outbox_and_audit() {
 #[tokio::test]
 async fn over_refund_is_rejected() {
     let state = setup().await;
-    let store = Uuid::new_v4();
+    let store = Uuid::nil();
     let register = Uuid::new_v4();
 
     let start = execute_pos_command(
@@ -279,7 +269,7 @@ async fn over_refund_is_rejected() {
 #[tokio::test]
 async fn void_return_before_finalize_marks_voided() {
     let state = setup().await;
-    let store = Uuid::new_v4();
+    let store = Uuid::nil();
     let register = Uuid::new_v4();
 
     let start = execute_pos_command(
@@ -319,7 +309,7 @@ async fn void_return_before_finalize_marks_voided() {
 #[tokio::test]
 async fn cannot_open_two_shifts_on_same_register() {
     let state = setup().await;
-    let store = Uuid::new_v4();
+    let store = Uuid::nil();
     let register = Uuid::new_v4();
 
     let first = execute_pos_command(
@@ -357,7 +347,7 @@ async fn cannot_open_two_shifts_on_same_register() {
 #[tokio::test]
 async fn paid_out_over_threshold_requires_approval() {
     let state = setup().await;
-    let store = Uuid::new_v4();
+    let store = Uuid::nil();
     let register = Uuid::new_v4();
 
     let opened = execute_pos_command(
@@ -415,7 +405,7 @@ async fn paid_out_over_threshold_requires_approval() {
 #[tokio::test]
 async fn no_sale_records_zero_amount_movement() {
     let state = setup().await;
-    let store = Uuid::new_v4();
+    let store = Uuid::nil();
     let register = Uuid::new_v4();
 
     let opened = execute_pos_command(
@@ -452,7 +442,7 @@ async fn no_sale_records_zero_amount_movement() {
 #[tokio::test]
 async fn close_till_with_matching_count_succeeds_and_generates_outbox() {
     let state = setup().await;
-    let store = Uuid::new_v4();
+    let store = Uuid::nil();
     let register = Uuid::new_v4();
 
     let opened = execute_pos_command(
@@ -503,6 +493,10 @@ async fn close_till_with_matching_count_succeeds_and_generates_outbox() {
     assert!(resp.success, "close failed: {:?}", resp.errors);
     assert_eq!(resp.payload.as_ref().unwrap()["variance_cents"], 0);
     assert_eq!(resp.payload.as_ref().unwrap()["state"], "closed");
+    assert!(
+        resp.payload.as_ref().unwrap()["dsfinvk_document_id"].is_string(),
+        "CloseTill must leave a DSFinV-K export the operator can download"
+    );
 
     let outbox: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM outbox")
         .fetch_one(&state.pool)
@@ -514,7 +508,7 @@ async fn close_till_with_matching_count_succeeds_and_generates_outbox() {
 #[tokio::test]
 async fn x_report_and_close_till_include_ledger_cash_sales_and_refunds() {
     let state = setup().await;
-    let store = Uuid::new_v4();
+    let store = Uuid::nil();
     let register = Uuid::new_v4();
 
     let opened = execute_pos_command(
@@ -570,6 +564,9 @@ async fn x_report_and_close_till_include_ledger_cash_sales_and_refunds() {
             fiscal_provider: None,
             fiscal_id: None,
             fiscal_signature: None,
+            fiscal_qr_payload: None,
+            fiscal_signed_at: None,
+            fiscal_pending: false,
         },
     )
     .await
@@ -677,7 +674,7 @@ async fn x_report_and_close_till_include_ledger_cash_sales_and_refunds() {
 #[tokio::test]
 async fn cash_count_reports_variance_without_closing() {
     let state = setup().await;
-    let store = Uuid::new_v4();
+    let store = Uuid::nil();
     let register = Uuid::new_v4();
 
     let opened = execute_pos_command(

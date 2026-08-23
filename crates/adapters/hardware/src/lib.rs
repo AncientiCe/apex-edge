@@ -1,5 +1,20 @@
 //! Hardware adapter traits and sidecar-friendly reference implementations.
 
+pub mod codepage;
+mod document;
+mod encode;
+mod escpos;
+mod star;
+mod transport;
+
+pub use document::{Alignment, ReceiptDocument, ReceiptElement, Symbology, TextSize, TextStyle};
+pub use escpos::EscPosEncoder;
+pub use star::StarLineModeEncoder;
+pub use transport::{
+    CaptureSink, PrinterTransport, RawPortTransport, ReceiptDevice, Tcp9100Transport,
+    TransportPrinter,
+};
+
 use thiserror::Error;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,10 +41,28 @@ pub enum HardwareError {
     NotConfigured { device: String },
     #[error("hardware operation {operation} has no data")]
     EmptyPayload { operation: String },
+    #[error("hardware operation {operation} rejected: {detail}")]
+    InvalidPayload { operation: String, detail: String },
+    #[error("hardware device {device} transport failed: {detail}")]
+    Transport { device: String, detail: String },
 }
 
 pub trait ReceiptPrinter: Send + Sync {
     fn print_receipt(&self, request: PrintRequest) -> Result<(), HardwareError>;
+}
+
+/// Turns a [`ReceiptDocument`] into the bytes one printer dialect understands.
+///
+/// Implementations are pure: no I/O, no device state, so their output can be pinned
+/// byte-for-byte in tests and decoded by `tools/virtual-printer`.
+pub trait ReceiptEncoder: Send + Sync {
+    /// Stable identifier used as the `encoder` metrics label.
+    fn name(&self) -> &'static str;
+
+    fn encode(&self, document: &ReceiptDocument) -> Result<Vec<u8>, HardwareError>;
+
+    /// The pulse that opens a drawer wired to the printer's DK port.
+    fn drawer_kick(&self) -> Vec<u8>;
 }
 
 pub trait CashDrawer: Send + Sync {

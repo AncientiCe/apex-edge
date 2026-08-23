@@ -223,19 +223,14 @@ async fn apply_entity_batch(
             let started = std::time::Instant::now();
             let result =
                 apex_edge_storage::reconcile_inventory_levels(pool, store_id, &levels).await;
-            metrics::histogram!(
-                apex_edge_metrics::INVENTORY_RECONCILE_DURATION_SECONDS,
-                started.elapsed().as_secs_f64()
-            );
+            metrics::histogram!(apex_edge_metrics::INVENTORY_RECONCILE_DURATION_SECONDS)
+                .record(started.elapsed().as_secs_f64());
             match result {
                 Ok(summary) => {
-                    metrics::counter!(
-                        apex_edge_metrics::INVENTORY_RECONCILE_TOTAL,
-                        1u64,
-                        "outcome" => apex_edge_metrics::OUTCOME_SUCCESS
-                    );
+                    metrics::counter!(apex_edge_metrics::INVENTORY_RECONCILE_TOTAL, "outcome" => apex_edge_metrics::OUTCOME_SUCCESS).increment(1);
                     if summary.drift > 0 {
-                        metrics::counter!(apex_edge_metrics::INVENTORY_DRIFT_TOTAL, summary.drift);
+                        metrics::counter!(apex_edge_metrics::INVENTORY_DRIFT_TOTAL)
+                            .increment(summary.drift);
                         tracing::warn!(
                             "Inventory reconcile drift: {} item(s) where local activity exceeded HQ baseline",
                             summary.drift
@@ -243,11 +238,7 @@ async fn apply_entity_batch(
                     }
                 }
                 Err(e) => {
-                    metrics::counter!(
-                        apex_edge_metrics::INVENTORY_RECONCILE_TOTAL,
-                        1u64,
-                        "outcome" => apex_edge_metrics::OUTCOME_ERROR
-                    );
+                    metrics::counter!(apex_edge_metrics::INVENTORY_RECONCILE_TOTAL, "outcome" => apex_edge_metrics::OUTCOME_ERROR).increment(1);
                     return Err(RunSyncError::Ingest(crate::ingest::IngestError::Storage(e)));
                 }
             }

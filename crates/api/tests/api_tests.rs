@@ -33,15 +33,7 @@ async fn api_handlers_cover_health_ready_pos_and_documents() {
         .expect("pool");
     run_migrations(&pool).await.expect("migrations");
 
-    let state = AppState {
-        store_id: Uuid::nil(),
-        pool: pool.clone(),
-        metrics_handle: None,
-        auth: apex_edge_api::AuthSettings::default(),
-        stream: apex_edge_api::StreamHub::new(),
-        role: apex_edge_api::HubRole::Primary,
-        fiscal: apex_edge_api::FiscalSettings::default(),
-    };
+    let state = AppState::new(pool.clone(), Uuid::nil());
 
     let h = health().await;
     assert_eq!(h.0.status, "ok");
@@ -52,6 +44,7 @@ async fn api_handlers_cover_health_ready_pos_and_documents() {
 
     let bad = handle_pos_command(
         State(state.clone()),
+        None,
         Json(PosRequestEnvelope {
             version: ContractVersion::new(2, 0, 0),
             idempotency_key: Uuid::new_v4(),
@@ -65,6 +58,7 @@ async fn api_handlers_cover_health_ready_pos_and_documents() {
 
     let good = handle_pos_command(
         State(state.clone()),
+        None,
         Json(PosRequestEnvelope {
             version: ContractVersion::V1_0_0,
             idempotency_key: Uuid::new_v4(),
@@ -117,15 +111,7 @@ async fn get_document_returns_not_found_for_unknown_id() {
         .expect("pool");
     run_migrations(&pool).await.expect("migrations");
 
-    let state = AppState {
-        store_id: Uuid::nil(),
-        pool,
-        metrics_handle: None,
-        auth: apex_edge_api::AuthSettings::default(),
-        stream: apex_edge_api::StreamHub::new(),
-        role: apex_edge_api::HubRole::Primary,
-        fiscal: apex_edge_api::FiscalSettings::default(),
-    };
+    let state = AppState::new(pool, Uuid::nil());
     let res = get_document(State(state), axum::extract::Path(Uuid::new_v4())).await;
     assert_eq!(
         res.expect_err("must return not found"),
@@ -141,15 +127,7 @@ async fn create_gift_receipt_generates_new_document_for_order() {
         .await
         .expect("pool");
     run_migrations(&pool).await.expect("migrations");
-    let state = AppState {
-        store_id: Uuid::nil(),
-        pool: pool.clone(),
-        metrics_handle: None,
-        auth: apex_edge_api::AuthSettings::default(),
-        stream: apex_edge_api::StreamHub::new(),
-        role: apex_edge_api::HubRole::Primary,
-        fiscal: apex_edge_api::FiscalSettings::default(),
-    };
+    let state = AppState::new(pool.clone(), Uuid::nil());
     let order_id = Uuid::new_v4();
     let doc_id = Uuid::new_v4();
     enqueue_document(
@@ -187,15 +165,7 @@ async fn get_sync_status_returns_shape_with_last_sync_and_entities() {
         .expect("pool");
     run_migrations(&pool).await.expect("migrations");
 
-    let state = AppState {
-        store_id: Uuid::nil(),
-        pool,
-        metrics_handle: None,
-        auth: apex_edge_api::AuthSettings::default(),
-        stream: apex_edge_api::StreamHub::new(),
-        role: apex_edge_api::HubRole::Primary,
-        fiscal: apex_edge_api::FiscalSettings::default(),
-    };
+    let state = AppState::new(pool, Uuid::nil());
 
     let resp = sync_status(State(state)).await.expect("sync_status");
     assert!(resp.last_sync_at.is_none() || resp.last_sync_at.is_some());
@@ -221,15 +191,7 @@ async fn sync_status_reports_degraded_when_never_synced() {
         .expect("pool");
     run_migrations(&pool).await.expect("migrations");
 
-    let state = AppState {
-        store_id: Uuid::nil(),
-        pool,
-        metrics_handle: None,
-        auth: apex_edge_api::AuthSettings::default(),
-        stream: apex_edge_api::StreamHub::new(),
-        role: apex_edge_api::HubRole::Primary,
-        fiscal: apex_edge_api::FiscalSettings::default(),
-    };
+    let state = AppState::new(pool, Uuid::nil());
 
     let resp = sync_status(State(state)).await.expect("sync_status");
     // No successful sync has ever been recorded -> degraded, unknown staleness.
@@ -249,15 +211,7 @@ async fn sync_status_is_fresh_right_after_a_successful_sync() {
         .await
         .expect("record success");
 
-    let state = AppState {
-        store_id: Uuid::nil(),
-        pool,
-        metrics_handle: None,
-        auth: apex_edge_api::AuthSettings::default(),
-        stream: apex_edge_api::StreamHub::new(),
-        role: apex_edge_api::HubRole::Primary,
-        fiscal: apex_edge_api::FiscalSettings::default(),
-    };
+    let state = AppState::new(pool, Uuid::nil());
 
     let resp = sync_status(State(state)).await.expect("sync_status");
     assert!(!resp.degraded, "fresh sync must not be degraded");
@@ -274,19 +228,12 @@ async fn get_cart_state_returns_cart_for_known_id() {
         .expect("pool");
     run_migrations(&pool).await.expect("migrations");
 
-    let state = AppState {
-        store_id: Uuid::nil(),
-        pool: pool.clone(),
-        metrics_handle: None,
-        auth: apex_edge_api::AuthSettings::default(),
-        stream: apex_edge_api::StreamHub::new(),
-        role: apex_edge_api::HubRole::Primary,
-        fiscal: apex_edge_api::FiscalSettings::default(),
-    };
+    let state = AppState::new(pool.clone(), Uuid::nil());
 
     // Create a cart via the POS command handler
     let created = handle_pos_command(
         State(state.clone()),
+        None,
         Json(PosRequestEnvelope {
             version: ContractVersion::V1_0_0,
             idempotency_key: Uuid::new_v4(),
@@ -335,15 +282,7 @@ async fn get_prices_returns_base_prices_for_requested_products() {
         .await
         .expect("insert base price");
 
-    let state = AppState {
-        store_id,
-        pool,
-        metrics_handle: None,
-        auth: apex_edge_api::AuthSettings::default(),
-        stream: apex_edge_api::StreamHub::new(),
-        role: apex_edge_api::HubRole::Primary,
-        fiscal: apex_edge_api::FiscalSettings::default(),
-    };
+    let state = AppState::new(pool, store_id);
     let response = get_prices(
         State(state),
         Query(apex_edge_api::PriceQuery {
@@ -407,15 +346,7 @@ async fn search_products_uses_catalog_images_when_inventory_images_are_missing()
         .await
         .expect("replace_catalog_items");
 
-    let state = AppState {
-        store_id,
-        pool,
-        metrics_handle: None,
-        auth: apex_edge_api::AuthSettings::default(),
-        stream: apex_edge_api::StreamHub::new(),
-        role: apex_edge_api::HubRole::Primary,
-        fiscal: apex_edge_api::FiscalSettings::default(),
-    };
+    let state = AppState::new(pool, store_id);
     let response = search_products(
         State(state),
         Query(ProductSearchQuery {
@@ -464,15 +395,7 @@ async fn product_by_id_returns_placeholder_image_when_no_synced_images_exist() {
     .await
     .expect("insert catalog item");
 
-    let state = AppState {
-        store_id,
-        pool,
-        metrics_handle: None,
-        auth: apex_edge_api::AuthSettings::default(),
-        stream: apex_edge_api::StreamHub::new(),
-        role: apex_edge_api::HubRole::Primary,
-        fiscal: apex_edge_api::FiscalSettings::default(),
-    };
+    let state = AppState::new(pool, store_id);
     let response = get_product_by_id(State(state), axum::extract::Path(item_id))
         .await
         .expect("get_product_by_id");
@@ -493,18 +416,11 @@ async fn remove_line_item_returns_cart_not_found_for_unknown_cart() {
         .expect("pool");
     run_migrations(&pool).await.expect("migrations");
 
-    let state = AppState {
-        store_id: Uuid::nil(),
-        pool,
-        metrics_handle: None,
-        auth: apex_edge_api::AuthSettings::default(),
-        stream: apex_edge_api::StreamHub::new(),
-        role: apex_edge_api::HubRole::Primary,
-        fiscal: apex_edge_api::FiscalSettings::default(),
-    };
+    let state = AppState::new(pool, Uuid::nil());
 
     let res = handle_pos_command(
         State(state),
+        None,
         Json(PosRequestEnvelope {
             version: ContractVersion::V1_0_0,
             idempotency_key: Uuid::new_v4(),
@@ -531,19 +447,12 @@ async fn remove_line_item_returns_line_not_found_for_unknown_line() {
         .expect("pool");
     run_migrations(&pool).await.expect("migrations");
 
-    let state = AppState {
-        store_id: Uuid::nil(),
-        pool: pool.clone(),
-        metrics_handle: None,
-        auth: apex_edge_api::AuthSettings::default(),
-        stream: apex_edge_api::StreamHub::new(),
-        role: apex_edge_api::HubRole::Primary,
-        fiscal: apex_edge_api::FiscalSettings::default(),
-    };
+    let state = AppState::new(pool.clone(), Uuid::nil());
 
     // Create a cart first
     let created = handle_pos_command(
         State(state.clone()),
+        None,
         Json(PosRequestEnvelope {
             version: ContractVersion::V1_0_0,
             idempotency_key: Uuid::new_v4(),
@@ -560,6 +469,7 @@ async fn remove_line_item_returns_line_not_found_for_unknown_line() {
     // Attempt to remove a line that doesn't exist
     let res = handle_pos_command(
         State(state),
+        None,
         Json(PosRequestEnvelope {
             version: ContractVersion::V1_0_0,
             idempotency_key: Uuid::new_v4(),
@@ -586,15 +496,7 @@ async fn get_cart_state_returns_not_found_for_unknown_id() {
         .expect("pool");
     run_migrations(&pool).await.expect("migrations");
 
-    let state = AppState {
-        store_id: Uuid::nil(),
-        pool,
-        metrics_handle: None,
-        auth: apex_edge_api::AuthSettings::default(),
-        stream: apex_edge_api::StreamHub::new(),
-        role: apex_edge_api::HubRole::Primary,
-        fiscal: apex_edge_api::FiscalSettings::default(),
-    };
+    let state = AppState::new(pool, Uuid::nil());
 
     let result = get_cart_state_handler(State(state), axum::extract::Path(Uuid::new_v4())).await;
     assert_eq!(
@@ -612,15 +514,7 @@ async fn metrics_endpoint_returns_404_when_recorder_not_installed() {
         .expect("pool");
     run_migrations(&pool).await.expect("migrations");
 
-    let state = AppState {
-        store_id: Uuid::nil(),
-        pool,
-        metrics_handle: None,
-        auth: apex_edge_api::AuthSettings::default(),
-        stream: apex_edge_api::StreamHub::new(),
-        role: apex_edge_api::HubRole::Primary,
-        fiscal: apex_edge_api::FiscalSettings::default(),
-    };
+    let state = AppState::new(pool, Uuid::nil());
 
     let response = serve_metrics(State(state)).await.into_response();
     assert_eq!(
@@ -640,15 +534,7 @@ async fn add_line_item_response_includes_applied_promo_name() {
     run_migrations(&pool).await.expect("migrations");
 
     let store_id = Uuid::nil();
-    let state = AppState {
-        store_id,
-        pool: pool.clone(),
-        metrics_handle: None,
-        auth: apex_edge_api::AuthSettings::default(),
-        stream: apex_edge_api::StreamHub::new(),
-        role: apex_edge_api::HubRole::Primary,
-        fiscal: apex_edge_api::FiscalSettings::default(),
-    };
+    let state = AppState::new(pool.clone(), store_id);
     let item_id = Uuid::new_v4();
     insert_catalog_item(
         &pool,
@@ -687,6 +573,7 @@ async fn add_line_item_response_includes_applied_promo_name() {
 
     let created = handle_pos_command(
         State(state.clone()),
+        None,
         Json(PosRequestEnvelope {
             version: ContractVersion::V1_0_0,
             idempotency_key: Uuid::new_v4(),
@@ -701,6 +588,7 @@ async fn add_line_item_response_includes_applied_promo_name() {
 
     let add = handle_pos_command(
         State(state),
+        None,
         Json(PosRequestEnvelope {
             version: ContractVersion::V1_0_0,
             idempotency_key: Uuid::new_v4(),
@@ -755,15 +643,7 @@ async fn finalize_order_with_synced_template_produces_pdf_receipt() {
     .await
     .expect("upsert template");
 
-    let state = AppState {
-        store_id,
-        pool: pool.clone(),
-        metrics_handle: None,
-        auth: apex_edge_api::AuthSettings::default(),
-        stream: apex_edge_api::StreamHub::new(),
-        role: apex_edge_api::HubRole::Primary,
-        fiscal: apex_edge_api::FiscalSettings::default(),
-    };
+    let state = AppState::new(pool.clone(), store_id);
     let item_id = Uuid::new_v4();
     insert_catalog_item(
         &pool,
@@ -793,6 +673,7 @@ async fn finalize_order_with_synced_template_produces_pdf_receipt() {
 
     let created = handle_pos_command(
         State(state.clone()),
+        None,
         Json(PosRequestEnvelope {
             version: ContractVersion::V1_0_0,
             idempotency_key: Uuid::new_v4(),
@@ -808,6 +689,7 @@ async fn finalize_order_with_synced_template_produces_pdf_receipt() {
 
     let _ = handle_pos_command(
         State(state.clone()),
+        None,
         Json(PosRequestEnvelope {
             version: ContractVersion::V1_0_0,
             idempotency_key: Uuid::new_v4(),
@@ -826,6 +708,7 @@ async fn finalize_order_with_synced_template_produces_pdf_receipt() {
     .await;
     let _ = handle_pos_command(
         State(state.clone()),
+        None,
         Json(PosRequestEnvelope {
             version: ContractVersion::V1_0_0,
             idempotency_key: Uuid::new_v4(),
@@ -839,6 +722,7 @@ async fn finalize_order_with_synced_template_produces_pdf_receipt() {
     .await;
     let _ = handle_pos_command(
         State(state.clone()),
+        None,
         Json(PosRequestEnvelope {
             version: ContractVersion::V1_0_0,
             idempotency_key: Uuid::new_v4(),
@@ -859,6 +743,7 @@ async fn finalize_order_with_synced_template_produces_pdf_receipt() {
     .await;
     let finalize_res = handle_pos_command(
         State(state.clone()),
+        None,
         Json(PosRequestEnvelope {
             version: ContractVersion::V1_0_0,
             idempotency_key: Uuid::new_v4(),
@@ -930,18 +815,11 @@ async fn finalize_persists_order_ledger_and_order_read_apis_return_it() {
         .await
         .expect("insert_price_book_entry");
 
-    let state = AppState {
-        store_id,
-        pool: pool.clone(),
-        metrics_handle: None,
-        auth: apex_edge_api::AuthSettings::default(),
-        stream: apex_edge_api::StreamHub::new(),
-        role: apex_edge_api::HubRole::Primary,
-        fiscal: apex_edge_api::FiscalSettings::default(),
-    };
+    let state = AppState::new(pool.clone(), store_id);
 
     let opened = handle_pos_command(
         State(state.clone()),
+        None,
         Json(PosRequestEnvelope {
             version: ContractVersion::V1_0_0,
             idempotency_key: Uuid::new_v4(),
@@ -961,6 +839,7 @@ async fn finalize_persists_order_ledger_and_order_read_apis_return_it() {
 
     let created = handle_pos_command(
         State(state.clone()),
+        None,
         Json(PosRequestEnvelope {
             version: ContractVersion::V1_0_0,
             idempotency_key: Uuid::new_v4(),
@@ -975,6 +854,7 @@ async fn finalize_persists_order_ledger_and_order_read_apis_return_it() {
 
     let _ = handle_pos_command(
         State(state.clone()),
+        None,
         Json(PosRequestEnvelope {
             version: ContractVersion::V1_0_0,
             idempotency_key: Uuid::new_v4(),
@@ -993,6 +873,7 @@ async fn finalize_persists_order_ledger_and_order_read_apis_return_it() {
     .await;
     let _ = handle_pos_command(
         State(state.clone()),
+        None,
         Json(PosRequestEnvelope {
             version: ContractVersion::V1_0_0,
             idempotency_key: Uuid::new_v4(),
@@ -1006,6 +887,7 @@ async fn finalize_persists_order_ledger_and_order_read_apis_return_it() {
     .await;
     let _ = handle_pos_command(
         State(state.clone()),
+        None,
         Json(PosRequestEnvelope {
             version: ContractVersion::V1_0_0,
             idempotency_key: Uuid::new_v4(),
@@ -1027,6 +909,7 @@ async fn finalize_persists_order_ledger_and_order_read_apis_return_it() {
 
     let finalized = handle_pos_command(
         State(state.clone()),
+        None,
         Json(PosRequestEnvelope {
             version: ContractVersion::V1_0_0,
             idempotency_key: Uuid::new_v4(),
@@ -1105,15 +988,7 @@ async fn gift_receipt_with_synced_template_produces_pdf() {
         .await
         .expect("mark generated");
 
-    let state = AppState {
-        store_id,
-        pool: pool.clone(),
-        metrics_handle: None,
-        auth: apex_edge_api::AuthSettings::default(),
-        stream: apex_edge_api::StreamHub::new(),
-        role: apex_edge_api::HubRole::Primary,
-        fiscal: apex_edge_api::FiscalSettings::default(),
-    };
+    let state = AppState::new(pool.clone(), store_id);
     let created = create_gift_receipt_document(State(state), axum::extract::Path(order_id))
         .await
         .expect("create_gift_receipt");
@@ -1145,15 +1020,7 @@ async fn update_line_item_reprices_and_updates_quantity() {
     run_migrations(&pool).await.expect("migrations");
 
     let store_id = Uuid::nil();
-    let state = AppState {
-        store_id,
-        pool: pool.clone(),
-        metrics_handle: None,
-        auth: apex_edge_api::AuthSettings::default(),
-        stream: apex_edge_api::StreamHub::new(),
-        role: apex_edge_api::HubRole::Primary,
-        fiscal: apex_edge_api::FiscalSettings::default(),
-    };
+    let state = AppState::new(pool.clone(), store_id);
     let item_id = Uuid::new_v4();
     insert_catalog_item(
         &pool,
@@ -1172,6 +1039,7 @@ async fn update_line_item_reprices_and_updates_quantity() {
 
     let created = handle_pos_command(
         State(state.clone()),
+        None,
         Json(PosRequestEnvelope {
             version: ContractVersion::V1_0_0,
             idempotency_key: Uuid::new_v4(),
@@ -1186,6 +1054,7 @@ async fn update_line_item_reprices_and_updates_quantity() {
 
     let add = handle_pos_command(
         State(state.clone()),
+        None,
         Json(PosRequestEnvelope {
             version: ContractVersion::V1_0_0,
             idempotency_key: Uuid::new_v4(),
@@ -1209,6 +1078,7 @@ async fn update_line_item_reprices_and_updates_quantity() {
 
     let update = handle_pos_command(
         State(state),
+        None,
         Json(PosRequestEnvelope {
             version: ContractVersion::V1_0_0,
             idempotency_key: Uuid::new_v4(),
@@ -1243,15 +1113,7 @@ async fn apply_and_remove_coupon_updates_cart_coupon_state() {
     run_migrations(&pool).await.expect("migrations");
 
     let store_id = Uuid::nil();
-    let state = AppState {
-        store_id,
-        pool: pool.clone(),
-        metrics_handle: None,
-        auth: apex_edge_api::AuthSettings::default(),
-        stream: apex_edge_api::StreamHub::new(),
-        role: apex_edge_api::HubRole::Primary,
-        fiscal: apex_edge_api::FiscalSettings::default(),
-    };
+    let state = AppState::new(pool.clone(), store_id);
     let item_id = Uuid::new_v4();
     insert_catalog_item(
         &pool,
@@ -1307,6 +1169,7 @@ async fn apply_and_remove_coupon_updates_cart_coupon_state() {
 
     let created = handle_pos_command(
         State(state.clone()),
+        None,
         Json(PosRequestEnvelope {
             version: ContractVersion::V1_0_0,
             idempotency_key: Uuid::new_v4(),
@@ -1321,6 +1184,7 @@ async fn apply_and_remove_coupon_updates_cart_coupon_state() {
 
     let add = handle_pos_command(
         State(state.clone()),
+        None,
         Json(PosRequestEnvelope {
             version: ContractVersion::V1_0_0,
             idempotency_key: Uuid::new_v4(),
@@ -1348,6 +1212,7 @@ async fn apply_and_remove_coupon_updates_cart_coupon_state() {
 
     let applied = handle_pos_command(
         State(state.clone()),
+        None,
         Json(PosRequestEnvelope {
             version: ContractVersion::V1_0_0,
             idempotency_key: Uuid::new_v4(),
@@ -1369,6 +1234,7 @@ async fn apply_and_remove_coupon_updates_cart_coupon_state() {
 
     let removed = handle_pos_command(
         State(state),
+        None,
         Json(PosRequestEnvelope {
             version: ContractVersion::V1_0_0,
             idempotency_key: Uuid::new_v4(),
@@ -1398,15 +1264,7 @@ async fn void_cart_marks_cart_voided_and_blocks_future_edits() {
     run_migrations(&pool).await.expect("migrations");
 
     let store_id = Uuid::nil();
-    let state = AppState {
-        store_id,
-        pool: pool.clone(),
-        metrics_handle: None,
-        auth: apex_edge_api::AuthSettings::default(),
-        stream: apex_edge_api::StreamHub::new(),
-        role: apex_edge_api::HubRole::Primary,
-        fiscal: apex_edge_api::FiscalSettings::default(),
-    };
+    let state = AppState::new(pool.clone(), store_id);
     let item_id = Uuid::new_v4();
     insert_catalog_item(
         &pool,
@@ -1425,6 +1283,7 @@ async fn void_cart_marks_cart_voided_and_blocks_future_edits() {
 
     let created = handle_pos_command(
         State(state.clone()),
+        None,
         Json(PosRequestEnvelope {
             version: ContractVersion::V1_0_0,
             idempotency_key: Uuid::new_v4(),
@@ -1439,6 +1298,7 @@ async fn void_cart_marks_cart_voided_and_blocks_future_edits() {
 
     let voided = handle_pos_command(
         State(state.clone()),
+        None,
         Json(PosRequestEnvelope {
             version: ContractVersion::V1_0_0,
             idempotency_key: Uuid::new_v4(),
@@ -1462,6 +1322,7 @@ async fn void_cart_marks_cart_voided_and_blocks_future_edits() {
 
     let add_after_void = handle_pos_command(
         State(state),
+        None,
         Json(PosRequestEnvelope {
             version: ContractVersion::V1_0_0,
             idempotency_key: Uuid::new_v4(),
@@ -1492,15 +1353,7 @@ async fn apply_and_remove_promo_updates_discount_and_applied_promos() {
     run_migrations(&pool).await.expect("migrations");
 
     let store_id = Uuid::nil();
-    let state = AppState {
-        store_id,
-        pool: pool.clone(),
-        metrics_handle: None,
-        auth: apex_edge_api::AuthSettings::default(),
-        stream: apex_edge_api::StreamHub::new(),
-        role: apex_edge_api::HubRole::Primary,
-        fiscal: apex_edge_api::FiscalSettings::default(),
-    };
+    let state = AppState::new(pool.clone(), store_id);
     let item_id = Uuid::new_v4();
     insert_catalog_item(
         &pool,
@@ -1539,6 +1392,7 @@ async fn apply_and_remove_promo_updates_discount_and_applied_promos() {
 
     let created = handle_pos_command(
         State(state.clone()),
+        None,
         Json(PosRequestEnvelope {
             version: ContractVersion::V1_0_0,
             idempotency_key: Uuid::new_v4(),
@@ -1552,6 +1406,7 @@ async fn apply_and_remove_promo_updates_discount_and_applied_promos() {
         serde_json::from_value(created.0.payload.expect("create payload")).expect("create state");
     let add = handle_pos_command(
         State(state.clone()),
+        None,
         Json(PosRequestEnvelope {
             version: ContractVersion::V1_0_0,
             idempotency_key: Uuid::new_v4(),
@@ -1574,6 +1429,7 @@ async fn apply_and_remove_promo_updates_discount_and_applied_promos() {
 
     let applied = handle_pos_command(
         State(state.clone()),
+        None,
         Json(PosRequestEnvelope {
             version: ContractVersion::V1_0_0,
             idempotency_key: Uuid::new_v4(),
@@ -1599,6 +1455,7 @@ async fn apply_and_remove_promo_updates_discount_and_applied_promos() {
 
     let removed = handle_pos_command(
         State(state),
+        None,
         Json(PosRequestEnvelope {
             version: ContractVersion::V1_0_0,
             idempotency_key: Uuid::new_v4(),
@@ -1632,15 +1489,7 @@ async fn apply_coupon_rejects_when_redemption_limit_reached() {
     run_migrations(&pool).await.expect("migrations");
 
     let store_id = Uuid::nil();
-    let state = AppState {
-        store_id,
-        pool: pool.clone(),
-        metrics_handle: None,
-        auth: apex_edge_api::AuthSettings::default(),
-        stream: apex_edge_api::StreamHub::new(),
-        role: apex_edge_api::HubRole::Primary,
-        fiscal: apex_edge_api::FiscalSettings::default(),
-    };
+    let state = AppState::new(pool.clone(), store_id);
     let item_id = Uuid::new_v4();
     insert_catalog_item(
         &pool,
@@ -1692,6 +1541,7 @@ async fn apply_coupon_rejects_when_redemption_limit_reached() {
 
     let created = handle_pos_command(
         State(state.clone()),
+        None,
         Json(PosRequestEnvelope {
             version: ContractVersion::V1_0_0,
             idempotency_key: Uuid::new_v4(),
@@ -1705,6 +1555,7 @@ async fn apply_coupon_rejects_when_redemption_limit_reached() {
         serde_json::from_value(created.0.payload.expect("create payload")).expect("create state");
     let add = handle_pos_command(
         State(state.clone()),
+        None,
         Json(PosRequestEnvelope {
             version: ContractVersion::V1_0_0,
             idempotency_key: Uuid::new_v4(),
@@ -1725,6 +1576,7 @@ async fn apply_coupon_rejects_when_redemption_limit_reached() {
 
     let applied = handle_pos_command(
         State(state),
+        None,
         Json(PosRequestEnvelope {
             version: ContractVersion::V1_0_0,
             idempotency_key: Uuid::new_v4(),
@@ -1750,15 +1602,7 @@ async fn repeated_idempotency_key_replays_same_response() {
         .expect("pool");
     run_migrations(&pool).await.expect("migrations");
 
-    let state = AppState {
-        store_id: Uuid::nil(),
-        pool,
-        metrics_handle: None,
-        auth: apex_edge_api::AuthSettings::default(),
-        stream: apex_edge_api::StreamHub::new(),
-        role: apex_edge_api::HubRole::Primary,
-        fiscal: apex_edge_api::FiscalSettings::default(),
-    };
+    let state = AppState::new(pool, Uuid::nil());
     let idem = Uuid::new_v4();
     let req = PosRequestEnvelope {
         version: ContractVersion::V1_0_0,
@@ -1768,8 +1612,8 @@ async fn repeated_idempotency_key_replays_same_response() {
         payload: PosCommand::CreateCart(CreateCartPayload { cart_id: None }),
     };
 
-    let first = handle_pos_command(State(state.clone()), Json(req.clone())).await;
-    let second = handle_pos_command(State(state), Json(req)).await;
+    let first = handle_pos_command(State(state.clone()), None, Json(req.clone())).await;
+    let second = handle_pos_command(State(state), None, Json(req)).await;
 
     assert!(first.0.success);
     assert!(second.0.success);
@@ -1800,17 +1644,10 @@ async fn set_customer_enriches_cart_state_with_customer_name_and_code() {
     .await
     .expect("insert customer");
 
-    let state = AppState {
-        store_id,
-        pool,
-        metrics_handle: None,
-        auth: apex_edge_api::AuthSettings::default(),
-        stream: apex_edge_api::StreamHub::new(),
-        role: apex_edge_api::HubRole::Primary,
-        fiscal: apex_edge_api::FiscalSettings::default(),
-    };
+    let state = AppState::new(pool, store_id);
     let created = handle_pos_command(
         State(state.clone()),
+        None,
         Json(PosRequestEnvelope {
             version: ContractVersion::V1_0_0,
             idempotency_key: Uuid::new_v4(),
@@ -1825,6 +1662,7 @@ async fn set_customer_enriches_cart_state_with_customer_name_and_code() {
 
     let set_customer = handle_pos_command(
         State(state),
+        None,
         Json(PosRequestEnvelope {
             version: ContractVersion::V1_0_0,
             idempotency_key: Uuid::new_v4(),

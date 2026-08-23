@@ -27,6 +27,7 @@ pub struct DevicePairingCodeRow {
 pub struct TrustedDeviceRow {
     pub id: Uuid,
     pub store_id: Uuid,
+    pub register_id: Option<Uuid>,
     pub device_name: String,
     pub platform: Option<String>,
     pub secret_hash: String,
@@ -86,8 +87,10 @@ pub async fn create_device_pairing_code(
     .bind(now)
     .execute(pool)
     .await;
-    metrics::counter!(DB_OPERATIONS_TOTAL, 1u64, "operation" => OP, "outcome" => db_outcome(&result));
-    metrics::histogram!(DB_OPERATION_DURATION_SECONDS, start.elapsed().as_secs_f64(), "operation" => OP);
+    metrics::counter!(DB_OPERATIONS_TOTAL, "operation" => OP, "outcome" => db_outcome(&result))
+        .increment(1);
+    metrics::histogram!(DB_OPERATION_DURATION_SECONDS, "operation" => OP)
+        .record(start.elapsed().as_secs_f64());
     result?;
     Ok(id)
 }
@@ -106,8 +109,10 @@ pub async fn get_pairing_code_by_hash(
     .bind(code_hash)
     .fetch_optional(pool)
     .await;
-    metrics::counter!(DB_OPERATIONS_TOTAL, 1u64, "operation" => OP, "outcome" => db_outcome(&result));
-    metrics::histogram!(DB_OPERATION_DURATION_SECONDS, start.elapsed().as_secs_f64(), "operation" => OP);
+    metrics::counter!(DB_OPERATIONS_TOTAL, "operation" => OP, "outcome" => db_outcome(&result))
+        .increment(1);
+    metrics::histogram!(DB_OPERATION_DURATION_SECONDS, "operation" => OP)
+        .record(start.elapsed().as_secs_f64());
     let row = result?.map(
         |(
             id,
@@ -145,8 +150,10 @@ pub async fn increment_pairing_code_attempts(pool: &SqlitePool, id: Uuid) -> Res
     .bind(id.to_string())
     .execute(pool)
     .await;
-    metrics::counter!(DB_OPERATIONS_TOTAL, 1u64, "operation" => OP, "outcome" => db_outcome(&result));
-    metrics::histogram!(DB_OPERATION_DURATION_SECONDS, start.elapsed().as_secs_f64(), "operation" => OP);
+    metrics::counter!(DB_OPERATIONS_TOTAL, "operation" => OP, "outcome" => db_outcome(&result))
+        .increment(1);
+    metrics::histogram!(DB_OPERATION_DURATION_SECONDS, "operation" => OP)
+        .record(start.elapsed().as_secs_f64());
     result?;
     Ok(())
 }
@@ -169,8 +176,10 @@ pub async fn consume_pairing_code(
     .bind(id.to_string())
     .execute(pool)
     .await;
-    metrics::counter!(DB_OPERATIONS_TOTAL, 1u64, "operation" => OP, "outcome" => db_outcome(&result));
-    metrics::histogram!(DB_OPERATION_DURATION_SECONDS, start.elapsed().as_secs_f64(), "operation" => OP);
+    metrics::counter!(DB_OPERATIONS_TOTAL, "operation" => OP, "outcome" => db_outcome(&result))
+        .increment(1);
+    metrics::histogram!(DB_OPERATION_DURATION_SECONDS, "operation" => OP)
+        .record(start.elapsed().as_secs_f64());
     result?;
     Ok(())
 }
@@ -179,6 +188,7 @@ pub async fn create_trusted_device(
     pool: &SqlitePool,
     id: Uuid,
     store_id: Uuid,
+    register_id: Uuid,
     device_name: &str,
     platform: Option<&str>,
     secret_hash: &str,
@@ -187,19 +197,22 @@ pub async fn create_trusted_device(
     let start = Instant::now();
     let now = Utc::now().to_rfc3339();
     let result = sqlx::query(
-        "INSERT INTO trusted_devices (id, store_id, device_name, platform, secret_hash, status, enrolled_at)
-         VALUES (?, ?, ?, ?, ?, 'active', ?)",
+        "INSERT INTO trusted_devices (id, store_id, register_id, device_name, platform, secret_hash, status, enrolled_at)
+         VALUES (?, ?, ?, ?, ?, ?, 'active', ?)",
     )
     .bind(id.to_string())
     .bind(store_id.to_string())
+    .bind(register_id.to_string())
     .bind(device_name)
     .bind(platform)
     .bind(secret_hash)
     .bind(now)
     .execute(pool)
     .await;
-    metrics::counter!(DB_OPERATIONS_TOTAL, 1u64, "operation" => OP, "outcome" => db_outcome(&result));
-    metrics::histogram!(DB_OPERATION_DURATION_SECONDS, start.elapsed().as_secs_f64(), "operation" => OP);
+    metrics::counter!(DB_OPERATIONS_TOTAL, "operation" => OP, "outcome" => db_outcome(&result))
+        .increment(1);
+    metrics::histogram!(DB_OPERATION_DURATION_SECONDS, "operation" => OP)
+        .record(start.elapsed().as_secs_f64());
     result?;
     Ok(())
 }
@@ -215,6 +228,7 @@ pub async fn get_trusted_device(
         (
             String,
             String,
+            Option<String>,
             String,
             Option<String>,
             String,
@@ -223,20 +237,33 @@ pub async fn get_trusted_device(
             Option<String>,
         ),
     >(
-        "SELECT id, store_id, device_name, platform, secret_hash, status, enrolled_at, revoked_at
+        "SELECT id, store_id, register_id, device_name, platform, secret_hash, status, enrolled_at, revoked_at
          FROM trusted_devices
          WHERE id = ?",
     )
     .bind(id.to_string())
     .fetch_optional(pool)
     .await;
-    metrics::counter!(DB_OPERATIONS_TOTAL, 1u64, "operation" => OP, "outcome" => db_outcome(&result));
-    metrics::histogram!(DB_OPERATION_DURATION_SECONDS, start.elapsed().as_secs_f64(), "operation" => OP);
+    metrics::counter!(DB_OPERATIONS_TOTAL, "operation" => OP, "outcome" => db_outcome(&result))
+        .increment(1);
+    metrics::histogram!(DB_OPERATION_DURATION_SECONDS, "operation" => OP)
+        .record(start.elapsed().as_secs_f64());
     let row = result?.map(
-        |(id, store_id, device_name, platform, secret_hash, status, enrolled_at, revoked_at)| {
+        |(
+            id,
+            store_id,
+            register_id,
+            device_name,
+            platform,
+            secret_hash,
+            status,
+            enrolled_at,
+            revoked_at,
+        )| {
             TrustedDeviceRow {
                 id: Uuid::parse_str(&id).unwrap_or_default(),
                 store_id: Uuid::parse_str(&store_id).unwrap_or_default(),
+                register_id: register_id.and_then(|v| Uuid::parse_str(&v).ok()),
                 device_name,
                 platform,
                 secret_hash,
@@ -274,8 +301,10 @@ pub async fn upsert_associate_identity(
     .bind(now)
     .execute(pool)
     .await;
-    metrics::counter!(DB_OPERATIONS_TOTAL, 1u64, "operation" => OP, "outcome" => db_outcome(&result));
-    metrics::histogram!(DB_OPERATION_DURATION_SECONDS, start.elapsed().as_secs_f64(), "operation" => OP);
+    metrics::counter!(DB_OPERATIONS_TOTAL, "operation" => OP, "outcome" => db_outcome(&result))
+        .increment(1);
+    metrics::histogram!(DB_OPERATION_DURATION_SECONDS, "operation" => OP)
+        .record(start.elapsed().as_secs_f64());
     result?;
     Ok(())
 }
@@ -305,8 +334,10 @@ pub async fn create_auth_session(
     .bind(now)
     .execute(pool)
     .await;
-    metrics::counter!(DB_OPERATIONS_TOTAL, 1u64, "operation" => OP, "outcome" => db_outcome(&result));
-    metrics::histogram!(DB_OPERATION_DURATION_SECONDS, start.elapsed().as_secs_f64(), "operation" => OP);
+    metrics::counter!(DB_OPERATIONS_TOTAL, "operation" => OP, "outcome" => db_outcome(&result))
+        .increment(1);
+    metrics::histogram!(DB_OPERATION_DURATION_SECONDS, "operation" => OP)
+        .record(start.elapsed().as_secs_f64());
     result?;
     Ok(())
 }
@@ -336,8 +367,10 @@ pub async fn get_auth_session(
     .bind(session_id.to_string())
     .fetch_optional(pool)
     .await;
-    metrics::counter!(DB_OPERATIONS_TOTAL, 1u64, "operation" => OP, "outcome" => db_outcome(&result));
-    metrics::histogram!(DB_OPERATION_DURATION_SECONDS, start.elapsed().as_secs_f64(), "operation" => OP);
+    metrics::counter!(DB_OPERATIONS_TOTAL, "operation" => OP, "outcome" => db_outcome(&result))
+        .increment(1);
+    metrics::histogram!(DB_OPERATION_DURATION_SECONDS, "operation" => OP)
+        .record(start.elapsed().as_secs_f64());
     let row = result?.map(
         |(session_id, associate_id, store_id, device_id, access_exp, refresh_exp, revoked_at)| {
             AuthSessionRow {
@@ -367,8 +400,10 @@ pub async fn revoke_auth_session(pool: &SqlitePool, session_id: Uuid) -> Result<
     .bind(session_id.to_string())
     .execute(pool)
     .await;
-    metrics::counter!(DB_OPERATIONS_TOTAL, 1u64, "operation" => OP, "outcome" => db_outcome(&result));
-    metrics::histogram!(DB_OPERATION_DURATION_SECONDS, start.elapsed().as_secs_f64(), "operation" => OP);
+    metrics::counter!(DB_OPERATIONS_TOTAL, "operation" => OP, "outcome" => db_outcome(&result))
+        .increment(1);
+    metrics::histogram!(DB_OPERATION_DURATION_SECONDS, "operation" => OP)
+        .record(start.elapsed().as_secs_f64());
     result?;
     Ok(())
 }

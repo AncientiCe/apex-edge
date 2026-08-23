@@ -61,14 +61,8 @@ pub async fn sync_status(
         .await
         .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
     let freshness = assess_freshness(last_success, Utc::now(), degraded_threshold_seconds());
-    metrics::gauge!(
-        SYNC_STALENESS_SECONDS,
-        freshness.staleness_seconds.unwrap_or(0) as f64
-    );
-    metrics::gauge!(
-        EDGE_DEGRADED_MODE,
-        if freshness.degraded { 1.0 } else { 0.0 }
-    );
+    metrics::gauge!(SYNC_STALENESS_SECONDS).set(freshness.staleness_seconds.unwrap_or(0) as f64);
+    metrics::gauge!(EDGE_DEGRADED_MODE).set(if freshness.degraded { 1.0 } else { 0.0 });
 
     let entities = entities
         .into_iter()

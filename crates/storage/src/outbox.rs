@@ -64,8 +64,9 @@ pub async fn fetch_pending_outbox(
     } else {
         DB_OUTCOME_ERROR
     };
-    metrics::counter!(DB_OPERATIONS_TOTAL, 1u64, "operation" => OP, "outcome" => outcome);
-    metrics::histogram!(DB_OPERATION_DURATION_SECONDS, start.elapsed().as_secs_f64(), "operation" => OP);
+    metrics::counter!(DB_OPERATIONS_TOTAL, "operation" => OP, "outcome" => outcome).increment(1);
+    metrics::histogram!(DB_OPERATION_DURATION_SECONDS, "operation" => OP)
+        .record(start.elapsed().as_secs_f64());
     let rows = rows_result?;
     Ok(rows
         .into_iter()
@@ -97,8 +98,9 @@ pub async fn mark_delivered(pool: &SqlitePool, id: Uuid) -> Result<(), PoolError
     } else {
         DB_OUTCOME_ERROR
     };
-    metrics::counter!(DB_OPERATIONS_TOTAL, 1u64, "operation" => OP, "outcome" => outcome);
-    metrics::histogram!(DB_OPERATION_DURATION_SECONDS, start.elapsed().as_secs_f64(), "operation" => OP);
+    metrics::counter!(DB_OPERATIONS_TOTAL, "operation" => OP, "outcome" => outcome).increment(1);
+    metrics::histogram!(DB_OPERATION_DURATION_SECONDS, "operation" => OP)
+        .record(start.elapsed().as_secs_f64());
     result?;
     Ok(())
 }
@@ -122,8 +124,9 @@ pub async fn schedule_retry(
     } else {
         DB_OUTCOME_ERROR
     };
-    metrics::counter!(DB_OPERATIONS_TOTAL, 1u64, "operation" => OP, "outcome" => outcome);
-    metrics::histogram!(DB_OPERATION_DURATION_SECONDS, start.elapsed().as_secs_f64(), "operation" => OP);
+    metrics::counter!(DB_OPERATIONS_TOTAL, "operation" => OP, "outcome" => outcome).increment(1);
+    metrics::histogram!(DB_OPERATION_DURATION_SECONDS, "operation" => OP)
+        .record(start.elapsed().as_secs_f64());
     result?;
     Ok(())
 }
@@ -142,8 +145,9 @@ pub async fn mark_dead_letter(pool: &SqlitePool, id: Uuid, reason: &str) -> Resu
     } else {
         DB_OUTCOME_ERROR
     };
-    metrics::counter!(DB_OPERATIONS_TOTAL, 1u64, "operation" => OP, "outcome" => outcome);
-    metrics::histogram!(DB_OPERATION_DURATION_SECONDS, start.elapsed().as_secs_f64(), "operation" => OP);
+    metrics::counter!(DB_OPERATIONS_TOTAL, "operation" => OP, "outcome" => outcome).increment(1);
+    metrics::histogram!(DB_OPERATION_DURATION_SECONDS, "operation" => OP)
+        .record(start.elapsed().as_secs_f64());
     result?;
     Ok(())
 }

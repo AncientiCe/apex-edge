@@ -48,6 +48,57 @@ pub struct AuthSettings {
     pub pairing_max_attempts: i64,
 }
 
+/// Parse a boolean env flag. Unset uses `default` (production auth is on unless
+/// `APEX_EDGE_AUTH_ENABLED` is explicitly `0`/`false`/`no`).
+pub fn parse_enabled_flag(raw: Option<&str>, default: bool) -> bool {
+    match raw.map(str::trim).filter(|s| !s.is_empty()) {
+        None => default,
+        Some(v) => matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"),
+    }
+}
+
+impl AuthSettings {
+    /// Production defaults: auth is on unless the env flag turns it off.
+    pub fn from_env() -> Self {
+        let external_public_key_pem = std::env::var("APEX_EDGE_AUTH_EXTERNAL_PUBLIC_KEY_PEM_PATH")
+            .ok()
+            .and_then(|path| std::fs::read_to_string(path).ok());
+        Self {
+            enabled: parse_enabled_flag(
+                std::env::var("APEX_EDGE_AUTH_ENABLED").ok().as_deref(),
+                true,
+            ),
+            external_issuer: std::env::var("APEX_EDGE_AUTH_EXTERNAL_ISSUER").unwrap_or_default(),
+            external_audience: std::env::var("APEX_EDGE_AUTH_EXTERNAL_AUDIENCE")
+                .unwrap_or_default(),
+            external_hs256_secret: std::env::var("APEX_EDGE_AUTH_EXTERNAL_HS256_SECRET").ok(),
+            external_public_key_pem,
+            session_signing_secret: std::env::var("APEX_EDGE_AUTH_SESSION_SIGNING_SECRET")
+                .unwrap_or_else(|_| "dev-hub-secret".into()),
+            access_ttl_seconds: std::env::var("APEX_EDGE_AUTH_ACCESS_TTL_SECONDS")
+                .ok()
+                .and_then(|v| v.parse::<i64>().ok())
+                .unwrap_or(300),
+            refresh_ttl_seconds: std::env::var("APEX_EDGE_AUTH_REFRESH_TTL_SECONDS")
+                .ok()
+                .and_then(|v| v.parse::<i64>().ok())
+                .unwrap_or(3600),
+            pairing_code_ttl_seconds: std::env::var("APEX_EDGE_AUTH_PAIRING_CODE_TTL_SECONDS")
+                .ok()
+                .and_then(|v| v.parse::<i64>().ok())
+                .unwrap_or(300),
+            pairing_code_length: std::env::var("APEX_EDGE_AUTH_PAIRING_CODE_LENGTH")
+                .ok()
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(6),
+            pairing_max_attempts: std::env::var("APEX_EDGE_AUTH_PAIRING_MAX_ATTEMPTS")
+                .ok()
+                .and_then(|v| v.parse::<i64>().ok())
+                .unwrap_or(3),
+        }
+    }
+}
+
 impl Default for AuthSettings {
     fn default() -> Self {
         Self {
@@ -72,6 +123,7 @@ pub struct AuthPrincipal {
     pub associate_id: String,
     pub device_id: Uuid,
     pub store_id: Uuid,
+    pub register_id: Option<Uuid>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -188,7 +240,7 @@ fn bearer_token(req: &Request<Body>) -> Option<String> {
     raw.strip_prefix("Bearer ").map(|s| s.to_string())
 }
 
-fn is_public_path(path: &str) -> bool {
+pub fn is_public_path(path: &str) -> bool {
     matches!(
         path,
         "/health"
@@ -198,13 +250,61 @@ fn is_public_path(path: &str) -> bool {
             | "/auth/devices/pair"
             | "/auth/sessions/exchange"
             | "/auth/sessions/refresh"
+            | "/openapi.json"
+            | "/docs"
     )
 }
 
+/// Scope a third-party API token must hold to call `path`. Session tokens skip this.
+pub fn required_scope_for_path(path: &str) -> Option<&'static str> {
+    if is_public_path(path) {
+        return None;
+    }
+    if path.starts_with("/admin") {
+        return Some("admin");
+    }
+    if path.starts_with("/pos") {
+        return Some("pos");
+    }
+    if path.starts_with("/catalog") {
+        return Some("catalog");
+    }
+    if path.starts_with("/orders") {
+        return Some("orders");
+    }
+    if path.starts_with("/customers") {
+        return Some("customers");
+    }
+    if path.starts_with("/documents") {
+        return Some("documents");
+    }
+    if path.starts_with("/approvals") {
+        return Some("approvals");
+    }
+    if path.starts_with("/audit") {
+        return Some("audit");
+    }
+    if path.starts_with("/sync") {
+        return Some("sync");
+    }
+    if path.starts_with("/webhooks") {
+        return Some("webhooks");
+    }
+    Some("admin")
+}
+
+/// `*` and `admin` grant every route. Otherwise the required scope must be listed.
+pub fn token_scopes_allow(scopes: &[String], required: &str) -> bool {
+    scopes
+        .iter()
+        .any(|s| s == "*" || s == "admin" || s == required)
+}
+
 fn record_auth_metrics(operation: &'static str, outcome: &'static str, start: DateTime<Utc>) {
-    metrics::counter!(AUTH_REQUESTS_TOTAL, 1u64, "operation" => operation, "outcome" => outcome);
+    metrics::counter!(AUTH_REQUESTS_TOTAL, "operation" => operation, "outcome" => outcome)
+        .increment(1);
     let elapsed = (Utc::now() - start).num_milliseconds() as f64 / 1000.0;
-    metrics::histogram!(AUTH_REQUEST_DURATION_SECONDS, elapsed, "operation" => operation);
+    metrics::histogram!(AUTH_REQUEST_DURATION_SECONDS, "operation" => operation).record(elapsed);
 }
 
 pub async fn auth_middleware(
@@ -228,7 +328,13 @@ pub async fn auth_middleware(
         &validation,
     ) {
         Ok(v) => v.claims,
-        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+        Err(_) => match authenticate_api_token(&app, &token, req.uri().path()).await {
+            Ok(principal) => {
+                req.extensions_mut().insert(principal);
+                return next.run(req).await;
+            }
+            Err(status) => return status.into_response(),
+        },
     };
     if decoded.typ != "access" {
         return StatusCode::UNAUTHORIZED.into_response();
@@ -260,8 +366,47 @@ pub async fn auth_middleware(
         associate_id: session.associate_id,
         device_id: session.device_id,
         store_id: session.store_id,
+        register_id: device.register_id,
     });
     next.run(req).await
+}
+
+async fn authenticate_api_token(
+    app: &AppState,
+    token: &str,
+    path: &str,
+) -> Result<AuthPrincipal, StatusCode> {
+    let mut validation = Validation::new(Algorithm::HS256);
+    validation.validate_aud = false;
+    validation.validate_exp = true;
+    let claims = decode::<crate::admin_api::ApiTokenClaims>(
+        token,
+        &DecodingKey::from_secret(app.auth.session_signing_secret.as_bytes()),
+        &validation,
+    )
+    .map_err(|_| StatusCode::UNAUTHORIZED)?
+    .claims;
+    let token_id = Uuid::parse_str(&claims.sub).map_err(|_| StatusCode::UNAUTHORIZED)?;
+    let Some(stored) = crate::admin_api::load_api_token(&app.pool, token_id).await else {
+        return Err(StatusCode::UNAUTHORIZED);
+    };
+    if stored.revoked {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    if let Some(required) = required_scope_for_path(path) {
+        if !token_scopes_allow(&stored.scopes, required) {
+            record_auth_metrics("api_token", "forbidden", Utc::now());
+            return Err(StatusCode::FORBIDDEN);
+        }
+    }
+    record_auth_metrics("api_token", "ok", Utc::now());
+    Ok(AuthPrincipal {
+        session_id: token_id,
+        associate_id: format!("api-token:{}", stored.name),
+        device_id: Uuid::nil(),
+        store_id: app.store_id,
+        register_id: Some(app.register_id),
+    })
 }
 
 pub async fn create_pairing_code(
@@ -272,6 +417,10 @@ pub async fn create_pairing_code(
     if !app.auth.enabled {
         record_auth_metrics("pairing_codes_create", "disabled", start);
         return Err(StatusCode::SERVICE_UNAVAILABLE);
+    }
+    if req.store_id != app.store_id {
+        record_auth_metrics("pairing_codes_create", "store_mismatch", start);
+        return Err(StatusCode::BAD_REQUEST);
     }
     let code: String = {
         let mut rng = rand::thread_rng();
@@ -318,12 +467,12 @@ pub async fn pair_device(
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let Some(pairing) = row else {
-        metrics::counter!(DEVICE_PAIRINGS_TOTAL, 1u64, "outcome" => "invalid_code");
+        metrics::counter!(DEVICE_PAIRINGS_TOTAL, "outcome" => "invalid_code").increment(1);
         record_auth_metrics("devices_pair", "invalid_code", start);
         return Err(StatusCode::BAD_REQUEST);
     };
-    if pairing.store_id != req.store_id {
-        metrics::counter!(DEVICE_PAIRINGS_TOTAL, 1u64, "outcome" => "store_mismatch");
+    if pairing.store_id != req.store_id || req.store_id != app.store_id {
+        metrics::counter!(DEVICE_PAIRINGS_TOTAL, "outcome" => "store_mismatch").increment(1);
         record_auth_metrics("devices_pair", "store_mismatch", start);
         return Err(StatusCode::BAD_REQUEST);
     }
@@ -332,16 +481,18 @@ pub async fn pair_device(
         || pairing.attempts >= pairing.max_attempts
     {
         let _ = increment_pairing_code_attempts(&app.pool, pairing.id).await;
-        metrics::counter!(DEVICE_PAIRINGS_TOTAL, 1u64, "outcome" => "expired_or_consumed");
+        metrics::counter!(DEVICE_PAIRINGS_TOTAL, "outcome" => "expired_or_consumed").increment(1);
         record_auth_metrics("devices_pair", "expired_or_consumed", start);
         return Err(StatusCode::BAD_REQUEST);
     }
     let device_id = Uuid::new_v4();
     let device_secret = format!("dev-{}-{}", Uuid::new_v4(), Uuid::new_v4());
+    let register_id = req.register_id.unwrap_or(app.register_id);
     create_trusted_device(
         &app.pool,
         device_id,
         req.store_id,
+        register_id,
         &req.device_name,
         req.platform.as_deref(),
         &hash_secret(&device_secret),
@@ -358,11 +509,12 @@ pub async fn pair_device(
         &serde_json::json!({"store_id": req.store_id, "device_name": req.device_name, "platform": req.platform}).to_string(),
     )
     .await;
-    metrics::counter!(DEVICE_PAIRINGS_TOTAL, 1u64, "outcome" => "ok");
+    metrics::counter!(DEVICE_PAIRINGS_TOTAL, "outcome" => "ok").increment(1);
     record_auth_metrics("devices_pair", "ok", start);
     Ok(Json(AuthDevicePairResponse {
         device_id,
         device_secret,
+        register_id,
     }))
 }
 
@@ -377,6 +529,10 @@ pub async fn exchange_session(
     }
     let external = verify_external_token(&app.auth, &req.external_token)?;
     let store_id = Uuid::parse_str(&external.store_id).map_err(|_| StatusCode::UNAUTHORIZED)?;
+    if store_id != app.store_id {
+        record_auth_metrics("sessions_exchange", "store_mismatch", start);
+        return Err(StatusCode::UNAUTHORIZED);
+    }
     let device = get_trusted_device(&app.pool, req.device_id)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
@@ -386,7 +542,7 @@ pub async fn exchange_session(
         || device.status != "active"
         || device.revoked_at.is_some()
     {
-        metrics::counter!(AUTH_SESSIONS_TOTAL, 1u64, "outcome" => "untrusted_device");
+        metrics::counter!(AUTH_SESSIONS_TOTAL, "outcome" => "untrusted_device").increment(1);
         record_auth_metrics("sessions_exchange", "untrusted_device", start);
         return Err(StatusCode::UNAUTHORIZED);
     }
@@ -428,7 +584,7 @@ pub async fn exchange_session(
         &serde_json::json!({"associate_id": external.sub, "device_id": req.device_id, "store_id": store_id}).to_string(),
     )
     .await;
-    metrics::counter!(AUTH_SESSIONS_TOTAL, 1u64, "outcome" => "issued");
+    metrics::counter!(AUTH_SESSIONS_TOTAL, "outcome" => "issued").increment(1);
     record_auth_metrics("sessions_exchange", "ok", start);
     Ok(Json(AuthSessionExchangeResponse {
         access_token,
@@ -465,7 +621,7 @@ pub async fn refresh_session(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::UNAUTHORIZED)?;
     if session.revoked_at.is_some() || session.refresh_exp < Utc::now() {
-        metrics::counter!(AUTH_SESSIONS_TOTAL, 1u64, "outcome" => "refresh_denied");
+        metrics::counter!(AUTH_SESSIONS_TOTAL, "outcome" => "refresh_denied").increment(1);
         record_auth_metrics("sessions_refresh", "refresh_denied", start);
         return Err(StatusCode::UNAUTHORIZED);
     }
@@ -494,7 +650,7 @@ pub async fn refresh_session(
         session.device_id,
         session.store_id,
     )?;
-    metrics::counter!(AUTH_SESSIONS_TOTAL, 1u64, "outcome" => "refreshed");
+    metrics::counter!(AUTH_SESSIONS_TOTAL, "outcome" => "refreshed").increment(1);
     record_auth_metrics("sessions_refresh", "ok", start);
     Ok(Json(AuthSessionExchangeResponse {
         access_token,
@@ -523,7 +679,39 @@ pub async fn revoke_session(
         &serde_json::json!({"associate_id": principal.associate_id, "device_id": principal.device_id}).to_string(),
     )
     .await;
-    metrics::counter!(AUTH_SESSIONS_TOTAL, 1u64, "outcome" => "revoked");
+    metrics::counter!(AUTH_SESSIONS_TOTAL, "outcome" => "revoked").increment(1);
     record_auth_metrics("sessions_revoke", "ok", start);
     Ok(Json(AuthSessionRevokeResponse { revoked: true }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn auth_is_on_when_the_env_flag_is_unset() {
+        assert!(parse_enabled_flag(None, true));
+        assert!(!parse_enabled_flag(Some("0"), true));
+        assert!(!parse_enabled_flag(Some("false"), true));
+        assert!(!parse_enabled_flag(Some("no"), true));
+        assert!(parse_enabled_flag(Some("1"), false));
+        assert!(parse_enabled_flag(Some("TRUE"), false));
+        assert!(parse_enabled_flag(Some("yes"), false));
+    }
+
+    #[test]
+    fn api_token_scopes_match_the_route_they_were_issued_for() {
+        assert_eq!(
+            required_scope_for_path("/catalog/products"),
+            Some("catalog")
+        );
+        assert_eq!(required_scope_for_path("/pos/command"), Some("pos"));
+        assert_eq!(required_scope_for_path("/admin/api-tokens"), Some("admin"));
+        assert_eq!(required_scope_for_path("/health"), None);
+        let catalog = vec!["catalog".to_string()];
+        assert!(token_scopes_allow(&catalog, "catalog"));
+        assert!(!token_scopes_allow(&catalog, "pos"));
+        assert!(token_scopes_allow(&["*".into()], "admin"));
+        assert!(token_scopes_allow(&["admin".into()], "pos"));
+    }
 }

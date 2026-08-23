@@ -15,12 +15,13 @@ pub async fn verify_audit_chain(
     match verify_chain(&state.pool).await {
         Ok(result) => {
             let outcome = if result.ok { OUTCOME_SUCCESS } else { "broken" };
-            metrics::counter!(AUDIT_CHAIN_VERIFICATIONS_TOTAL, 1u64, "outcome" => outcome);
-            metrics::gauge!(AUDIT_CHAIN_LENGTH, result.checked as f64);
+            metrics::counter!(AUDIT_CHAIN_VERIFICATIONS_TOTAL, "outcome" => outcome).increment(1);
+            metrics::gauge!(AUDIT_CHAIN_LENGTH).set(result.checked as f64);
             Ok(Json(result))
         }
         Err(_) => {
-            metrics::counter!(AUDIT_CHAIN_VERIFICATIONS_TOTAL, 1u64, "outcome" => OUTCOME_ERROR);
+            metrics::counter!(AUDIT_CHAIN_VERIFICATIONS_TOTAL, "outcome" => OUTCOME_ERROR)
+                .increment(1);
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }

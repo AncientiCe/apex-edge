@@ -24,6 +24,9 @@ jobs:
           set -euo pipefail
           docker run -d --name apex-edge-smoke -p 3000:3000 \
             -e APEX_EDGE_DB="sqlite:file:smoke_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}?mode=memory&cache=shared" \
+            -e APEX_EDGE_AUTH_ENABLED=false \
+            -e APEX_EDGE_STORE_ID="00000000-0000-0000-0000-000000000000" \
+            -e APEX_EDGE_REGISTER_ID="00000000-0000-0000-0000-000000000000" \
             apex-edge:ci
           trap "docker logs apex-edge-smoke || true; docker rm -f apex-edge-smoke >/dev/null 2>&1 || true" EXIT
 

@@ -1,6 +1,6 @@
 //! Integration tests for stock/availability enforcement and product availability in the catalog API.
 
-use apex_edge::build_router;
+use apex_edge::{build_router, HubConfig};
 use apex_edge_contracts::{
     AddLineItemPayload, ContractVersion, CreateCartPayload, InventoryLevel, PosCommand,
     PosRequestEnvelope,
@@ -27,11 +27,10 @@ async fn start_app() -> (u16, sqlx::SqlitePool) {
 
     let app = build_router(
         pool.clone(),
-        STORE_ID,
-        None,
-        vec![],
-        apex_edge_api::AuthSettings::default(),
-        apex_edge_api::FiscalSettings::default(),
+        HubConfig {
+            store_id: STORE_ID,
+            ..HubConfig::default()
+        },
     );
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let port = listener.local_addr().expect("local addr").port();

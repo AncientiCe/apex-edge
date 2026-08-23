@@ -73,8 +73,10 @@ pub async fn get_document(
             Err(axum::http::StatusCode::INTERNAL_SERVER_ERROR),
         ),
     };
-    metrics::counter!(DOCUMENT_OPERATIONS_TOTAL, 1u64, "operation" => op, "outcome" => outcome);
-    metrics::histogram!(DOCUMENT_OPERATION_DURATION_SECONDS, start.elapsed().as_secs_f64(), "operation" => op);
+    metrics::counter!(DOCUMENT_OPERATIONS_TOTAL, "operation" => op, "outcome" => outcome)
+        .increment(1);
+    metrics::histogram!(DOCUMENT_OPERATION_DURATION_SECONDS, "operation" => op)
+        .record(start.elapsed().as_secs_f64());
     response
 }
 
@@ -107,8 +109,10 @@ pub async fn list_order_documents(
             Err(axum::http::StatusCode::INTERNAL_SERVER_ERROR),
         ),
     };
-    metrics::counter!(DOCUMENT_OPERATIONS_TOTAL, 1u64, "operation" => op, "outcome" => outcome);
-    metrics::histogram!(DOCUMENT_OPERATION_DURATION_SECONDS, start.elapsed().as_secs_f64(), "operation" => op);
+    metrics::counter!(DOCUMENT_OPERATIONS_TOTAL, "operation" => op, "outcome" => outcome)
+        .increment(1);
+    metrics::histogram!(DOCUMENT_OPERATION_DURATION_SECONDS, "operation" => op)
+        .record(start.elapsed().as_secs_f64());
     response
 }
 

@@ -1,0 +1,21 @@
+# Golden Star Line Mode byte stream for the same QR code and Code 128 barcode
+# as codes_escpos.hex.
+#
+# Star takes the QR payload through four setup commands and an explicit print,
+# and terminates barcode data with RS rather than sending a length byte up front.
+
+1B 40                 # ESC @        initialise printer
+1B 1D 74 00           # ESC GS t 0   select the normal code page
+
+1B 1D 61 01           # ESC GS a 1   centre
+
+1B 1D 79 53 30 02     # ESC GS y S 0 2   QR model 2
+1B 1D 79 53 31 01     # ESC GS y S 1 1   error correction level M
+1B 1D 79 53 32 06     # ESC GS y S 2 6   cell size 6 dots
+1B 1D 79 44 31 00 1B 00   # ESC GS y D 1: store 27 data bytes (nL 0x1B, nH 0x00)
+"https://apex.example/r/1001"
+1B 1D 79 50           # ESC GS y P       print the stored symbol
+
+1B 62 06 02 02 3C     # ESC b: Code 128, text below, narrow width, 60 dots high
+"1001"
+1E                    # RS           end of barcode data

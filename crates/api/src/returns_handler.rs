@@ -10,6 +10,7 @@
 //!   generates a `return_receipt` document, and records an audit entry.
 //! - `VoidReturn` aborts before finalize.
 
+use apex_edge_adapters_payment::RefundRequest;
 use apex_edge_contracts::{
     build_return_submission_envelope, ContractVersion, FinalizeReturnPayload, HqRefund,
     HqReturnLine, HqReturnPayload, PosError, PosResponseEnvelope, RefundTenderPayload,
@@ -20,16 +21,17 @@ use apex_edge_metrics::{
     OUTCOME_ERROR, OUTCOME_SUCCESS, REFUND_TENDER_TOTAL, RETURNS_TOTAL, RETURN_DURATION_SECONDS,
 };
 use apex_edge_storage::{
-    apply_local_delta, fetch_approval, fetch_return, finalize_return_row, get_catalog_item_by_sku,
-    insert_outbox, insert_refund, insert_return, insert_return_line, list_refunds,
-    list_return_lines, record, update_return_totals, void_return_row, ApprovalState, NewReturn,
-    RefundRow, ReturnLineRow,
+    apply_local_delta, fetch_approval, fetch_order_ledger_entry, fetch_return, finalize_return_row,
+    get_catalog_item_by_sku, insert_outbox, insert_refund, insert_return, insert_return_line,
+    list_refunds, list_return_lines, record, update_return_totals, void_return_row, ApprovalState,
+    NewReturn, RefundRow, ReturnLineRow,
 };
 use chrono::Utc;
 use std::time::Instant;
 use uuid::Uuid;
 
 use crate::inventory_realtime::broadcast_stock_changed;
+use crate::payments::{provider_idempotency_key, ProviderChoice};
 use crate::stream::{stream_broadcast, StreamKind};
 use crate::AppState;
 
@@ -42,7 +44,7 @@ fn err(code: &str, message: impl Into<String>) -> Vec<PosError> {
 }
 
 fn fail(idempotency_key: Uuid, errors: Vec<PosError>) -> PosResponseEnvelope<serde_json::Value> {
-    metrics::counter!(RETURNS_TOTAL, 1u64, "outcome" => "rejected");
+    metrics::counter!(RETURNS_TOTAL, "outcome" => "rejected").increment(1);
     PosResponseEnvelope {
         version: ContractVersion::V1_0_0,
         success: false,
@@ -175,8 +177,8 @@ pub async fn start_return(
         serde_json::to_value(&snapshot).unwrap_or_default(),
     )
     .await;
-    metrics::counter!(RETURNS_TOTAL, 1u64, "outcome" => "started");
-    metrics::histogram!(RETURN_DURATION_SECONDS, started.elapsed().as_secs_f64());
+    metrics::counter!(RETURNS_TOTAL, "outcome" => "started").increment(1);
+    metrics::histogram!(RETURN_DURATION_SECONDS).record(started.elapsed().as_secs_f64());
     PosResponseEnvelope {
         version: ContractVersion::V1_0_0,
         success: true,
@@ -251,14 +253,101 @@ pub async fn return_line_item(
         serde_json::to_value(&snapshot).unwrap_or_default(),
     )
     .await;
-    metrics::counter!(RETURNS_TOTAL, 1u64, "outcome" => "line_added");
-    metrics::histogram!(RETURN_DURATION_SECONDS, started.elapsed().as_secs_f64());
+    metrics::counter!(RETURNS_TOTAL, "outcome" => "line_added").increment(1);
+    metrics::histogram!(RETURN_DURATION_SECONDS).record(started.elapsed().as_secs_f64());
     PosResponseEnvelope {
         version: ContractVersion::V1_0_0,
         success: true,
         idempotency_key,
         payload: Some(serde_json::to_value(&snapshot).unwrap_or_default()),
         errors: vec![],
+    }
+}
+
+struct RefundFailure {
+    code: &'static str,
+    message: String,
+}
+
+/// Return funds to the original payment instrument, when the tender type names a
+/// configured payment provider.
+///
+/// Returns the provider refund id so it can be stored as the refund's external
+/// reference. `None` means the store hands the money back itself (cash out of the
+/// drawer, a gift card top-up), which needs no provider call.
+async fn refund_through_provider(
+    app: &AppState,
+    original_order_id: Option<Uuid>,
+    tender_type: &str,
+    amount_cents: u64,
+    envelope_key: Uuid,
+    refund_id: Uuid,
+) -> Result<Option<String>, RefundFailure> {
+    let provider = match app.payments.resolve(Some(tender_type)) {
+        // A tender type that is not a payment provider is settled by the store itself.
+        ProviderChoice::ManualTender | ProviderChoice::Unknown(_) => return Ok(None),
+        ProviderChoice::Provider(provider) => provider,
+    };
+    // Cash is a provider for symmetry, but the drawer is the source of truth and there
+    // is no remote balance to move.
+    if provider.provider_code() == "cash" {
+        return Ok(None);
+    }
+
+    let Some(order_id) = original_order_id else {
+        return Err(RefundFailure {
+            code: "REFUND_ORIGINAL_ORDER_REQUIRED",
+            message: format!(
+                "Refunding to {tender_type} needs the original order so the payment can be found"
+            ),
+        });
+    };
+
+    let order = fetch_order_ledger_entry(&app.pool, order_id)
+        .await
+        .map_err(|e| RefundFailure {
+            code: "REFUND_ORDER_LOOKUP_FAILED",
+            message: e.to_string(),
+        })?
+        .ok_or_else(|| RefundFailure {
+            code: "REFUND_ORIGINAL_ORDER_NOT_FOUND",
+            message: format!("Original order {order_id} is not on this hub"),
+        })?;
+
+    let provider_payment_id = order
+        .payments
+        .iter()
+        .filter(|payment| payment.provider.as_deref() == Some(provider.provider_code()))
+        .find_map(|payment| payment.provider_payment_id.clone())
+        .ok_or_else(|| RefundFailure {
+            code: "REFUND_PROVIDER_PAYMENT_NOT_FOUND",
+            message: format!(
+                "Order {order_id} has no {} payment to refund against",
+                provider.provider_code()
+            ),
+        })?;
+
+    let outcome = provider
+        .refund(RefundRequest {
+            idempotency_key: provider_idempotency_key(envelope_key, refund_id, "refund"),
+            provider_payment_id,
+            amount_cents,
+            reason: Some("customer return".into()),
+        })
+        .await;
+
+    match outcome {
+        Ok(refund) => {
+            metrics::counter!(apex_edge_metrics::PAYMENT_REFUNDS_TOTAL, "provider" => provider.provider_code(), "outcome" => OUTCOME_SUCCESS).increment(1);
+            Ok(Some(refund.provider_refund_id))
+        }
+        Err(e) => {
+            metrics::counter!(apex_edge_metrics::PAYMENT_REFUNDS_TOTAL, "provider" => provider.provider_code(), "outcome" => OUTCOME_ERROR).increment(1);
+            Err(RefundFailure {
+                code: "REFUND_PROVIDER_FAILED",
+                message: e.to_string(),
+            })
+        }
     }
 }
 
@@ -279,20 +368,36 @@ pub async fn refund_tender(
         amount_cents: payload.amount_cents,
     };
     if let Err(e) = snapshot.apply_refund(refund.clone()) {
-        metrics::counter!(
-            REFUND_TENDER_TOTAL,
-            1u64,
-            "tender_type" => payload.tender_type.clone(),
-            "outcome" => "rejected"
-        );
+        metrics::counter!(REFUND_TENDER_TOTAL, "tender_type" => payload.tender_type.clone(), "outcome" => "rejected").increment(1);
         return fail(idempotency_key, err("REFUND_REJECTED", e.to_string()));
     }
+
+    // Give the money back through the same provider that took it, before recording the
+    // refund locally. Recording a card refund that the acquirer never processed would
+    // leave the store's books claiming money it still holds.
+    let provider_reference = match refund_through_provider(
+        app,
+        snapshot.original_order_id,
+        &payload.tender_type,
+        payload.amount_cents,
+        idempotency_key,
+        refund.refund_id,
+    )
+    .await
+    {
+        Ok(reference) => reference,
+        Err(failure) => {
+            metrics::counter!(REFUND_TENDER_TOTAL, "tender_type" => payload.tender_type.clone(), "outcome" => "rejected").increment(1);
+            return fail(idempotency_key, err(failure.code, failure.message));
+        }
+    };
+
     let row = RefundRow {
         id: refund.refund_id,
         return_id: payload.return_id,
         tender_type: refund.tender_type.clone(),
         amount_cents: refund.amount_cents,
-        external_reference: payload.external_reference.clone(),
+        external_reference: provider_reference.or_else(|| payload.external_reference.clone()),
     };
     if let Err(e) = insert_refund(&app.pool, &row).await {
         return fail(idempotency_key, err("REFUND_INSERT_FAILED", e.to_string()));
@@ -309,12 +414,7 @@ pub async fn refund_tender(
     {
         return fail(idempotency_key, err("RETURN_UPDATE_FAILED", e.to_string()));
     }
-    metrics::counter!(
-        REFUND_TENDER_TOTAL,
-        1u64,
-        "tender_type" => payload.tender_type.clone(),
-        "outcome" => OUTCOME_SUCCESS
-    );
+    metrics::counter!(REFUND_TENDER_TOTAL, "tender_type" => payload.tender_type.clone(), "outcome" => OUTCOME_SUCCESS).increment(1);
     stream_broadcast(
         app,
         store_id,
@@ -322,7 +422,7 @@ pub async fn refund_tender(
         serde_json::to_value(&snapshot).unwrap_or_default(),
     )
     .await;
-    metrics::histogram!(RETURN_DURATION_SECONDS, started.elapsed().as_secs_f64());
+    metrics::histogram!(RETURN_DURATION_SECONDS).record(started.elapsed().as_secs_f64());
     PosResponseEnvelope {
         version: ContractVersion::V1_0_0,
         success: true,
@@ -347,6 +447,35 @@ pub async fn finalize_return(
     if let Err(e) = snapshot.finalize() {
         return fail(idempotency_key, err("RETURN_NOT_READY", e.to_string()));
     }
+
+    let fiscal_transaction =
+        crate::fiscal::refund_transaction(&app.pool, &snapshot, &app.fiscal.currency).await;
+    match crate::fiscal::sign_or_queue(app, "return", snapshot.id, &fiscal_transaction).await {
+        Ok(outcome) => {
+            let fields =
+                crate::fiscal::fields_from_outcome(app.fiscal.provider.provider_code(), outcome);
+            let update = apex_edge_storage::FiscalReceiptUpdate {
+                provider: fields
+                    .provider
+                    .unwrap_or_else(|| app.fiscal.provider.provider_code().into()),
+                fiscal_id: fields.fiscal_id,
+                signature: fields.signature,
+                qr_payload: fields.qr_payload,
+                signed_at: fields.signed_at,
+                pending: fields.pending,
+            };
+            if let Err(e) =
+                apex_edge_storage::apply_return_fiscal_receipt(&app.pool, snapshot.id, &update)
+                    .await
+            {
+                return fail(idempotency_key, err("FISCAL_SIGNING_FAILED", e.to_string()));
+            }
+        }
+        Err(e) => {
+            return fail(idempotency_key, err("FISCAL_SIGNING_FAILED", e.to_string()));
+        }
+    }
+
     if let Err(e) = finalize_return_row(&app.pool, payload.return_id).await {
         return fail(
             idempotency_key,
@@ -421,8 +550,8 @@ pub async fn finalize_return(
         serde_json::to_value(&snapshot).unwrap_or_default(),
     )
     .await;
-    metrics::counter!(RETURNS_TOTAL, 1u64, "outcome" => OUTCOME_SUCCESS);
-    metrics::histogram!(RETURN_DURATION_SECONDS, started.elapsed().as_secs_f64());
+    metrics::counter!(RETURNS_TOTAL, "outcome" => OUTCOME_SUCCESS).increment(1);
+    metrics::histogram!(RETURN_DURATION_SECONDS).record(started.elapsed().as_secs_f64());
     PosResponseEnvelope {
         version: ContractVersion::V1_0_0,
         success: true,
@@ -446,7 +575,7 @@ pub async fn void_return(
         return fail(idempotency_key, err("RETURN_VOID_REJECTED", e.to_string()));
     }
     if let Err(e) = void_return_row(&app.pool, payload.return_id).await {
-        metrics::counter!(RETURNS_TOTAL, 1u64, "outcome" => OUTCOME_ERROR);
+        metrics::counter!(RETURNS_TOTAL, "outcome" => OUTCOME_ERROR).increment(1);
         return fail(idempotency_key, err("RETURN_VOID_FAILED", e.to_string()));
     }
     let _ = record(
@@ -456,7 +585,7 @@ pub async fn void_return(
         &serde_json::to_string(&payload).unwrap_or_default(),
     )
     .await;
-    metrics::counter!(RETURNS_TOTAL, 1u64, "outcome" => "voided");
+    metrics::counter!(RETURNS_TOTAL, "outcome" => "voided").increment(1);
     stream_broadcast(
         app,
         store_id,

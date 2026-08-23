@@ -1,0 +1,24 @@
+# Golden ESC/POS byte stream for the sample receipt in encoder_golden_tests.rs.
+#
+# Format: hex bytes, "quoted ASCII", NN*count for runs, # to end of line for comments.
+# Every command here is from the Epson ESC/POS command reference; if a byte changes,
+# a real printer's behaviour changes, so this file is reviewed as carefully as code.
+
+1B 40                 # ESC @        initialise printer
+1B 74 00              # ESC t 0      select code page 437
+
+1B 61 01              # ESC a 1      centre
+1B 45 01              # ESC E 1      emphasis on
+1D 21 11              # GS ! 0x11    double height and double width
+"APEX STORE" 0A
+1B 45 00              # ESC E 0      emphasis off
+1D 21 00              # GS ! 0       back to normal size
+"Order 1001" 0A
+
+1B 61 00              # ESC a 0      left
+2D*32 0A              # divider across the full 32-column paper
+"Coffee" 20*22 "3.50" 0A
+"TOTAL" 20*23 "3.50" 0A
+
+1B 64 02              # ESC d 2      feed two lines
+1D 56 42 00           # GS V B 0     feed to cut position, partial cut

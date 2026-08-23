@@ -1,11 +1,10 @@
 //! CORS: browser origin can preflight and send requests to POS/document endpoints.
 //! Also validates configurable origin restriction for the internal-alpha security baseline.
 
-use apex_edge::build_router;
+use apex_edge::{build_router, HubConfig};
 use apex_edge_storage::{create_sqlite_pool, run_migrations};
 use axum::http::{HeaderValue, Method, StatusCode};
 use tokio::net::TcpListener;
-use uuid::Uuid;
 
 const FRONTEND_ORIGIN: &str = "http://localhost:5173";
 
@@ -18,11 +17,10 @@ async fn start_app_with_origins(allowed_origins: Vec<HeaderValue>) -> u16 {
     run_migrations(&pool).await.expect("migrations");
     let app = build_router(
         pool,
-        Uuid::nil(),
-        None,
-        allowed_origins,
-        apex_edge_api::AuthSettings::default(),
-        apex_edge_api::FiscalSettings::default(),
+        HubConfig {
+            allowed_origins,
+            ..HubConfig::default()
+        },
     );
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let port = listener.local_addr().expect("local addr").port();

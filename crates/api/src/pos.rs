@@ -7,7 +7,7 @@ use apex_edge_metrics::{
     OUTCOME_SUCCESS, OUTCOME_UNSUPPORTED_VERSION, POS_COMMANDS_TOTAL, POS_COMMAND_DURATION_SECONDS,
 };
 use axum::{
-    extract::{Path, State},
+    extract::{Extension, Path, State},
     Json,
 };
 use std::time::Instant;
@@ -55,11 +55,13 @@ fn pos_operation_label(cmd: &PosCommand) -> &'static str {
         PosCommand::RedeemGiftCard(_) => "redeem_gift_card",
         PosCommand::EarnLoyaltyPoints(_) => "earn_loyalty_points",
         PosCommand::RedeemLoyaltyPoints(_) => "redeem_loyalty_points",
+        PosCommand::PrintDocument(_) => "print_document",
     }
 }
 
 pub async fn handle_pos_command(
     State(app): State<AppState>,
+    principal: Option<Extension<crate::auth::AuthPrincipal>>,
     Json(envelope): Json<PosRequestEnvelope<PosCommand>>,
 ) -> Json<PosResponseEnvelope<serde_json::Value>> {
     let operation = pos_operation_label(&envelope.payload);
@@ -72,13 +74,48 @@ pub async fn handle_pos_command(
     );
     let guard = span.enter();
 
+    if envelope.store_id != app.store_id {
+        metrics::counter!(POS_COMMANDS_TOTAL, "operation" => operation, "outcome" => "error")
+            .increment(1);
+        metrics::histogram!(POS_COMMAND_DURATION_SECONDS, "operation" => operation)
+            .record(start.elapsed().as_secs_f64());
+        drop(guard);
+        return Json(PosResponseEnvelope {
+            version: ContractVersion::V1_0_0,
+            success: false,
+            idempotency_key: envelope.idempotency_key,
+            payload: None,
+            errors: vec![PosError {
+                code: "STORE_MISMATCH".into(),
+                message: "store_id does not match this hub".into(),
+                field: Some("store_id".into()),
+            }],
+        });
+    }
+    if let Some(Extension(principal)) = principal.as_ref() {
+        if let Some(bound) = principal.register_id {
+            if bound != envelope.register_id {
+                metrics::counter!(POS_COMMANDS_TOTAL, "operation" => operation, "outcome" => "error").increment(1);
+                metrics::histogram!(POS_COMMAND_DURATION_SECONDS, "operation" => operation)
+                    .record(start.elapsed().as_secs_f64());
+                drop(guard);
+                return Json(PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key: envelope.idempotency_key,
+                    payload: None,
+                    errors: vec![PosError {
+                        code: "REGISTER_MISMATCH".into(),
+                        message: "register_id does not match the paired device".into(),
+                        field: Some("register_id".into()),
+                    }],
+                });
+            }
+        }
+    }
+
     let response = if envelope.version != ContractVersion::V1_0_0 {
-        metrics::counter!(
-            POS_COMMANDS_TOTAL,
-            1u64,
-            "operation" => operation,
-            "outcome" => OUTCOME_UNSUPPORTED_VERSION
-        );
+        metrics::counter!(POS_COMMANDS_TOTAL, "operation" => operation, "outcome" => OUTCOME_UNSUPPORTED_VERSION).increment(1);
         Json(PosResponseEnvelope {
             version: ContractVersion::V1_0_0,
             success: false,
@@ -97,17 +134,9 @@ pub async fn handle_pos_command(
             if let Ok(replayed) =
                 serde_json::from_str::<PosResponseEnvelope<serde_json::Value>>(&stored_response)
             {
-                metrics::counter!(
-                    POS_COMMANDS_TOTAL,
-                    1u64,
-                    "operation" => operation,
-                    "outcome" => OUTCOME_SUCCESS
-                );
-                metrics::histogram!(
-                    POS_COMMAND_DURATION_SECONDS,
-                    start.elapsed().as_secs_f64(),
-                    "operation" => operation
-                );
+                metrics::counter!(POS_COMMANDS_TOTAL, "operation" => operation, "outcome" => OUTCOME_SUCCESS).increment(1);
+                metrics::histogram!(POS_COMMAND_DURATION_SECONDS, "operation" => operation)
+                    .record(start.elapsed().as_secs_f64());
                 drop(guard);
                 return Json(replayed);
             }
@@ -123,20 +152,12 @@ pub async fn handle_pos_command(
                 .await;
             }
         }
-        metrics::counter!(
-            POS_COMMANDS_TOTAL,
-            1u64,
-            "operation" => operation,
-            "outcome" => if response.success { OUTCOME_SUCCESS } else { "error" }
-        );
+        metrics::counter!(POS_COMMANDS_TOTAL, "operation" => operation, "outcome" => if response.success { OUTCOME_SUCCESS } else { "error" }).increment(1);
         Json(response)
     };
 
-    metrics::histogram!(
-        POS_COMMAND_DURATION_SECONDS,
-        start.elapsed().as_secs_f64(),
-        "operation" => operation
-    );
+    metrics::histogram!(POS_COMMAND_DURATION_SECONDS, "operation" => operation)
+        .record(start.elapsed().as_secs_f64());
     drop(guard);
     response
 }
@@ -164,6 +185,8 @@ pub async fn get_cart_state_handler(
 #[derive(Clone)]
 pub struct AppState {
     pub store_id: Uuid,
+    /// Default register this hub presents on `/ready` and binds unpaired devices to.
+    pub register_id: Uuid,
     pub pool: sqlx::SqlitePool,
     /// When present, GET /metrics returns Prometheus scrape output.
     pub metrics_handle: Option<apex_edge_metrics::PrometheusHandle>,
@@ -174,4 +197,33 @@ pub struct AppState {
     pub role: crate::role::HubRole,
     /// Fiscal provider called during order finalize (NoOp by default; DE-TSE etc. opt-in).
     pub fiscal: crate::fiscal::FiscalSettings,
+    /// Payment providers callable from POS tender commands (cash only by default).
+    pub payments: crate::payments::PaymentSettings,
+    /// Receipt printer and cash drawer attached to this hub (none by default).
+    pub hardware: crate::hardware::HardwareSettings,
+    pub rate_limiter: crate::rate_limit::RateLimiter,
+}
+
+impl AppState {
+    /// State with default adapter settings for the given pool and store.
+    ///
+    /// Callers override only what they care about:
+    /// `AppState { fiscal, ..AppState::new(pool, store_id) }`.
+    pub fn new(pool: sqlx::SqlitePool, store_id: Uuid) -> Self {
+        Self {
+            store_id,
+            register_id: Uuid::nil(),
+            pool,
+            metrics_handle: None,
+            auth: crate::auth::AuthSettings::default(),
+            stream: crate::stream::StreamHub::new(),
+            role: crate::role::HubRole::Primary,
+            fiscal: crate::fiscal::FiscalSettings::default(),
+            payments: crate::payments::PaymentSettings::default(),
+            hardware: crate::hardware::HardwareSettings::default(),
+            rate_limiter: crate::rate_limit::RateLimiter::new(
+                crate::rate_limit::RateLimitSettings::default(),
+            ),
+        }
+    }
 }

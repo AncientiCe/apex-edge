@@ -91,31 +91,15 @@ async fn run_iteration(client: &reqwest::Client, base: &str) {
                 "transport_error"
             }
         };
-        metrics::counter!(
-            "apex_edge_synthetic_journey_total",
-            1u64,
-            "step" => *label,
-            "outcome" => outcome,
-        );
-        metrics::histogram!(
-            "apex_edge_synthetic_journey_duration_seconds",
-            step_start.elapsed().as_secs_f64(),
-            "step" => *label,
-        );
+        metrics::counter!("apex_edge_synthetic_journey_total", "step" => *label, "outcome" => outcome).increment(1);
+        metrics::histogram!("apex_edge_synthetic_journey_duration_seconds", "step" => *label)
+            .record(step_start.elapsed().as_secs_f64());
     }
     // End-to-end journey result: single counter the SLO burns against.
     let journey_outcome = if all_ok { "success" } else { "failure" };
-    metrics::counter!(
-        "apex_edge_synthetic_journey_total",
-        1u64,
-        "step" => "end_to_end",
-        "outcome" => journey_outcome,
-    );
-    metrics::histogram!(
-        "apex_edge_synthetic_journey_duration_seconds",
-        total_start.elapsed().as_secs_f64(),
-        "step" => "end_to_end",
-    );
+    metrics::counter!("apex_edge_synthetic_journey_total", "step" => "end_to_end", "outcome" => journey_outcome).increment(1);
+    metrics::histogram!("apex_edge_synthetic_journey_duration_seconds", "step" => "end_to_end")
+        .record(total_start.elapsed().as_secs_f64());
     tracing::info!(
         outcome = journey_outcome,
         elapsed_ms = total_start.elapsed().as_millis() as u64,

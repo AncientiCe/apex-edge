@@ -21,4 +21,5 @@ members = [
     "tools/fake-hq",
     "tools/synthetic-journey",
     "tools/conformance",
+    "tools/virtual-printer",
 ]

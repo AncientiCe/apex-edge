@@ -40,7 +40,7 @@ fn err(code: &str, message: impl Into<String>) -> Vec<PosError> {
 }
 
 fn fail(idempotency_key: Uuid, errors: Vec<PosError>) -> PosResponseEnvelope<serde_json::Value> {
-    metrics::counter!(SHIFTS_TOTAL, 1u64, "outcome" => "rejected");
+    metrics::counter!(SHIFTS_TOTAL, "outcome" => "rejected").increment(1);
     PosResponseEnvelope {
         version: ContractVersion::V1_0_0,
         success: false,
@@ -94,7 +94,7 @@ pub async fn open_till(
         &serde_json::to_string(&payload).unwrap_or_default(),
     )
     .await;
-    metrics::counter!(SHIFTS_TOTAL, 1u64, "outcome" => "opened");
+    metrics::counter!(SHIFTS_TOTAL, "outcome" => "opened").increment(1);
     let payload_json = serde_json::json!({
         "shift_id": id,
         "register_id": reg,
@@ -132,12 +132,7 @@ async fn record_cash_movement(
         match approval_id {
             Some(id) if approval_granted(app, id).await => {}
             _ => {
-                metrics::counter!(
-                    CASH_MOVEMENTS_TOTAL,
-                    1u64,
-                    "kind" => kind.as_str(),
-                    "outcome" => "approval_required"
-                );
+                metrics::counter!(CASH_MOVEMENTS_TOTAL, "kind" => kind.as_str(), "outcome" => "approval_required").increment(1);
                 return fail(
                     idempotency_key,
                     err(
@@ -163,12 +158,7 @@ async fn record_cash_movement(
     )
     .await
     {
-        metrics::counter!(
-            CASH_MOVEMENTS_TOTAL,
-            1u64,
-            "kind" => kind.as_str(),
-            "outcome" => OUTCOME_ERROR
-        );
+        metrics::counter!(CASH_MOVEMENTS_TOTAL, "kind" => kind.as_str(), "outcome" => OUTCOME_ERROR).increment(1);
         return fail(idempotency_key, err("CASH_MOVEMENT_FAILED", e.to_string()));
     }
     let _ = record(
@@ -184,12 +174,8 @@ async fn record_cash_movement(
         .to_string(),
     )
     .await;
-    metrics::counter!(
-        CASH_MOVEMENTS_TOTAL,
-        1u64,
-        "kind" => kind.as_str(),
-        "outcome" => OUTCOME_SUCCESS
-    );
+    metrics::counter!(CASH_MOVEMENTS_TOTAL, "kind" => kind.as_str(), "outcome" => OUTCOME_SUCCESS)
+        .increment(1);
     let payload_json = serde_json::json!({
         "shift_id": shift_id,
         "movement_id": movement_id,
@@ -313,7 +299,7 @@ pub async fn cash_count(
     let (_movements, expected, cash_sales, cash_refunds) =
         movements_and_expected(app, shift.id, shift.opening_float_cents).await;
     let variance = variance_cents(payload.counted_cents as i64, expected);
-    metrics::histogram!(SHIFT_VARIANCE_CENTS, variance.unsigned_abs() as f64);
+    metrics::histogram!(SHIFT_VARIANCE_CENTS).record(variance.unsigned_abs() as f64);
     let response = serde_json::json!({
         "shift_id": shift.id,
         "counted_cents": payload.counted_cents,
@@ -398,7 +384,7 @@ pub async fn close_till(
         match payload.approval_id {
             Some(id) if approval_granted(app, id).await => {}
             _ => {
-                metrics::histogram!(SHIFT_VARIANCE_CENTS, variance.unsigned_abs() as f64);
+                metrics::histogram!(SHIFT_VARIANCE_CENTS).record(variance.unsigned_abs() as f64);
                 return fail(
                     idempotency_key,
                     err(
@@ -454,9 +440,17 @@ pub async fn close_till(
     }
     let _ = record(&app.pool, "shift_closed", Some(shift.id), &envelope_json).await;
 
-    metrics::counter!(SHIFTS_TOTAL, 1u64, "outcome" => "closed");
-    metrics::histogram!(SHIFT_VARIANCE_CENTS, variance.unsigned_abs() as f64);
-    let response = serde_json::json!({
+    let dsfinvk_document_id = crate::fiscal::persist_cash_point_closing(
+        app,
+        &shift,
+        payload.counted_cents as i64,
+        expected,
+    )
+    .await;
+
+    metrics::counter!(SHIFTS_TOTAL, "outcome" => "closed").increment(1);
+    metrics::histogram!(SHIFT_VARIANCE_CENTS).record(variance.unsigned_abs() as f64);
+    let mut response = serde_json::json!({
         "shift_id": shift.id,
         "expected_cents": expected,
         "cash_sales_cents": cash_sales,
@@ -466,6 +460,9 @@ pub async fn close_till(
         "state": "closed",
         "report_type": "z_report",
     });
+    if let Some(doc_id) = dsfinvk_document_id {
+        response["dsfinvk_document_id"] = serde_json::json!(doc_id);
+    }
     stream_broadcast(app, store_id, StreamKind::ShiftUpdated, response.clone()).await;
     PosResponseEnvelope {
         version: ContractVersion::V1_0_0,

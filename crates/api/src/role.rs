@@ -38,12 +38,12 @@ impl HubRole {
 
 /// Emit the `apex_edge_role{role=...}` gauge.
 pub fn report_role(role: HubRole) {
-    metrics::gauge!(ROLE_GAUGE, 1.0, "role" => role.as_str());
+    metrics::gauge!(ROLE_GAUGE, "role" => role.as_str()).set(1.0);
     let other = match role {
         HubRole::Primary => "standby",
         HubRole::Standby => "primary",
     };
-    metrics::gauge!(ROLE_GAUGE, 0.0, "role" => other);
+    metrics::gauge!(ROLE_GAUGE, "role" => other).set(0.0);
 }
 
 fn is_write_method(method: &Method) -> bool {

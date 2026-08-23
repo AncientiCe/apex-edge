@@ -23,12 +23,16 @@ pub struct AuthDevicePairRequest {
     pub store_id: Uuid,
     pub device_name: String,
     pub platform: Option<String>,
+    #[serde(default)]
+    pub register_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthDevicePairResponse {
     pub device_id: Uuid,
     pub device_secret: String,
+    #[serde(default)]
+    pub register_id: Uuid,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

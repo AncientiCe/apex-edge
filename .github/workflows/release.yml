@@ -1,0 +1,121 @@
+# Cross-platform release artifacts: Linux .deb/.rpm, Windows .msi, checksums, GitHub Release.
+# Triggered by pushing a version tag (v1.2.3) or manually via workflow_dispatch.
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linux:
+    name: Linux (.deb, .rpm)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --release -p apex-edge
+
+      - name: Install cargo-deb and cargo-generate-rpm
+        run: cargo install cargo-deb cargo-generate-rpm
+
+      - name: Build .deb package
+        run: cargo deb -p apex-edge --no-build
+
+      - name: Build .rpm package
+        run: cargo generate-rpm -p apex-edge
+
+      - name: Collect and checksum Linux artifacts
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp target/debian/*.deb dist/
+          find target -iname "*.rpm" -exec cp {} dist/ \;
+          cd dist
+          sha256sum * > SHA256SUMS-linux.txt
+          ls -la
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: apex-edge-linux
+          path: dist/
+
+  windows:
+    name: Windows (.msi)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-wix
+        run: cargo install cargo-wix
+
+      - name: Scaffold WiX template (first release only)
+        shell: bash
+        run: |
+          if [ ! -f apex-edge/wix/main.wxs ]; then
+            cargo wix init -p apex-edge
+          fi
+
+      - name: Build .msi package
+        run: cargo wix -p apex-edge --nocapture
+
+      - name: Collect and checksum Windows artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          find target/wix -iname "*.msi" -exec cp {} dist/ \;
+          cd dist
+          sha256sum * > SHA256SUMS-windows.txt
+          ls -la
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: apex-edge-windows
+          path: dist/
+
+  release:
+    name: Publish GitHub Release
+    needs: [linux, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Flatten artifacts
+        run: |
+          mkdir -p release
+          find artifacts -type f \( -iname "*.deb" -o -iname "*.rpm" -o -iname "*.msi" -o -iname "SHA256SUMS-*" \) \
+            -exec cp {} release/ \;
+          ls -la release
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+          generate_release_notes: true

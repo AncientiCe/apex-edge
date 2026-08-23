@@ -34,7 +34,7 @@ fn spec() -> serde_json::Value {
             "/pos/command": {
                 "post": {
                     "summary": "POS command",
-                    "description": "Idempotent cart/checkout/return/shift/gift-card/loyalty commands (tagged union on `action`; see contracts crate for payload shapes). Gift card commands (`issue_gift_card`, `activate_gift_card`, `reload_gift_card`, `redeem_gift_card`) return a GiftCardInfo payload, and loyalty's `earn_loyalty_points` returns a LoyaltyAccountInfo payload, except `redeem_gift_card`/`redeem_loyalty_points` which return the updated CartState after applying the tender. FinalizeOrder also auto-earns loyalty points for carts with an attached customer.",
+                    "description": "Idempotent cart/checkout/return/shift/gift-card/loyalty commands (tagged union on `action`; see contracts crate for payload shapes). Gift card commands (`issue_gift_card`, `activate_gift_card`, `reload_gift_card`, `redeem_gift_card`) return a GiftCardInfo payload, and loyalty's `earn_loyalty_points` returns a LoyaltyAccountInfo payload, except `redeem_gift_card`/`redeem_loyalty_points` which return the updated CartState after applying the tender. FinalizeOrder also auto-earns loyalty points for carts with an attached customer. `print_document` prints a previously generated document on a printer attached to the hub, and is refused when none is configured.",
                     "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object" } } } },
                     "responses": { "200": { "description": "PosResponseEnvelope" } }
                 }
@@ -58,6 +58,9 @@ fn spec() -> serde_json::Value {
             "/admin/api-tokens": { "post": { "summary": "Create scoped third-party API token", "responses": { "200": { "description": "CreateApiTokenResponse" } } } },
             "/admin/customers/{id}/export": { "get": { "summary": "Export customer data for privacy requests", "responses": { "200": { "description": "Customer data export" }, "404": { "description": "Not found" } } } },
             "/admin/customers/{id}/erase": { "post": { "summary": "Pseudonymize customer data for privacy requests", "responses": { "200": { "description": "Customer erased" }, "404": { "description": "Not found" } } } },
+            "/admin/outbox/destinations": { "get": { "summary": "Outbox destinations and how far behind each one is", "description": "Every enabled destination with its pending and dead-letter delivery counts. Queue depth per destination is what shows an integration has stopped accepting.", "responses": { "200": { "description": "DestinationSummary[]" } } } },
+            "/admin/outbox/dead-letters": { "get": { "summary": "Deliveries a destination gave up on", "description": "Per-destination deliveries that exhausted their attempts, with the last error. These need an operator: they are never retried automatically.", "responses": { "200": { "description": "DeadLetterEntry[]" } } } },
+            "/admin/outbox/dead-letters/{attempt_id}/retry": { "post": { "summary": "Requeue a dead-lettered delivery", "description": "Queues the delivery again from the start of its backoff, once the cause has been fixed. Reports requeued=false when the delivery was not dead-lettered.", "parameters": [ { "name": "attempt_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ], "responses": { "200": { "description": "RetryOutcome" } } } },
             "/webhooks/{connector_id}": { "post": { "summary": "Receive connector webhook", "parameters": [ { "name": "connector_id", "in": "path", "required": true, "schema": { "type": "string" } } ], "responses": { "200": { "description": "Webhook accepted" } } } },
             "/approvals": { "post": { "summary": "Request supervisor approval", "responses": { "202": { "description": "Pending approval created" } } } },
             "/approvals/{id}": { "get": { "summary": "Poll approval state", "responses": { "200": { "description": "ApprovalResponse" }, "404": { "description": "Not found" } } } },
@@ -183,6 +186,18 @@ mod tests {
         assert!(v["paths"]["/admin/customers/{id}/export"]["get"].is_object());
         assert!(v["paths"]["/admin/customers/{id}/erase"]["post"].is_object());
         assert!(v["paths"]["/webhooks/{connector_id}"]["post"].is_object());
+        assert!(v["paths"]["/admin/outbox/destinations"]["get"].is_object());
+        assert!(v["paths"]["/admin/outbox/dead-letters"]["get"].is_object());
+        assert!(
+            v["paths"]["/admin/outbox/dead-letters/{attempt_id}/retry"]["post"].is_object(),
+            "a dead-letter queue an operator cannot drain is the same as dropping the data"
+        );
+        assert!(v["paths"]["/admin/outbox/destinations"]["get"].is_object());
+        assert!(v["paths"]["/admin/outbox/dead-letters"]["get"].is_object());
+        assert!(
+            v["paths"]["/admin/outbox/dead-letters/{attempt_id}/retry"]["post"].is_object(),
+            "a dead-letter queue an operator cannot drain is the same as dropping the data"
+        );
         assert!(v["paths"]["/docs"]["get"].is_object());
         assert!(v["components"]["schemas"]["GiftCardInfo"].is_object());
         assert!(v["components"]["schemas"]["LoyaltyAccountInfo"].is_object());

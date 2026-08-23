@@ -69,19 +69,24 @@ sequenceDiagram
     opt APEX_EDGE_HQ_SUBMIT_URL set
         Main->>Outbox: tokio::spawn run_dispatcher_loop (30s interval)
     end
+    Main->>Storage: resolve_hub_identity(pool, env_store, env_register)
     Main->>Main: parse APEX_EDGE_ALLOWED_ORIGINS → Vec<HeaderValue>
     Main->>Metrics: install_recorder()
-    Main->>App: build_router(pool, store_id, metrics_handle, allowed_origins)
-    App->>App: AppState { pool, store_id, metrics_handle }
+    Main->>App: build_router(pool, HubConfig { store_id, register_id, auth, rate_limit, ... })
+    App->>App: AppState { pool, store_id, register_id, metrics_handle, rate_limiter, ... }
     App->>App: CorsLayer — wildcard if empty, list if set
-    App->>App: Router with /health, /ready, /pos/command, /catalog/products, /catalog/prices, /documents, /orders, /metrics, /sync/status
-    Main->>Axum: serve(TcpListener::bind(0.0.0.0:3000), app)
+    App->>App: Router with /health, /ready, /pos/command, /catalog/products, /catalog/prices, /documents, /orders, /metrics, /sync/status, ...
+    alt APEX_EDGE_TLS_CERT_PATH set (see §42)
+        Main->>Axum: axum-server bind_rustls, into_make_service_with_connect_info
+    else
+        Main->>Axum: axum::serve(TcpListener::bind(0.0.0.0:3000), into_make_service_with_connect_info)
+    end
     Axum-->>Main: listening
 ```
 
 **Notes:**
-- **Inputs:** Env `APEX_EDGE_DB` (default `apex_edge.db`); `APEX_EDGE_SYNC_SOURCE_URL` (optional, enables sync); `APEX_EDGE_SYNC_INTERVAL_SECONDS` (optional, periodic sync interval in seconds; default `300`); `APEX_EDGE_HQ_SUBMIT_URL` (optional, enables outbox dispatch); `APEX_EDGE_SEED_DEMO` (optional, seeds demo catalog/customers/promotions); `APEX_EDGE_ALLOWED_ORIGINS` (optional, comma-separated; empty = wildcard CORS for local dev, non-empty = restricted).
-- **Outputs:** HTTP server on port 3000; DB migrated; optional background sync and dispatcher tasks spawned.
+- **Inputs:** Env `APEX_EDGE_DB` (default `apex_edge.db`); `APEX_EDGE_STORE_ID` / `APEX_EDGE_REGISTER_ID` (optional, see §42); `APEX_EDGE_SYNC_SOURCE_URL` (optional, enables sync); `APEX_EDGE_SYNC_INTERVAL_SECONDS` (optional, periodic sync interval in seconds; default `300`); `APEX_EDGE_HQ_SUBMIT_URL` (optional, enables outbox dispatch); `APEX_EDGE_SEED_DEMO` (optional, seeds demo catalog/customers/promotions); `APEX_EDGE_ALLOWED_ORIGINS` (optional, comma-separated; empty = wildcard CORS for local dev, non-empty = restricted); `APEX_EDGE_AUTH_ENABLED` (default **on** — see §16); `APEX_EDGE_TLS_*` (optional, see §42).
+- **Outputs:** HTTP or HTTPS server on port 3000; DB migrated; optional background sync and dispatcher tasks spawned.
 - **Failure path:** Pool or migration failure exits main; server bind failure propagates. Sync and dispatcher errors are logged and retried on next cycle without stopping the process.
 
 ### 3. HTTP Surface (Routes and Owners)
@@ -346,6 +351,12 @@ flowchart TB
 - **Inputs:** Route or flow from this section's behavior map; health/ready = liveness/readiness; `/metrics` = Prometheus scrape when metrics handle present.
 - **Outputs:** Each behavior is the unit of ownership for metrics and tracing; DB probe only in ready_check; document fetch/list via storage; outbox and sync via their crates.
 - **Transparency:** This architecture document is the source of truth for route -> behavior -> owner mapping and behavior tiering.
+- **Recorder version contract:** every crate must depend on the same `metrics` major as
+  `metrics-exporter-prometheus`. The macros write to a global recorder that is per-major, so a
+  version skew silently sends every measurement to a recorder nothing exports — `/metrics` stays
+  empty while the dashboards look plausible. `apex-edge/tests/metrics_emission.rs` drives the real
+  router through the real recorder and asserts the exported families, which is what makes the skew
+  a failing test rather than a silent hole.
 
 ### 10. Local POS Simulator Frontend
 
@@ -578,7 +589,7 @@ sequenceDiagram
 **Notes:**
 - **Inputs:** Pairing requests (`store_id`, `created_by`), device metadata (`device_name`, optional `platform`), external associate token (`iss`, `aud`, `sub`, `store_id` claims), and bearer session tokens on protected routes.
 - **Outputs:** `trusted_devices`, `device_pairing_codes`, `auth_sessions`, and `associate_identities` persisted locally. Protected routes return `401` when session/device validation fails.
-- **Protection scope:** `/pos/*`, `/catalog/*`, `/customers`, `/documents/*`, `/orders/*`, `/sync/status` are protected when auth is enabled. `/health`, `/ready`, and auth bootstrap/session endpoints remain callable as designed.
+- **Protection scope:** `/pos/*`, `/catalog/*`, `/customers`, `/documents/*`, `/orders/*`, `/sync/status` are protected. Auth is **enabled by default** (`APEX_EDGE_AUTH_ENABLED` opts out) as of v2.0.0 — see [§42](#42-hub-identity-tlsmtls-and-rate-limiting-v200). `/health`, `/ready`, and auth bootstrap/session endpoints remain callable as designed. Third-party API tokens (§30) are additionally scope-checked per route by `required_scope_for_path`/`token_scopes_allow` — a token missing the route's required scope gets `403`, not just `401` for a missing token.
 - **Failure path:** Invalid/expired/consumed pairing code, device mismatch, token validation failure, and revoked/expired sessions all fail closed with `401`/`400`; attempts are tracked on pairing codes.
 - **Metrics:** `apex_edge_auth_requests_total{operation,outcome}`, `apex_edge_auth_request_duration_seconds{operation}`, `apex_edge_auth_sessions_total{outcome}`, `apex_edge_device_pairings_total{outcome}`.
 
@@ -1044,35 +1055,47 @@ flowchart TB
 - **Failure path:** Zero quantity or blank reason returns `INVALID_STOCK_MOVEMENT`; storage failure returns `STOCK_MOVEMENT_FAILED`.
 - **Metrics:** `apex_edge_stock_operations_total{operation,outcome}` is reserved for stock command outcomes.
 
-### 32. Fiscal Provider Boundary (adapter v1.0.0, wired into finalize v1.2.0)
+### 32. Fiscal Transactions, Signing and Sign-Later (v2.0.0)
 
-**Purpose:** Keep country-specific fiscal certification outside the core checkout engine through a stable `FiscalProvider` trait, and gate order finalize on a valid fiscal receipt in regulated deployments.
+**Purpose:** Hand the tax authority a full fiscal transaction (lines, rates, tenders, cash point, time), not just a total. Keep country-specific certification behind `FiscalProvider`. When the signer is briefly unreachable and the jurisdiction allows it, complete the sale and sign in the background.
 
 ```mermaid
 sequenceDiagram
     participant POS
     participant API as ApexEdgeAPI
     participant Fiscal as FiscalProvider
-    participant DB as SQLite (orders)
+    participant DB as SQLite
+    participant Sweep as SignLaterSweeper
 
-    POS->>API: PosCommand::FinalizeOrder
-    API->>API: build Order from paid cart
-    API->>Fiscal: sign_receipt(order_id, total_cents, currency)
-    alt signed (NoOp or configured DE-TSE)
-        Fiscal-->>API: FiscalReceipt{provider, fiscal_id?, signature?}
-        API->>DB: INSERT orders (..., fiscal_provider, fiscal_id, fiscal_signature)
-        API-->>POS: success + FinalizeResult
-    else NotConfigured / InvalidTotal
+    POS->>API: PosCommand::FinalizeOrder / FinalizeReturn
+    API->>API: build FiscalTransaction (lines, tax rates, tenders, cash point)
+    API->>Fiscal: sign(transaction)
+    alt signed
+        Fiscal-->>API: FiscalSignature
+        API->>DB: persist receipt on order/return
+        API-->>POS: success
+    else transient AND SignLater
+        Fiscal-->>API: Unavailable
+        API->>DB: persist sale with fiscal_pending plus queue row
+        API-->>POS: success (unsigned, queued)
+        Sweep->>Fiscal: sign(queued transaction)
+        Sweep->>DB: apply receipt, clear pending
+    else permanent or FailClosed
         Fiscal-->>API: FiscalError
-        API-->>POS: FISCAL_SIGNING_FAILED (no ledger/outbox/stock mutation)
+        API-->>POS: FISCAL_SIGNING_FAILED (no ledger write)
     end
 ```
 
+**Behaviour ownership:**
+- **Trait / validation:** `crates/adapters/fiscal` — a transaction that does not reconcile is refused before any provider sees it.
+- **Wiring:** `crates/api/src/fiscal.rs` builds the transaction from the paid cart or return; `pos_handler` / `returns_handler` call `sign_or_queue`.
+- **Queue:** `fiscal_signing_queue` (migration 026). The sweeper is `run_fiscal_signing_loop` in `main.rs`.
+
 **Notes:**
-- **Inputs:** Order id, total amount, and currency in `FiscalReceiptRequest`. The provider and currency are chosen at startup via `APEX_EDGE_FISCAL_PROVIDER` (`noop` default, or `de_tse`), `APEX_EDGE_FISCAL_DE_TSE_CONFIGURED`, and `APEX_EDGE_CURRENCY` (see `docs/runbook/README.md`).
-- **Outputs:** `FiscalReceipt` with provider, optional fiscal id, and optional signature, persisted on the `orders` row (`fiscal_provider`/`fiscal_id`/`fiscal_signature`, additive columns) and returned by `GET /orders/:id`.
-- **Failure path:** Signing happens before any ledger, outbox, or stock-commit write, so a failure fails the whole finalize closed with `FISCAL_SIGNING_FAILED` and leaves no order behind. NoOp (the default for US/CA and other non-fiscal deployments) always succeeds; DE-TSE fails closed with `NotConfigured` until certified configuration is provided — this prevents completing a sale in a regulated market with a broken/misconfigured signer.
-- **Metrics:** `apex_edge_fiscal_receipts_total{provider,outcome}` (counter) and `apex_edge_fiscal_receipt_duration_seconds{provider}` (histogram) are emitted on every finalize attempt.
+- **Inputs:** Line items with net/tax/gross and tax rate (bps), tender breakdown (tips are not fiscalised), cash-point identity, timestamps, currency. Provider via `APEX_EDGE_FISCAL_PROVIDER` (`noop` default, or `de_tse`), `APEX_EDGE_FISCAL_DE_TSE_CONFIGURED`, `APEX_EDGE_CURRENCY`.
+- **Outputs:** `FiscalSignature` (provider, optional fiscal id/signature/QR payload, signed_at) on the `orders` / `returns` row. `GET /orders/:id` returns the receipt including `fiscal_pending` while a sign-later job is outstanding.
+- **Failure path:** Misconfiguration and rejected payloads fail the sale closed (`FISCAL_SIGNING_FAILED`) before ledger/outbox/stock writes and flag captured payments for reversal. A transient outage with `OfflinePolicy::SignLater` (DE TSE, NoOp) queues the transaction instead. Unreadable or permanently rejected queue rows become dead letters.
+- **Metrics:** `apex_edge_fiscal_receipts_total{provider,outcome}` (`success`/`error`/`queued`), `apex_edge_fiscal_receipt_duration_seconds{provider}`, `apex_edge_fiscal_sign_later_total{provider,outcome}`, `apex_edge_fiscal_queue_depth{status}`.
 
 ### 33. GDPR Customer Export and Erase (v1.0.0)
 
@@ -1298,3 +1321,255 @@ flowchart TB
 - **Outputs:** replayed events or `resnapshot_required`; full snapshot JSON; freshness fields.
 - **Failure path:** when the gap is unrecoverable the client is told to resnapshot rather than
   silently missing events; sweeper and freshness failures are logged and never block the sale path.
+
+### 39. Live Card Payments and Reversal Safety (v2.0.0)
+
+**Purpose:** Make `AddPayment` and `RefundTender` actually move money through a payment provider,
+and guarantee that money is never taken without a durable order behind it.
+
+```mermaid
+sequenceDiagram
+    participant POS
+    participant Hub as pos_handler
+    participant DB as payment_intents (SQLite)
+    participant PV as PaymentProvider
+    participant Sweep as reversal sweeper
+
+    POS->>Hub: add_payment (envelope idempotency_key)
+    Hub->>DB: insert intent (authorized) keyed by (idem_key, provider, tender)
+    Note over Hub,DB: a retry resolves to the same row, never a second charge
+    Hub->>PV: authorize(amount, idempotency_key)
+    alt Approved / PartiallyApproved
+        Hub->>PV: capture
+        Hub->>DB: state = captured
+        Hub-->>POS: tender recorded (approved amount only)
+    else Declined
+        Hub->>DB: state = declined
+        Hub-->>POS: error, cart still unpaid
+    else Timeout / Indeterminate
+        Hub->>DB: state = reversal_pending
+        Hub-->>POS: error, cart still unpaid
+    end
+
+    POS->>Hub: finalize_order
+    alt order is durable on the ledger
+        Hub->>DB: state = settled
+    else fiscal or ledger write failed
+        Hub->>DB: state = reversal_pending
+    end
+
+    Sweep->>DB: captured older than stale window -> reversal_pending
+    Sweep->>PV: void / refund
+    PV-->>Sweep: confirmed
+    Sweep->>DB: state = reversed
+```
+
+**Behaviour ownership:**
+- **`PaymentProvider`** (`crates/adapters/payment`) is async with `authorize` / `capture` / `void` /
+  `refund`, and models `AuthorizationOutcome::{Approved, PartiallyApproved, Declined}` so a partial
+  approval records only what the card actually approved. `CashPaymentProvider`,
+  `SimulatedTerminalProvider` (deterministic declines/timeouts/partials for CI) and
+  `StripeTerminalProvider` (server-driven REST against a `simulated-wpe` reader, no SDK, no
+  hardware) implement it.
+- **Provider idempotency** is derived from the POS envelope `idempotency_key` plus the tender id, so
+  a resent command reaches the provider with the same key and resolves to the existing intent.
+- **Reversal safety:** `payment_intents` (migration 024) is the durable answer to "did we take this
+  money, and does the customer still owe it?". A capture is only `settled` once the order is on the
+  ledger; anything else becomes `reversal_pending`.
+- **Crash recovery:** a process that dies between capture and finalize leaves a `captured` row with
+  no order. The sweeper flags captures older than `APEX_EDGE_PAYMENT_STALE_CAPTURE_SECONDS`
+  (default 900s) and voids them, so no failure handler needs to have run for the customer to get
+  their money back.
+- **Refunds:** `RefundTender` looks up the original order payment to find the provider and provider
+  payment id, then refunds through the same channel the sale was taken on.
+
+**Inputs/outputs:**
+- **Inputs:** `AddPaymentInput` (tender, amount, tip, entry method); `RefundTender` with the
+  original order id. Provider selection and credentials come from `PaymentSettings::from_env`.
+- **Outputs:** cart tenders, `order_payments` rows carrying `provider` and `provider_payment_id`,
+  and `payment_intents` state transitions.
+- **Failure path:** an unconfigured provider is refused rather than recorded as paid; declines leave
+  the cart unpaid; indeterminate results are queued for reversal instead of assumed either way.
+- **Metrics:** `apex_edge_payment_attempts_total{provider,outcome}` and
+  `apex_edge_payment_duration_seconds{provider}` on authorize,
+  `apex_edge_payment_captures_total`, `apex_edge_payment_refunds_total`,
+  `apex_edge_payment_reversals_total{provider,outcome}` and the
+  `apex_edge_payment_reversals_pending` gauge on the sweeper.
+
+---
+
+### 40. Receipt Printing and the Cash Drawer (v2.0.0)
+
+**Purpose:** Put a receipt on paper. The existing contract — the hub generates a document and the
+POS fetches it — is unchanged; this adds an optional printer attached to the hub itself, plus the
+cash drawer, which only the hub can sensibly own.
+
+```mermaid
+flowchart TD
+    FIN[finalize_order] --> DOC[generate_document<br/>receipt payload JSON]
+    DOC --> LEDGER[(order ledger)]
+    DOC --> LAYOUT[receipt_layout::receipt_document<br/>printer-independent elements]
+    PRINTCMD[print_document command] --> GET[get_document] --> LAYOUT
+    LAYOUT --> ENC{configured encoder}
+    ENC -->|ESC/POS| ESCPOS[EscPosEncoder]
+    ENC -->|Star Line Mode| STAR[StarLineModeEncoder]
+    ESCPOS --> T{transport}
+    STAR --> T
+    T -->|TCP 9100| LAN[Star / Epson LAN printer]
+    T -->|TCP 9100| VP[tools/virtual-printer<br/>decode + render in a browser]
+    T -->|raw port| PORT[Windows printer share / device path]
+    T -->|CaptureSink| CI[tests: byte-exact assertions]
+    FIN --> DRAWER{cash tender?<br/>drawer policy}
+    DRAWER -->|kick| T
+    DRAWER -->|card sale| SHUT[drawer stays shut]
+```
+
+**Behaviour ownership:**
+- **`ReceiptDocument`** (`crates/adapters/hardware`) is the printer-independent receipt: text with
+  alignment/size, right-aligned column rows, dividers, QR, barcode, feed, cut. Layout and
+  Code-Page-437 transcoding happen once, in the document, so both dialects wrap and pad identically
+  and `plain_text()` shows exactly what the paper will read.
+- **Encoders** own only what differs between dialects; both are pinned by golden-file byte tests.
+- **`receipt_layout`** (`crates/api`) turns the *same* payload JSON that drives the PDF template into
+  a `ReceiptDocument`, so a printed receipt and a fetched document describe one sale.
+- **`HardwareSettings`** owns configuration and is off by default: `APEX_EDGE_PRINTER=tcp|raw|none`,
+  `APEX_EDGE_PRINTER_ADDRESS`, `APEX_EDGE_PRINTER_PORT_PATH`, `APEX_EDGE_PRINTER_DIALECT=star`,
+  `APEX_EDGE_PRINTER_WIDTH`, `APEX_EDGE_DRAWER_KICK=cash|always|never`.
+- **The drawer follows the money:** cash sales only by default. Opening it on card sales is a
+  security problem and trains staff to ignore the drawer. `print_document` with `open_drawer` is the
+  manager override, and `never` always wins.
+
+**Inputs/outputs:**
+- **Inputs:** `finalize_order` (prints implicitly); `print_document { document_id, open_drawer }`.
+- **Outputs:** bytes on the wire to the printer; `FinalizeResult.print_error` when the sale
+  succeeded but the printer did not.
+- **Failure path:** a printer failure **never** fails a finalized sale — the money is taken and the
+  order is durable, so saying the sale failed would be a lie. The error is reported and the document
+  remains reprintable. `print_document` on a hub with no printer is refused rather than silently
+  ignored, so nobody waits at a printer that will never produce paper.
+- **Verification with no hardware:** `CaptureSink` in CI; `tools/virtual-printer` listens on 9100,
+  decodes the stream and renders the receipt as text and PNG in a browser; a LAN printer over TCP
+  9100 for the real thing.
+- **Metrics:** `apex_edge_hardware_operations_total{device,operation,outcome}` and
+  `apex_edge_hardware_operation_duration_seconds{device,operation}` on every print and drawer kick.
+
+---
+
+### 41. Outbox Fan-Out, Backoff and Dead Letters (v2.0.0)
+
+**Purpose:** One sale is owed to more than one place — HQ for reporting, a Peppol access point or
+KSeF gateway for the invoice, perhaps an analytics webhook. Those endpoints fail independently, so
+delivery state moved off the submission and onto one row per (submission, destination).
+
+```mermaid
+flowchart TD
+    FIN[finalize / return / close till / stock move] --> OB[(outbox: one submission)]
+    OB --> FO[fan out: one delivery per destination that wants this payload kind]
+    FO --> DEST[(outbox_delivery_attempts)]
+    DEST --> HQ{hq}
+    DEST --> PEP{peppol}
+    DEST --> KSEF{ksef}
+    HQ -->|2xx accepted| OKA[delivered]
+    PEP -->|connection refused| RETRY[retry: 5s doubling to 320s]
+    KSEF -->|rejected payload| RETRY
+    RETRY -->|attempts exhausted| DLQ[dead letter: needs an operator]
+    OKA --> SETTLE{every destination finished?}
+    RETRY --> SETTLE
+    DLQ --> SETTLE
+    SETTLE -->|all delivered| DONE[submission delivered]
+    SETTLE -->|any gave up| FAIL[submission dead_letter]
+    SETTLE -->|someone still owed| WAIT[submission stays pending]
+    DLQ --> ADMIN[GET /admin/outbox/dead-letters]
+    ADMIN --> REQ[POST .../retry: queue it again]
+```
+
+**Behaviour ownership:**
+- **Destinations are configuration** (`outbox_destinations`), re-registered on every boot so an
+  edited endpoint takes effect without losing the delivery history keyed on the destination id.
+  `APEX_EDGE_HQ_SUBMIT_URL` registers the `hq` destination, which is why deployments that set only
+  that variable keep behaving exactly as before.
+- **Payload filters:** a destination's `config.payload_kinds` selects which submissions it wants
+  (`order`, `return`, `shift`, `stock.movement`). Absent or empty means everything — a
+  misconfiguration that delivered too much is far less damaging than one that silently delivered
+  nothing. The kind is derived from the payload, so submissions queued before fan-out existed
+  classify correctly.
+- **Backoff is per destination:** 5s doubling to a 320s cap, counted against the destination rather
+  than the submission, so a broken Peppol endpoint cannot exhaust HQ's attempts.
+- **A rejection is a verdict, not an outage.** A destination answering "not accepted" is retried a
+  few times and then dead-lettered; the previous dispatcher retried rejections forever, which hid
+  invalid payloads behind a queue that never drained.
+- **Half-delivered is a failure.** A submission is `delivered` only when every destination took it.
+  If any gave up, the submission is `dead_letter` even though others succeeded, because a sale that
+  reached HQ but never reached the tax authority is a compliance problem someone must see.
+- **Idempotent fan-out:** the unique index on (outbox_id, destination_id) from migration 025 is what
+  makes a dispatcher restart mid-cycle a no-op rather than a duplicate submission.
+
+**Inputs/outputs:**
+- **Inputs:** `outbox` rows written by finalize, returns, till close and stock movements;
+  destinations from `APEX_EDGE_HQ_SUBMIT_URL` and `APEX_EDGE_OUTBOX_DESTINATIONS`.
+- **Outputs:** HTTP POSTs to each destination; `outbox_delivery_attempts` state; the summary status
+  on the `outbox` row.
+- **Failure path:** nothing is ever dropped. A hub with no destinations configured queues
+  submissions indefinitely rather than marking them delivered to nobody. Exhausted deliveries land
+  in the dead-letter queue and are only ever retried when an operator asks.
+- **Metrics:** `apex_edge_outbox_dispatch_attempts_total{destination,outcome}`,
+  `apex_edge_outbox_dispatch_duration_seconds{destination}`,
+  `apex_edge_outbox_dlq_total{destination}`, `apex_edge_outbox_fanout_total{destination}`,
+  `apex_edge_outbox_filtered_total{destination,kind}` and the
+  `apex_edge_outbox_queue_depth{state}` gauge.
+
+### 42. Hub Identity, TLS/mTLS, and Rate Limiting (v2.0.0)
+
+**Purpose:** Close the gap between "the code exists" and "a stranger can run it exposed to
+something other than a fully trusted LAN": a real, persistent store/register identity instead of
+`Uuid::nil()`, an optional HTTPS/mTLS listener, and rate limits on the two route families worth
+throttling. Auth itself (session pairing, API tokens, scope enforcement) is covered in
+[§16](#16-edge-auth-and-device-trust) and [§30](#30-third-party-api-tokens-and-inbound-webhooks-v0100);
+this section is what sits around it.
+
+```mermaid
+flowchart TD
+    Boot[apex-edge boot] --> Resolve[resolve_hub_identity: env wins, else DB, else generate]
+    Resolve --> DB[(hub_identity)]
+    Resolve --> Cfg[HubConfig.store_id / register_id]
+    Boot --> TlsCheck{APEX_EDGE_TLS_CERT_PATH set?}
+    TlsCheck -->|no| Http[axum::serve: plain HTTP]
+    TlsCheck -->|yes, no client CA| Https[axum-server: TLS, no client auth]
+    TlsCheck -->|yes, + client CA| Mtls[axum-server: TLS, client cert required]
+    Http --> ConnInfo[into_make_service_with_connect_info]
+    Https --> ConnInfo
+    Mtls --> ConnInfo
+    ConnInfo --> RL{"/auth/* or /pos/*?"}
+    RL -->|over budget| R429[429, Retry-After: 60]
+    RL -->|within budget| Handler[route handler]
+```
+
+**Notes:**
+- **Identity is resolved once at boot**, not hardcoded: `resolve_hub_identity` in
+  `crates/storage/src/hub_identity.rs` prefers `APEX_EDGE_STORE_ID` / `APEX_EDGE_REGISTER_ID` when
+  set, persisting them to the `hub_identity` table (migration 027); otherwise it reuses whatever was
+  persisted from a prior boot, and only generates fresh random UUIDs the very first time a hub with
+  no env override starts. This is what every `store_id` in seeding, sync, and `HubConfig` now traces
+  back to — there is no `Uuid::nil()` left in `apex-edge/src/main.rs`.
+- **TLS is opt-in, not required**, so local dev and CI keep working unmodified: with no
+  `APEX_EDGE_TLS_CERT_PATH`/`APEX_EDGE_TLS_KEY_PATH`, the hub serves plain HTTP exactly as before.
+  Setting both switches to `axum-server`'s rustls listener; additionally setting
+  `APEX_EDGE_TLS_CLIENT_CA_PATH` builds a custom `rustls::ServerConfig` with a
+  `WebPkiClientVerifier`, so registers must present a certificate signed by that CA (mTLS) before
+  the TCP handshake ever reaches the application.
+- **Rate limiting requires `ConnectInfo`**, which requires `into_make_service_with_connect_info`:
+  a request without a real peer address (e.g. a raw `oneshot` in a unit test) is not rate-limited by
+  design, so existing handler-level tests stay independent of this layer.
+  `APEX_EDGE_RATE_LIMIT_AUTH_PER_MINUTE` / `APEX_EDGE_RATE_LIMIT_POS_PER_MINUTE` (defaults 30 / 120,
+  sliding 60s window per client IP) gate `/auth/*` and `/pos/*` respectively; `0` disables a bucket.
+  The `/auth/*` limit is the one with a real attacker model (short pairing codes); the `/pos/*` limit
+  is defense-in-depth against a misbehaving client, not an internet-facing threat model, and is safe
+  to disable for a hub that is genuinely LAN-only.
+- **Inputs:** `APEX_EDGE_STORE_ID`, `APEX_EDGE_REGISTER_ID`, `APEX_EDGE_TLS_CERT_PATH`,
+  `APEX_EDGE_TLS_KEY_PATH`, `APEX_EDGE_TLS_CLIENT_CA_PATH`, `APEX_EDGE_RATE_LIMIT_AUTH_PER_MINUTE`,
+  `APEX_EDGE_RATE_LIMIT_POS_PER_MINUTE`.
+- **Outputs:** `hub_identity` row; TLS handshake accept/reject; `429` responses with a
+  `retry-after` header.
+- **Metrics:** `apex_edge_tls_enabled{client_auth}` gauge (1 while serving HTTPS, labelled `off` or
+  `required`), `apex_edge_rate_limit_decisions_total{bucket,outcome}`,
+  `apex_edge_rate_limit_rejected_total{bucket}`.

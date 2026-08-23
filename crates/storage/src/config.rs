@@ -25,8 +25,9 @@ pub async fn get_sync_checkpoint(
     } else {
         DB_OUTCOME_ERROR
     };
-    metrics::counter!(DB_OPERATIONS_TOTAL, 1u64, "operation" => OP, "outcome" => outcome);
-    metrics::histogram!(DB_OPERATION_DURATION_SECONDS, start.elapsed().as_secs_f64(), "operation" => OP);
+    metrics::counter!(DB_OPERATIONS_TOTAL, "operation" => OP, "outcome" => outcome).increment(1);
+    metrics::histogram!(DB_OPERATION_DURATION_SECONDS, "operation" => OP)
+        .record(start.elapsed().as_secs_f64());
     result.map_err(Into::into)
 }
 
@@ -54,8 +55,9 @@ pub async fn set_sync_checkpoint(
     } else {
         DB_OUTCOME_ERROR
     };
-    metrics::counter!(DB_OPERATIONS_TOTAL, 1u64, "operation" => OP, "outcome" => outcome);
-    metrics::histogram!(DB_OPERATION_DURATION_SECONDS, start.elapsed().as_secs_f64(), "operation" => OP);
+    metrics::counter!(DB_OPERATIONS_TOTAL, "operation" => OP, "outcome" => outcome).increment(1);
+    metrics::histogram!(DB_OPERATION_DURATION_SECONDS, "operation" => OP)
+        .record(start.elapsed().as_secs_f64());
     result?;
     Ok(())
 }

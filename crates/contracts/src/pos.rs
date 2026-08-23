@@ -72,6 +72,8 @@ pub enum PosCommand {
     // --- v1.2.0 Loyalty ---
     EarnLoyaltyPoints(EarnLoyaltyPointsPayload),
     RedeemLoyaltyPoints(RedeemLoyaltyPointsPayload),
+    // --- v2.0.0 Direct printing ---
+    PrintDocument(PrintDocumentPayload),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -393,6 +395,19 @@ pub struct VoidCartPayload {
     pub reason: Option<String>,
 }
 
+/// Print a document the hub has already generated on the hub's own printer.
+///
+/// The existing contract — the POS fetches a document and prints it itself — is
+/// unchanged. This is for hubs with a printer attached, and for reprints.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PrintDocumentPayload {
+    pub document_id: Uuid,
+    /// Open the cash drawer as well. Used for a manager's till-open, and ignored when
+    /// the drawer policy is `never`.
+    #[serde(default)]
+    pub open_drawer: bool,
+}
+
 /// Response envelope for POS.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PosResponseEnvelope<T> {
@@ -487,4 +502,10 @@ pub struct FinalizeResult {
     pub cart_id: Uuid,
     pub total_cents: u64,
     pub print_job_ids: Vec<Uuid>,
+    /// Set when the sale completed but the hub's printer refused the receipt. The sale
+    /// is still final — the money is taken and the order is durable — so this is
+    /// reported rather than raised as a command failure, and the POS can reprint from
+    /// `print_job_ids`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub print_error: Option<String>,
 }

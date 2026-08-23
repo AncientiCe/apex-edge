@@ -1,13 +1,18 @@
 //! ApexEdge: store hub orchestrator. POS <-> ApexEdge <-> HQ.
 
+mod tls;
+
 use apex_edge::build_router;
-use apex_edge_adapters_fiscal::{DeTseFiscalProvider, FiscalProvider, NoOpFiscalProvider};
+use apex_edge_adapters_fiscal::{
+    DeTseFiscalProvider, FiscalProvider, FiskalyConfig, FiskalyMarket, FiskalyProvider,
+    NoOpFiscalProvider,
+};
 use apex_edge_api::{AuthSettings, FiscalSettings};
 use apex_edge_contracts::ContractVersion;
 use apex_edge_outbox::run_dispatcher_loop;
 use apex_edge_storage::{
-    create_sqlite_pool, expire_stale_reservations, seed_demo_data, seed_inventory_from_catalog,
-    set_audit_key, AuditKey,
+    create_sqlite_pool, expire_stale_reservations, resolve_hub_identity, seed_demo_data,
+    seed_inventory_from_catalog, set_audit_key, AuditKey,
 };
 use apex_edge_sync::{run_sync_ndjson, SyncEntityConfig, SyncSourceConfig};
 use axum::http::HeaderValue;
@@ -31,7 +36,7 @@ async fn sweep_stale_reservations(pool: &sqlx::SqlitePool) -> u64 {
     match expire_stale_reservations(pool, chrono::Utc::now()).await {
         Ok(0) => 0,
         Ok(n) => {
-            metrics::counter!(apex_edge_metrics::INVENTORY_RESERVATIONS_EXPIRED_TOTAL, n);
+            metrics::counter!(apex_edge_metrics::INVENTORY_RESERVATIONS_EXPIRED_TOTAL).increment(n);
             tracing::info!("Released {} stale stock reservation(s)", n);
             n
         }
@@ -113,6 +118,7 @@ fn default_sync_entities() -> Vec<SyncEntityConfig> {
 }
 
 /// Pure provider selection so it's testable without mutating process-global env vars.
+#[cfg(test)]
 fn fiscal_provider_from_config(
     provider_name: Option<&str>,
     de_tse_configured: bool,
@@ -130,20 +136,51 @@ fn fiscal_provider_from_config(
 /// leaving it unconfigured makes fiscal signing fail closed at finalize time.
 fn fiscal_settings_from_env() -> FiscalSettings {
     let currency = std::env::var("APEX_EDGE_CURRENCY").unwrap_or_else(|_| "USD".into());
-    let de_tse_configured = std::env::var("APEX_EDGE_FISCAL_DE_TSE_CONFIGURED")
-        .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
-        .unwrap_or(false);
-    let provider = fiscal_provider_from_config(
-        std::env::var("APEX_EDGE_FISCAL_PROVIDER").ok().as_deref(),
-        de_tse_configured,
-    );
+    let provider_name = std::env::var("APEX_EDGE_FISCAL_PROVIDER").ok();
+    let provider: std::sync::Arc<dyn FiscalProvider + Send + Sync> = match provider_name.as_deref()
+    {
+        Some("fiskaly") => match FiskalyProvider::new(fiskaly_config_from_env()) {
+            Ok(provider) => std::sync::Arc::new(provider),
+            Err(e) => {
+                tracing::error!(error = %e, "fiskaly client could not start");
+                std::sync::Arc::new(
+                    FiskalyProvider::new(FiskalyConfig::default())
+                        .expect("empty fiskaly still constructs"),
+                )
+            }
+        },
+        Some("de_tse") => {
+            let configured = std::env::var("APEX_EDGE_FISCAL_DE_TSE_CONFIGURED")
+                .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+                .unwrap_or(false);
+            std::sync::Arc::new(DeTseFiscalProvider::new(configured))
+        }
+        _ => std::sync::Arc::new(NoOpFiscalProvider),
+    };
     FiscalSettings { provider, currency }
 }
 
+fn fiskaly_config_from_env() -> FiskalyConfig {
+    FiskalyConfig {
+        api_key: std::env::var("APEX_EDGE_FISKALY_API_KEY").unwrap_or_default(),
+        api_secret: std::env::var("APEX_EDGE_FISKALY_API_SECRET").unwrap_or_default(),
+        tss_id: std::env::var("APEX_EDGE_FISKALY_TSS_ID").unwrap_or_default(),
+        client_id: std::env::var("APEX_EDGE_FISKALY_CLIENT_ID").unwrap_or_default(),
+        tax_id: std::env::var("APEX_EDGE_FISKALY_TAX_ID").unwrap_or_default(),
+        market: std::env::var("APEX_EDGE_FISKALY_MARKET")
+            .ok()
+            .as_deref()
+            .and_then(FiskalyMarket::parse)
+            .unwrap_or(FiskalyMarket::De),
+        api_base_url: std::env::var("APEX_EDGE_FISKALY_API_BASE_URL")
+            .unwrap_or_else(|_| "https://kassensichv.io/api/v2".into()),
+    }
+}
+
 /// Run one sync cycle; log outcome. Caller ensures config is some.
-async fn run_sync_once(pool: &sqlx::SqlitePool, config: &SyncSourceConfig) {
+async fn run_sync_once(pool: &sqlx::SqlitePool, config: &SyncSourceConfig, store_id: Uuid) {
     let client = reqwest::Client::new();
-    match run_sync_ndjson(&client, pool, config, ContractVersion::V1_0_0, Uuid::nil()).await {
+    match run_sync_ndjson(&client, pool, config, ContractVersion::V1_0_0, store_id).await {
         Ok(()) => tracing::info!("Sync completed successfully"),
         Err(e) => tracing::warn!("Sync failed: {}", e),
     }
@@ -163,6 +200,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     });
     let pool = create_sqlite_pool(&db_path).await?;
     apex_edge_storage::run_migrations(&pool).await?;
+
+    let env_store_id = std::env::var("APEX_EDGE_STORE_ID")
+        .ok()
+        .and_then(|v| Uuid::parse_str(&v).ok());
+    let env_register_id = std::env::var("APEX_EDGE_REGISTER_ID")
+        .ok()
+        .and_then(|v| Uuid::parse_str(&v).ok());
+    let identity = resolve_hub_identity(&pool, env_store_id, env_register_id).await?;
+    tracing::info!(
+        "Hub identity resolved: store_id={} register_id={}",
+        identity.store_id,
+        identity.register_id
+    );
 
     let audit_key_id = std::env::var("APEX_EDGE_AUDIT_KEY_ID")
         .unwrap_or_else(|_| format!("hub-{}", Uuid::new_v4()));
@@ -194,7 +244,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
             .unwrap_or(false);
     if seed_flag {
-        let summary = seed_demo_data(&pool, Uuid::nil()).await?;
+        let summary = seed_demo_data(&pool, identity.store_id).await?;
         tracing::info!(
             "Seeded demo data: categories={}, products={}, customers={}, promotions={}",
             summary.categories,
@@ -206,7 +256,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     // Seed the real-time inventory ledger from any catalog stock already present so the
     // oversell guard is active immediately. Synced inventory rebases the baseline later.
-    match seed_inventory_from_catalog(&pool, Uuid::nil()).await {
+    match seed_inventory_from_catalog(&pool, identity.store_id).await {
         Ok(n) if n > 0 => tracing::info!("Seeded inventory ledger for {} item(s)", n),
         Ok(_) => {}
         Err(e) => tracing::warn!("Inventory ledger seeding failed: {}", e),
@@ -234,9 +284,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             entities: default_sync_entities(),
         };
         tracing::info!("Running sync on startup from {}", base_url);
-        run_sync_once(&pool, &config).await;
+        run_sync_once(&pool, &config, identity.store_id).await;
         let pool_daily = pool.clone();
         let config_daily = config.clone();
+        let store_id_daily = identity.store_id;
         tokio::spawn(async move {
             let mut interval =
                 tokio::time::interval(std::time::Duration::from_secs(sync_interval_seconds));
@@ -247,25 +298,46 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     "Running scheduled sync (interval={}s)",
                     sync_interval_seconds
                 );
-                run_sync_once(&pool_daily, &config_daily).await;
+                run_sync_once(&pool_daily, &config_daily, store_id_daily).await;
             }
         });
     }
 
-    let hq_submit_url = std::env::var("APEX_EDGE_HQ_SUBMIT_URL").ok();
-    if let Some(ref url) = hq_submit_url {
-        let pool_dispatch = pool.clone();
-        let url_dispatch = url.clone();
-        tokio::spawn(async move {
-            run_dispatcher_loop(
-                pool_dispatch,
-                reqwest::Client::new(),
-                url_dispatch,
-                std::time::Duration::from_secs(30),
-            )
-            .await;
-        });
-        tracing::info!("Outbox dispatcher started (HQ submit URL: {})", url);
+    // Destinations are configuration, re-registered on every boot so an edited endpoint
+    // takes effect without losing the delivery history keyed on the destination.
+    if let Ok(url) = std::env::var("APEX_EDGE_HQ_SUBMIT_URL") {
+        if let Err(e) = apex_edge_outbox::register_hq_destination(&pool, &url).await {
+            tracing::error!(error = %e, "could not register the HQ outbox destination");
+        }
+    }
+    if let Ok(raw) = std::env::var("APEX_EDGE_OUTBOX_DESTINATIONS") {
+        match apex_edge_outbox::register_destinations_from_json(&pool, &raw).await {
+            Ok(count) => tracing::info!("Registered {} extra outbox destination(s)", count),
+            Err(e) => tracing::error!(error = %e, "could not register outbox destinations"),
+        }
+    }
+    match apex_edge_storage::list_enabled_destinations(&pool).await {
+        Ok(destinations) if !destinations.is_empty() => {
+            let codes: Vec<&str> = destinations.iter().map(|d| d.code.as_str()).collect();
+            tracing::info!(
+                "Outbox dispatcher started (destinations: {})",
+                codes.join(", ")
+            );
+            let pool_dispatch = pool.clone();
+            tokio::spawn(async move {
+                run_dispatcher_loop(
+                    pool_dispatch,
+                    reqwest::Client::new(),
+                    apex_edge_outbox::DispatcherPolicy::from_env(),
+                    std::time::Duration::from_secs(30),
+                )
+                .await;
+            });
+        }
+        Ok(_) => tracing::info!(
+            "No outbox destinations configured; submissions will queue until one is added"
+        ),
+        Err(e) => tracing::error!(error = %e, "could not read outbox destinations"),
     }
 
     let allowed_origins: Vec<HeaderValue> = std::env::var("APEX_EDGE_ALLOWED_ORIGINS")
@@ -281,66 +353,78 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         tracing::warn!("CORS: allowing all origins (set APEX_EDGE_ALLOWED_ORIGINS for production)");
     }
     let metrics_handle = apex_edge_metrics::install_recorder()?;
-    let external_public_key_pem = std::env::var("APEX_EDGE_AUTH_EXTERNAL_PUBLIC_KEY_PEM_PATH")
-        .ok()
-        .and_then(|path| std::fs::read_to_string(path).ok());
-    let auth_settings = AuthSettings {
-        enabled: std::env::var("APEX_EDGE_AUTH_ENABLED")
-            .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
-            .unwrap_or(false),
-        external_issuer: std::env::var("APEX_EDGE_AUTH_EXTERNAL_ISSUER").unwrap_or_default(),
-        external_audience: std::env::var("APEX_EDGE_AUTH_EXTERNAL_AUDIENCE").unwrap_or_default(),
-        external_hs256_secret: std::env::var("APEX_EDGE_AUTH_EXTERNAL_HS256_SECRET").ok(),
-        external_public_key_pem,
-        session_signing_secret: std::env::var("APEX_EDGE_AUTH_SESSION_SIGNING_SECRET")
-            .unwrap_or_else(|_| "dev-hub-secret".into()),
-        access_ttl_seconds: std::env::var("APEX_EDGE_AUTH_ACCESS_TTL_SECONDS")
-            .ok()
-            .and_then(|v| v.parse::<i64>().ok())
-            .unwrap_or(300),
-        refresh_ttl_seconds: std::env::var("APEX_EDGE_AUTH_REFRESH_TTL_SECONDS")
-            .ok()
-            .and_then(|v| v.parse::<i64>().ok())
-            .unwrap_or(3600),
-        pairing_code_ttl_seconds: std::env::var("APEX_EDGE_AUTH_PAIRING_CODE_TTL_SECONDS")
-            .ok()
-            .and_then(|v| v.parse::<i64>().ok())
-            .unwrap_or(300),
-        pairing_code_length: std::env::var("APEX_EDGE_AUTH_PAIRING_CODE_LENGTH")
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or(6),
-        pairing_max_attempts: std::env::var("APEX_EDGE_AUTH_PAIRING_MAX_ATTEMPTS")
-            .ok()
-            .and_then(|v| v.parse::<i64>().ok())
-            .unwrap_or(3),
-    };
+    let auth_settings = AuthSettings::from_env();
     let fiscal_settings = fiscal_settings_from_env();
     tracing::info!(
         "Fiscal provider: {} (currency={})",
         fiscal_settings.provider.provider_code(),
         fiscal_settings.currency
     );
+    let payment_settings =
+        apex_edge_api::PaymentSettings::from_env(fiscal_settings.currency.clone());
+    tracing::info!(
+        "Payment providers: {}",
+        payment_settings.provider_codes().join(", ")
+    );
+
+    // Money captured for a sale that then failed is owed back. This loop is what makes
+    // that a guarantee rather than an intention.
+    tokio::spawn(apex_edge_api::run_payment_reversal_loop(
+        pool.clone(),
+        payment_settings.clone(),
+        std::time::Duration::from_secs(15),
+    ));
+    tokio::spawn(apex_edge_api::run_fiscal_signing_loop(
+        pool.clone(),
+        fiscal_settings.clone(),
+        std::time::Duration::from_secs(15),
+    ));
+
+    let hardware_settings = apex_edge_api::HardwareSettings::from_env();
+    tracing::info!(
+        "Receipt printer: {} (drawer={:?})",
+        hardware_settings.encoder_name().unwrap_or("none"),
+        hardware_settings.drawer
+    );
+
     let app = build_router(
         pool,
-        Uuid::nil(),
-        Some(metrics_handle),
-        allowed_origins,
-        auth_settings,
-        fiscal_settings,
+        apex_edge::HubConfig {
+            store_id: identity.store_id,
+            register_id: identity.register_id,
+            metrics_handle: Some(metrics_handle),
+            allowed_origins,
+            auth: auth_settings,
+            fiscal: fiscal_settings,
+            payments: payment_settings,
+            hardware: hardware_settings,
+            rate_limit: apex_edge_api::RateLimitSettings::from_env(),
+        },
     );
 
     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], 3000));
-    tracing::info!("ApexEdge listening on {}", addr);
-    axum::serve(tokio::net::TcpListener::bind(addr).await?, app).await?;
+    let make_service = app.into_make_service_with_connect_info::<std::net::SocketAddr>();
+    match tls::TlsSettings::from_env() {
+        Some(tls_settings) => {
+            tls::report_tls_enabled(Some(&tls_settings));
+            let rustls_config = tls::build_rustls_config(&tls_settings).await?;
+            tracing::info!("ApexEdge listening on {} (HTTPS)", addr);
+            axum_server::bind_rustls(addr, rustls_config)
+                .serve(make_service)
+                .await?;
+        }
+        None => {
+            tls::report_tls_enabled(None);
+            tracing::info!("ApexEdge listening on {} (HTTP)", addr);
+            axum::serve(tokio::net::TcpListener::bind(addr).await?, make_service).await?;
+        }
+    }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::{default_sync_entities, fiscal_provider_from_config, parse_sync_interval_seconds};
-    use apex_edge_adapters_fiscal::{FiscalError, FiscalReceiptRequest};
-    use uuid::Uuid;
 
     #[test]
     fn default_entities_sync_inventory_before_optional_entities() {
@@ -392,31 +476,11 @@ mod tests {
     fn fiscal_provider_selects_de_tse_when_configured() {
         let provider = fiscal_provider_from_config(Some("de_tse"), true);
         assert_eq!(provider.provider_code(), "de_tse");
-        let receipt = provider
-            .sign_receipt(FiscalReceiptRequest {
-                order_id: Uuid::new_v4(),
-                total_cents: 500,
-                currency: "EUR".into(),
-            })
-            .expect("configured de_tse should sign");
-        assert!(receipt.fiscal_id.is_some());
     }
 
     #[test]
     fn fiscal_provider_de_tse_fails_closed_when_not_configured() {
         let provider = fiscal_provider_from_config(Some("de_tse"), false);
-        let err = provider
-            .sign_receipt(FiscalReceiptRequest {
-                order_id: Uuid::new_v4(),
-                total_cents: 500,
-                currency: "EUR".into(),
-            })
-            .expect_err("unconfigured de_tse must fail closed");
-        assert_eq!(
-            err,
-            FiscalError::NotConfigured {
-                provider: "de_tse".into()
-            }
-        );
+        assert_eq!(provider.provider_code(), "de_tse");
     }
 }

@@ -10,6 +10,13 @@ pub struct HealthResponse {
     pub status: String,
 }
 
+#[derive(Serialize)]
+pub struct ReadyResponse {
+    pub status: String,
+    pub store_id: uuid::Uuid,
+    pub register_id: uuid::Uuid,
+}
+
 /// Liveness endpoint payload.
 ///
 /// # Examples
@@ -32,13 +39,15 @@ pub async fn health() -> Json<HealthResponse> {
 /// Readiness: checks DB connectivity. Returns 503 if DB is unavailable.
 pub async fn ready(
     State(state): State<AppState>,
-) -> Result<Json<HealthResponse>, axum::http::StatusCode> {
+) -> Result<Json<ReadyResponse>, axum::http::StatusCode> {
     sqlx::query("SELECT 1")
         .execute(&state.pool)
         .await
         .map_err(|_| axum::http::StatusCode::SERVICE_UNAVAILABLE)?;
-    Ok(Json(HealthResponse {
+    Ok(Json(ReadyResponse {
         status: "ready".into(),
+        store_id: state.store_id,
+        register_id: state.register_id,
     }))
 }
 
@@ -63,15 +72,7 @@ mod tests {
             .connect("sqlite::memory:")
             .await
             .expect("pool");
-        let state = AppState {
-            store_id: Uuid::nil(),
-            pool,
-            metrics_handle: None,
-            auth: crate::auth::AuthSettings::default(),
-            stream: crate::stream::StreamHub::new(),
-            role: crate::role::HubRole::Primary,
-            fiscal: crate::fiscal::FiscalSettings::default(),
-        };
+        let state = AppState::new(pool, Uuid::nil());
         let r = ready(State(state)).await.expect("ready endpoint");
         assert_eq!(r.0.status, "ready");
     }

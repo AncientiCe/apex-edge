@@ -1,9 +1,20 @@
 [package]
 name = "apex-edge-adapters-fiscal"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Fiscal provider adapter contracts and reference implementations for ApexEdge"
 
 [dependencies]
+async-trait = "0.1"
+chrono = { version = "0.4", features = ["serde"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 thiserror = "1.0"
+tracing = "0.1"
 uuid = { version = "1.0", features = ["v4", "serde"] }
+
+[dev-dependencies]
+axum = { version = "0.7", features = ["json"] }
+serde_json = "1.0"
+tokio = { version = "1", features = ["full"] }

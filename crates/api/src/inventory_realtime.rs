@@ -12,12 +12,12 @@ use crate::AppState;
 
 /// Record the outcome of a reservation attempt as a metric.
 pub fn record_reservation_outcome(outcome: &'static str) {
-    metrics::counter!(INVENTORY_RESERVATIONS_TOTAL, 1u64, "outcome" => outcome);
+    metrics::counter!(INVENTORY_RESERVATIONS_TOTAL, "outcome" => outcome).increment(1);
 }
 
 /// Record that the ledger prevented an oversell.
 pub fn record_oversell_prevented() {
-    metrics::counter!(INVENTORY_OVERSELL_PREVENTED_TOTAL, 1u64);
+    metrics::counter!(INVENTORY_OVERSELL_PREVENTED_TOTAL).increment(1);
 }
 
 /// Broadcast live `available_to_sell` for the given items to all connected registers.

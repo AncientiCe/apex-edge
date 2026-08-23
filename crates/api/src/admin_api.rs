@@ -26,11 +26,37 @@ pub struct CreateApiTokenResponse {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct ApiTokenClaims {
-    sub: String,
-    name: String,
-    scopes: Vec<String>,
-    exp: usize,
+pub(crate) struct ApiTokenClaims {
+    pub sub: String,
+    pub name: String,
+    pub scopes: Vec<String>,
+    pub exp: usize,
+}
+
+pub(crate) struct StoredApiToken {
+    pub name: String,
+    pub scopes: Vec<String>,
+    pub revoked: bool,
+}
+
+pub(crate) async fn load_api_token(
+    pool: &sqlx::SqlitePool,
+    token_id: Uuid,
+) -> Option<StoredApiToken> {
+    let row = sqlx::query_as::<_, (String, String, Option<String>)>(
+        "SELECT name, scopes_json, revoked_at FROM api_tokens WHERE id = ?",
+    )
+    .bind(token_id.to_string())
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten()?;
+    let scopes: Vec<String> = serde_json::from_str(&row.1).unwrap_or_default();
+    Some(StoredApiToken {
+        name: row.0,
+        scopes,
+        revoked: row.2.is_some(),
+    })
 }
 
 pub async fn create_api_token(

@@ -198,6 +198,20 @@ pub const OUTCOME_DOMAIN_ERROR: &str = "domain_error";
 pub const PAYMENT_ATTEMPTS_TOTAL: &str = "apex_edge_payment_attempts_total";
 /// Histogram: payment operation duration in seconds. Labels: provider.
 pub const PAYMENT_DURATION_SECONDS: &str = "apex_edge_payment_duration_seconds";
+/// Counter: provider-side captures. Labels: provider, outcome.
+pub const PAYMENT_CAPTURES_TOTAL: &str = "apex_edge_payment_captures_total";
+/// Counter: reversals of money taken for a sale that never completed. Labels: provider, outcome.
+pub const PAYMENT_REVERSALS_TOTAL: &str = "apex_edge_payment_reversals_total";
+/// Gauge: captured payments still owed a reversal. Should sit at zero.
+pub const PAYMENT_REVERSALS_PENDING: &str = "apex_edge_payment_reversals_pending";
+/// Counter: provider-side refunds issued during returns. Labels: provider, outcome.
+pub const PAYMENT_REFUNDS_TOTAL: &str = "apex_edge_payment_refunds_total";
+
+/// Payment outcomes beyond the shared success/error pair.
+pub const OUTCOME_DECLINED: &str = "declined";
+pub const OUTCOME_PARTIAL: &str = "partial";
+pub const OUTCOME_INDETERMINATE: &str = "indeterminate";
+pub const OUTCOME_UNKNOWN_PROVIDER: &str = "unknown_provider";
 
 // ---------- Tax providers (domain pricing + adapters) ----------
 /// Counter: tax quote attempts by provider and outcome. Labels: provider, outcome.
@@ -269,10 +283,18 @@ pub const SYNC_STALENESS_SECONDS: &str = "apex_edge_sync_staleness_seconds";
 pub const EDGE_DEGRADED_MODE: &str = "apex_edge_edge_degraded_mode";
 
 // ---------- Fiscal providers ----------
-/// Counter: fiscal receipt signing by provider and outcome.
+/// Counter: fiscal receipt signing by provider and outcome (success, error, queued).
 pub const FISCAL_RECEIPTS_TOTAL: &str = "apex_edge_fiscal_receipts_total";
 /// Histogram: fiscal receipt signing latency in seconds, labelled by provider.
 pub const FISCAL_RECEIPT_DURATION_SECONDS: &str = "apex_edge_fiscal_receipt_duration_seconds";
+/// Gauge: unsigned fiscal transactions waiting in the sign-later queue. Labels: status.
+pub const FISCAL_QUEUE_DEPTH: &str = "apex_edge_fiscal_queue_depth";
+/// Counter: background sign-later attempts. Labels: provider, outcome.
+pub const FISCAL_SIGN_LATER_TOTAL: &str = "apex_edge_fiscal_sign_later_total";
+/// Counter: fiscal file exports. Labels: kind (dsfinvk, xrechnung, factur_x), outcome.
+pub const FISCAL_EXPORTS_TOTAL: &str = "apex_edge_fiscal_exports_total";
+/// outcome: queued (sale completed, signature deferred).
+pub const OUTCOME_QUEUED: &str = "queued";
 
 // ---------- Documents (api::documents) ----------
 /// Counter: document operations. Labels: operation, outcome.
@@ -290,14 +312,24 @@ pub const OUTCOME_NOT_FOUND: &str = "not_found";
 pub const OUTCOME_ERROR: &str = "error";
 
 // ---------- Outbox (outbox::dispatcher) ----------
-/// Counter: dispatch attempts. Labels: outcome.
+/// Counter: dispatch attempts. Labels: destination, outcome.
 pub const OUTBOX_DISPATCH_ATTEMPTS_TOTAL: &str = "apex_edge_outbox_dispatch_attempts_total";
-/// Histogram: HQ HTTP call duration in seconds.
+/// Histogram: delivery HTTP call duration in seconds. Labels: destination.
 pub const OUTBOX_DISPATCH_DURATION_SECONDS: &str = "apex_edge_outbox_dispatch_duration_seconds";
-/// Counter: messages moved to DLQ.
+/// Counter: deliveries given up on. Labels: destination.
 pub const OUTBOX_DLQ_TOTAL: &str = "apex_edge_outbox_dlq_total";
 /// Counter: background dispatcher loop cycles. Labels: outcome (success, error).
 pub const OUTBOX_DISPATCHER_CYCLES_TOTAL: &str = "apex_edge_outbox_dispatcher_cycles_total";
+/// Gauge: deliveries waiting per state. Labels: state (pending, dead_letter).
+///
+/// Queue depth is the number an operator actually watches: a destination that has stopped
+/// accepting shows up here long before anyone notices missing data downstream.
+pub const OUTBOX_QUEUE_DEPTH: &str = "apex_edge_outbox_queue_depth";
+/// Counter: submissions fanned out to a destination for the first time. Labels: destination.
+pub const OUTBOX_FANOUT_TOTAL: &str = "apex_edge_outbox_fanout_total";
+/// Counter: deliveries skipped because the destination does not want that payload kind.
+/// Labels: destination, kind.
+pub const OUTBOX_FILTERED_TOTAL: &str = "apex_edge_outbox_filtered_total";
 
 /// outcome: accepted, rejected, http_error, timeout, dlq.
 pub const OUTCOME_ACCEPTED: &str = "accepted";
@@ -419,6 +451,16 @@ pub const AUTH_REQUEST_DURATION_SECONDS: &str = "apex_edge_auth_request_duration
 pub const AUTH_SESSIONS_TOTAL: &str = "apex_edge_auth_sessions_total";
 /// Counter: device pairing outcomes.
 pub const DEVICE_PAIRINGS_TOTAL: &str = "apex_edge_device_pairings_total";
+
+// ---------- Rate limiting (api::rate_limit) ----------
+/// Counter: rate-limit decisions. Labels: bucket (auth, pos), outcome (allowed, rejected).
+pub const RATE_LIMIT_DECISIONS_TOTAL: &str = "apex_edge_rate_limit_decisions_total";
+/// Counter: rejected requests. Labels: bucket.
+pub const RATE_LIMIT_REJECTED_TOTAL: &str = "apex_edge_rate_limit_rejected_total";
+
+// ---------- TLS listener (apex-edge binary) ----------
+/// Gauge: 1 when the hub is serving HTTPS. Labels: client_auth (off, required).
+pub const TLS_ENABLED: &str = "apex_edge_tls_enabled";
 
 #[cfg(test)]
 mod tests {

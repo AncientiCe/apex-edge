@@ -2,7 +2,7 @@
 //! boot app, run POS flows (create cart, search/add product, customer, promo, payment, finalize),
 //! verify document and HQ payload.
 
-use apex_edge::build_router;
+use apex_edge::{build_router, HubConfig};
 use apex_edge_contracts::HqOrderSubmissionEnvelope;
 use apex_edge_contracts::{AddLineItemPayload, AddPaymentPayload, SetTenderingPayload};
 use apex_edge_contracts::{
@@ -33,11 +33,10 @@ async fn start_app() -> (u16, sqlx::SqlitePool) {
 
     let app = build_router(
         pool.clone(),
-        STORE_ID,
-        None,
-        vec![],
-        apex_edge_api::AuthSettings::default(),
-        apex_edge_api::FiscalSettings::default(),
+        HubConfig {
+            store_id: STORE_ID,
+            ..HubConfig::default()
+        },
     );
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let port = listener.local_addr().expect("local addr").port();
@@ -147,11 +146,10 @@ async fn start_app_with_seed() -> (u16, sqlx::SqlitePool) {
 
     let app = build_router(
         pool.clone(),
-        STORE_ID,
-        None,
-        vec![],
-        apex_edge_api::AuthSettings::default(),
-        apex_edge_api::FiscalSettings::default(),
+        HubConfig {
+            store_id: STORE_ID,
+            ..HubConfig::default()
+        },
     );
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let port = listener.local_addr().expect("local addr").port();

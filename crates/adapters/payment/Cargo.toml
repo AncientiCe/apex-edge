@@ -1,10 +1,21 @@
 [package]
 name = "apex-edge-adapters-payment"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Payment provider adapter contracts and reference implementations for ApexEdge"
 
 [dependencies]
 apex-edge-contracts = { path = "../../contracts" }
+async-trait = "0.1"
+reqwest = { version = "0.12", features = ["json"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 thiserror = "1.0"
+tokio = { version = "1", features = ["time"] }
+tracing = "0.1"
 uuid = { version = "1.0", features = ["v4", "serde"] }
+
+[dev-dependencies]
+axum = { version = "0.7", features = ["json"] }
+serde_json = "1.0"
+tokio = { version = "1", features = ["full"] }

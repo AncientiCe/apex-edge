@@ -6,8 +6,7 @@
 //! - GET /health must return 200 with X-ApexEdge-Role: standby.
 //! - GET /audit/verify must still work (read-only + verification is exempt).
 
-use apex_edge::build_router;
-use apex_edge_api::AuthSettings;
+use apex_edge::{build_router, HubConfig};
 use apex_edge_storage::{create_sqlite_pool, run_migrations};
 use reqwest::StatusCode;
 use uuid::Uuid;
@@ -19,14 +18,7 @@ async fn spawn_standby() -> u16 {
     std::env::set_var("APEX_EDGE_STANDBY", "1");
     let pool = create_sqlite_pool("sqlite::memory:").await.unwrap();
     run_migrations(&pool).await.unwrap();
-    let app = build_router(
-        pool,
-        Uuid::nil(),
-        None,
-        vec![],
-        AuthSettings::default(),
-        apex_edge_api::FiscalSettings::default(),
-    );
+    let app = build_router(pool, HubConfig::default());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     tokio::spawn(async move {

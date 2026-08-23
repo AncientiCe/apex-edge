@@ -1,4 +1,4 @@
-use apex_edge::build_router;
+use apex_edge::{build_router, HubConfig};
 use apex_edge_contracts::{
     AuthCreatePairingCodeRequest, AuthDevicePairRequest, AuthSessionExchangeRequest,
     AuthSessionRefreshRequest,
@@ -43,23 +43,23 @@ async fn start_auth_server() -> (u16, Uuid) {
 
     let app = build_router(
         pool,
-        store_id,
-        None,
-        vec![],
-        apex_edge_api::AuthSettings {
-            enabled: true,
-            external_issuer: "https://issuer.example".into(),
-            external_audience: "mpos".into(),
-            external_hs256_secret: Some("ext-secret".into()),
-            external_public_key_pem: None,
-            session_signing_secret: "hub-secret".into(),
-            access_ttl_seconds: 300,
-            refresh_ttl_seconds: 3600,
-            pairing_code_ttl_seconds: 120,
-            pairing_code_length: 6,
-            pairing_max_attempts: 3,
+        HubConfig {
+            store_id,
+            auth: apex_edge_api::AuthSettings {
+                enabled: true,
+                external_issuer: "https://issuer.example".into(),
+                external_audience: "mpos".into(),
+                external_hs256_secret: Some("ext-secret".into()),
+                external_public_key_pem: None,
+                session_signing_secret: "hub-secret".into(),
+                access_ttl_seconds: 300,
+                refresh_ttl_seconds: 3600,
+                pairing_code_ttl_seconds: 120,
+                pairing_code_length: 6,
+                pairing_max_attempts: 3,
+            },
+            ..HubConfig::default()
         },
-        apex_edge_api::FiscalSettings::default(),
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -111,6 +111,7 @@ async fn pairing_code_is_one_time_and_device_can_exchange_session() {
             store_id,
             device_name: "iPad POS".into(),
             platform: Some("ios".into()),
+            register_id: None,
         })
         .send()
         .await
@@ -128,6 +129,7 @@ async fn pairing_code_is_one_time_and_device_can_exchange_session() {
             store_id,
             device_name: "iPad POS".into(),
             platform: Some("ios".into()),
+            register_id: None,
         })
         .send()
         .await
@@ -201,6 +203,7 @@ async fn refresh_rotates_and_revoke_invalidates_session() {
             store_id,
             device_name: "test-device".into(),
             platform: None,
+            register_id: None,
         })
         .send()
         .await

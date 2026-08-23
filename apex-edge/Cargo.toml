@@ -2,6 +2,8 @@
 name = "apex-edge"
 version = "1.2.0"
 edition = "2021"
+description = "ApexEdge: self-hostable, offline-first retail store hub."
+license = "MIT OR Apache-2.0"
 
 [lib]
 name = "apex_edge"
@@ -21,7 +23,9 @@ apex-edge-contracts = { path = "../crates/contracts" }
 apex-edge-adapters-fiscal = { path = "../crates/adapters/fiscal" }
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
 axum = { version = "0.7", features = ["json"] }
-metrics = "0.21"
+axum-server = { version = "0.8", features = ["tls-rustls"] }
+rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "std", "tls12"] }
+metrics = "0.23"
 chrono = { version = "0.4", features = ["serde"] }
 tower = "0.4"
 tower-http = { version = "0.5", features = ["cors"] }
@@ -33,6 +37,7 @@ uuid = { version = "1.0", features = ["v4"] }
 
 [dev-dependencies]
 apex-edge-contracts = { path = "../crates/contracts" }
+apex-edge-metrics = { path = "../crates/metrics" }
 apex-edge-storage = { path = "../crates/storage" }
 tempfile = "3"
 axum = { version = "0.7", features = ["json"] }
@@ -43,3 +48,23 @@ tokio = { version = "1", features = ["full"] }
 uuid = { version = "1.0", features = ["v4", "serde"] }
 jsonwebtoken = "9"
 serde = { version = "1.0", features = ["derive"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite"] }
+
+[package.metadata.deb]
+maintainer = "ApexEdge maintainers"
+copyright = "2026, ApexEdge contributors"
+depends = "$auto"
+section = "admin"
+priority = "optional"
+extended-description = """\
+ApexEdge is a self-hostable, offline-first retail store hub: POS orchestration, \
+inventory, payments, printing, and fiscal compliance behind a single binary."""
+assets = [
+    ["target/release/apex-edge", "usr/bin/apex-edge", "755"],
+    ["../packaging/README.md", "usr/share/doc/apex-edge/README.md", "644"],
+]
+
+[package.metadata.generate-rpm]
+assets = [
+    { source = "target/release/apex-edge", dest = "/usr/bin/apex-edge", mode = "755" },
+]

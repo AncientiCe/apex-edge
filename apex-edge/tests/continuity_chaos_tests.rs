@@ -7,7 +7,7 @@
 //!   - Snapshot: `/pos/snapshot` returns full live state for resnapshot recovery.
 //!   - Restart mid-cart: reservations persist across a process restart (crash recovery).
 
-use apex_edge::build_router;
+use apex_edge::{build_router, HubConfig};
 use apex_edge_contracts::{
     AddLineItemPayload, ContractVersion, CreateCartPayload, InventoryLevel, PosCommand,
     PosRequestEnvelope,
@@ -32,11 +32,10 @@ fn item_id() -> Uuid {
 async fn serve(pool: sqlx::SqlitePool) -> u16 {
     let app = build_router(
         pool,
-        STORE_ID,
-        None,
-        vec![],
-        apex_edge_api::AuthSettings::default(),
-        apex_edge_api::FiscalSettings::default(),
+        HubConfig {
+            store_id: STORE_ID,
+            ..HubConfig::default()
+        },
     );
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let port = listener.local_addr().expect("addr").port();

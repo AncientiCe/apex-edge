@@ -149,11 +149,7 @@ fn to_product_result(r: apex_edge_storage::CatalogItemRow) -> ProductSearchResul
         .as_deref()
         .and_then(|raw| serde_json::from_str::<apex_edge_contracts::CatalogItem>(raw).ok());
     let (image_urls, image_source) = resolve_product_image_urls(&r, synced_item.as_ref());
-    metrics::counter!(
-        CATALOG_PRODUCT_IMAGE_SELECTION_TOTAL,
-        1u64,
-        "source" => image_source
-    );
+    metrics::counter!(CATALOG_PRODUCT_IMAGE_SELECTION_TOTAL, "source" => image_source).increment(1);
     ProductSearchResult {
         id: r.id,
         product_id: r.id,
@@ -289,7 +285,7 @@ pub async fn get_prices(
         .filter_map(|id| Uuid::parse_str(id).ok())
         .collect();
     if requested_ids.is_empty() {
-        metrics::counter!(CATALOG_PRICES_TOTAL, 1u64, "outcome" => "empty");
+        metrics::counter!(CATALOG_PRICES_TOTAL, "outcome" => "empty").increment(1);
         return Ok(Json(PriceListResponse { items: vec![] }));
     }
 
@@ -297,7 +293,7 @@ pub async fn get_prices(
     let entries = apex_edge_storage::list_price_book_entries(&state.pool, state.store_id)
         .await
         .map_err(|_| {
-            metrics::counter!(CATALOG_PRICES_TOTAL, 1u64, "outcome" => OUTCOME_ERROR);
+            metrics::counter!(CATALOG_PRICES_TOTAL, "outcome" => OUTCOME_ERROR).increment(1);
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
     let base_prices: HashMap<Uuid, (u64, String)> = entries
@@ -326,7 +322,7 @@ pub async fn get_prices(
     } else {
         OUTCOME_HIT
     };
-    metrics::counter!(CATALOG_PRICES_TOTAL, 1u64, "outcome" => outcome);
+    metrics::counter!(CATALOG_PRICES_TOTAL, "outcome" => outcome).increment(1);
     Ok(Json(PriceListResponse { items }))
 }
 
@@ -384,17 +380,18 @@ pub async fn get_product_by_id(
     let result = apex_edge_storage::get_catalog_item(&state.pool, state.store_id, product_id).await;
     match result {
         Ok(Some(row)) => {
-            metrics::counter!(CATALOG_PRODUCT_BY_ID_TOTAL, 1u64, "outcome" => OUTCOME_HIT);
+            metrics::counter!(CATALOG_PRODUCT_BY_ID_TOTAL, "outcome" => OUTCOME_HIT).increment(1);
             let mut result = to_product_result(row);
             fill_available_to_sell(&state, std::slice::from_mut(&mut result)).await;
             Ok(Json(result))
         }
         Ok(None) => {
-            metrics::counter!(CATALOG_PRODUCT_BY_ID_TOTAL, 1u64, "outcome" => OUTCOME_NOT_FOUND);
+            metrics::counter!(CATALOG_PRODUCT_BY_ID_TOTAL, "outcome" => OUTCOME_NOT_FOUND)
+                .increment(1);
             Err(StatusCode::NOT_FOUND)
         }
         Err(_) => {
-            metrics::counter!(CATALOG_PRODUCT_BY_ID_TOTAL, 1u64, "outcome" => OUTCOME_ERROR);
+            metrics::counter!(CATALOG_PRODUCT_BY_ID_TOTAL, "outcome" => OUTCOME_ERROR).increment(1);
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }

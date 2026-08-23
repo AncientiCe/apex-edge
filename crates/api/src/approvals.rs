@@ -67,7 +67,8 @@ pub async fn create_approval(
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    metrics::counter!(APPROVALS_TOTAL, 1u64, "action" => record.action.clone(), "outcome" => "requested");
+    metrics::counter!(APPROVALS_TOTAL, "action" => record.action.clone(), "outcome" => "requested")
+        .increment(1);
 
     let response = to_response(record.clone());
     stream_broadcast(
@@ -103,16 +104,12 @@ pub async fn grant_approval_handler(
         ApprovalState::Expired => "expired",
         _ => "pending",
     };
-    metrics::counter!(
-        APPROVALS_TOTAL,
-        1u64,
-        "action" => record.action.clone(),
-        "outcome" => outcome
-    );
+    metrics::counter!(APPROVALS_TOTAL, "action" => record.action.clone(), "outcome" => outcome)
+        .increment(1);
     let wait = (record.decided_at.unwrap_or(record.created_at) - existing.created_at)
         .num_milliseconds() as f64
         / 1000.0;
-    metrics::histogram!(APPROVAL_WAIT_DURATION_SECONDS, wait.max(0.0));
+    metrics::histogram!(APPROVAL_WAIT_DURATION_SECONDS).record(wait.max(0.0));
 
     let response = to_response(record);
     stream_broadcast(
@@ -143,16 +140,12 @@ pub async fn deny_approval_handler(
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    metrics::counter!(
-        APPROVALS_TOTAL,
-        1u64,
-        "action" => record.action.clone(),
-        "outcome" => "denied"
-    );
+    metrics::counter!(APPROVALS_TOTAL, "action" => record.action.clone(), "outcome" => "denied")
+        .increment(1);
     let wait = (record.decided_at.unwrap_or(record.created_at) - existing.created_at)
         .num_milliseconds() as f64
         / 1000.0;
-    metrics::histogram!(APPROVAL_WAIT_DURATION_SECONDS, wait.max(0.0));
+    metrics::histogram!(APPROVAL_WAIT_DURATION_SECONDS).record(wait.max(0.0));
 
     let response = to_response(record);
     stream_broadcast(

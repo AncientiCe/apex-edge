@@ -150,6 +150,9 @@ async fn order_ledger_roundtrips_lines_payments_and_shift_cash_totals() {
             fiscal_provider: Some("de_tse".into()),
             fiscal_id: Some("tse_receipt_123".into()),
             fiscal_signature: Some("sig_abc".into()),
+            fiscal_qr_payload: None,
+            fiscal_signed_at: None,
+            fiscal_pending: false,
         },
     )
     .await
@@ -247,6 +250,9 @@ async fn order_payment_without_provider_roundtrips_as_none_not_empty_string() {
             fiscal_provider: None,
             fiscal_id: None,
             fiscal_signature: None,
+            fiscal_qr_payload: None,
+            fiscal_signed_at: None,
+            fiscal_pending: false,
         },
     )
     .await
@@ -662,6 +668,7 @@ async fn auth_storage_pairing_device_and_session_roundtrip() {
         &pool,
         device_id,
         store_id,
+        Uuid::nil(),
         "iPad-1",
         Some("ios"),
         "device-secret-hash",

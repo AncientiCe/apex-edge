@@ -41,16 +41,13 @@ async fn post_order(
 ) -> impl IntoResponse {
     let started = Instant::now();
     let result = state.storage.insert_order(&envelope);
-    histogram!(
-        "fake_hq_order_receive_duration_seconds",
-        started.elapsed().as_secs_f64()
-    );
+    histogram!("fake_hq_order_receive_duration_seconds").record(started.elapsed().as_secs_f64());
 
     match result {
         Ok(insert_result) => {
-            counter!("fake_hq_orders_received_total", 1);
+            counter!("fake_hq_orders_received_total").increment(1);
             if !insert_result.inserted {
-                counter!("fake_hq_orders_duplicate_total", 1);
+                counter!("fake_hq_orders_duplicate_total").increment(1);
             }
             (
                 StatusCode::OK,
