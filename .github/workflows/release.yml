@@ -69,15 +69,9 @@ jobs:
       - name: Install cargo-wix
         run: cargo install cargo-wix
 
-      - name: Scaffold WiX template (first release only)
-        shell: bash
-        run: |
-          if [ ! -f apex-edge/wix/main.wxs ]; then
-            cargo wix init -p apex-edge
-          fi
-
       - name: Build .msi package
-        run: cargo wix -p apex-edge --nocapture
+        shell: pwsh
+        run: cargo wix -p apex-edge --nocapture --bin-path "$env:WIX\bin"
 
       - name: Collect and checksum Windows artifacts
         shell: bash
