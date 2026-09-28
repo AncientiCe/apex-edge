@@ -342,6 +342,11 @@ async fn cannot_open_two_shifts_on_same_register() {
     .await;
     assert!(!second.success);
     assert_eq!(second.errors[0].code, "SHIFT_ALREADY_OPEN");
+    // A register that crashed mid-shift must be able to find the shift it still owns.
+    assert_eq!(
+        second.payload.as_ref().expect("existing shift")["shift_id"],
+        first.payload.as_ref().unwrap()["shift_id"]
+    );
 }
 
 #[tokio::test]

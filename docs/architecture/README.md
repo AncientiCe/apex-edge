@@ -836,6 +836,7 @@ flowchart TB
 - **Inputs:** paid carts finalized through `FinalizeOrder`, optional open shift for `(store_id, register_id)`, cash payments identified by payment tender metadata, finalized returns/refunds linked by `shift_id`, and drawer movements.
 - **Outputs:** `GET /orders` and `GET /orders/:id` read from the local ledger; X/Z reports include `cash_sales_cents`, `cash_refunds_cents`, `expected_cents`, and variance; HQ shift submissions include the same cash sales/refunds totals.
 - **Failure path:** order ledger write failure returns `ORDER_LEDGER_FAILED` before outbox/document work; missing order lookup returns 404; shift accounting falls back to zero for unavailable ledger aggregates rather than blocking close.
+- **Shift recovery:** `open_till` on a register that already has an open shift fails with `SHIFT_ALREADY_OPEN` and carries that shift in the payload (`{"shift_id": ...}`), so a register that crashed or reloaded mid-shift can resume its own till instead of being locked out.
 - **Metrics:** order finalization and lookup use `apex_edge_orders_finalized_total`, `apex_edge_orders_lookup_total`, and `apex_edge_orders_ledger_write_duration_seconds`; HTTP metrics label the order routes explicitly.
 
 ### 24. Payment Provider Adapters (v0.8.0)

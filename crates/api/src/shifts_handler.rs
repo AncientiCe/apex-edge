@@ -65,14 +65,18 @@ pub async fn open_till(
     payload: &OpenTillPayload,
 ) -> PosResponseEnvelope<serde_json::Value> {
     let reg = payload.register_id.unwrap_or(register_id);
-    if let Ok(Some(_)) = fetch_open_shift(&app.pool, store_id, reg).await {
-        return fail(
+    if let Ok(Some(open)) = fetch_open_shift(&app.pool, store_id, reg).await {
+        // Name the open shift so a register that restarted mid-shift can pick it back up
+        // instead of being locked out of its own till.
+        let mut rejected = fail(
             idempotency_key,
             err(
                 "SHIFT_ALREADY_OPEN",
                 "a shift is already open for this register",
             ),
         );
+        rejected.payload = Some(serde_json::json!({ "shift_id": open.id }));
+        return rejected;
     }
     let id = Uuid::new_v4();
     if let Err(e) = open_shift(
