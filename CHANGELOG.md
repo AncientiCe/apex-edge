@@ -9,6 +9,13 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Signed webhook delivery: an outbox destination with `config.signing_secret_env` gets every
+  delivery signed with HMAC-SHA256 over `"{timestamp}.{body}"` (`x-apexedge-timestamp`,
+  `x-apexedge-signature` headers). A named but unset secret fails closed (retry, then DLQ) instead
+  of sending unsigned. New metric `apex_edge_outbox_signing_total{destination,outcome}`.
+
 ### Changed
 
 - Release workflow: GitHub release notes are now the matching `CHANGELOG.md` section for the

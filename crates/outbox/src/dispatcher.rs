@@ -15,8 +15,8 @@ use apex_edge_contracts::HqOrderSubmissionResponse;
 use apex_edge_metrics::{
     OUTBOX_DISPATCHER_CYCLES_TOTAL, OUTBOX_DISPATCH_ATTEMPTS_TOTAL,
     OUTBOX_DISPATCH_DURATION_SECONDS, OUTBOX_DLQ_TOTAL, OUTBOX_FANOUT_TOTAL, OUTBOX_FILTERED_TOTAL,
-    OUTBOX_QUEUE_DEPTH, OUTCOME_ACCEPTED, OUTCOME_ERROR, OUTCOME_HTTP_ERROR, OUTCOME_REJECTED,
-    OUTCOME_TIMEOUT,
+    OUTBOX_QUEUE_DEPTH, OUTBOX_SIGNING_TOTAL, OUTCOME_ACCEPTED, OUTCOME_ERROR, OUTCOME_HTTP_ERROR,
+    OUTCOME_REJECTED, OUTCOME_SECRET_MISSING, OUTCOME_SIGNED, OUTCOME_TIMEOUT,
 };
 use apex_edge_storage::outbox_destinations::{
     count_deliveries_in_state, ensure_delivery, fetch_due_deliveries, list_enabled_destinations,
@@ -25,8 +25,11 @@ use apex_edge_storage::outbox_destinations::{
     DestinationRow, DueDelivery, NewDestination,
 };
 use chrono::{Duration, Utc};
+use hmac::{Hmac, Mac};
+use reqwest::header::CONTENT_TYPE;
 use reqwest::Client;
 use serde_json::Value;
+use sha2::Sha256;
 use sqlx::SqlitePool;
 use std::time::Instant;
 use thiserror::Error;
@@ -278,9 +281,34 @@ async fn attempt_delivery(
         return Ok(false);
     };
 
-    let body: Value = serde_json::from_str(&delivery.payload)?;
+    // Serialise once and send exactly these bytes, so a signature covers what the receiver
+    // actually reads.
+    let body = serde_json::to_vec(&serde_json::from_str::<Value>(&delivery.payload)?)?;
+    let mut request = client
+        .post(endpoint)
+        .header(CONTENT_TYPE, "application/json");
+    match signing_secret(&delivery.config) {
+        SigningSecret::None => {}
+        SigningSecret::Missing(var) => {
+            // A receiver that expects signatures would reject an unsigned delivery, or
+            // worse, accept it; either way the fix is the operator's, so say what to set.
+            metrics::counter!(OUTBOX_SIGNING_TOTAL, "destination" => delivery.destination_code.clone(), "outcome" => OUTCOME_SECRET_MISSING).increment(1);
+            record_attempt(&delivery.destination_code, OUTCOME_ERROR);
+            let reason = format!("signing secret env var {var} is not set");
+            retry_or_give_up(pool, policy, delivery, &reason).await?;
+            return Ok(false);
+        }
+        SigningSecret::Present(secret) => {
+            let timestamp = Utc::now().timestamp().to_string();
+            request = request
+                .header(TIMESTAMP_HEADER, &timestamp)
+                .header(SIGNATURE_HEADER, sign(&secret, &timestamp, &body));
+            metrics::counter!(OUTBOX_SIGNING_TOTAL, "destination" => delivery.destination_code.clone(), "outcome" => OUTCOME_SIGNED).increment(1);
+        }
+    }
+
     let start = Instant::now();
-    let send_result = client.post(endpoint).json(&body).send().await;
+    let send_result = request.body(body).send().await;
     metrics::histogram!(OUTBOX_DISPATCH_DURATION_SECONDS, "destination" => delivery.destination_code.clone())
         .record(start.elapsed().as_secs_f64());
 
@@ -329,6 +357,38 @@ async fn attempt_delivery(
             Ok(false)
         }
     }
+}
+
+/// Unix seconds at which the delivery was signed; part of the signed message.
+pub const TIMESTAMP_HEADER: &str = "x-apexedge-timestamp";
+/// `sha256=<hex HMAC-SHA256 of "{timestamp}.{body}">`.
+pub const SIGNATURE_HEADER: &str = "x-apexedge-signature";
+
+enum SigningSecret {
+    None,
+    Missing(String),
+    Present(String),
+}
+
+/// Destinations opt in with `config.signing_secret_env`, naming the environment variable
+/// that holds the secret. The secret itself never goes into the destinations table.
+fn signing_secret(config: &Value) -> SigningSecret {
+    let Some(var) = config.get("signing_secret_env").and_then(Value::as_str) else {
+        return SigningSecret::None;
+    };
+    match std::env::var(var) {
+        Ok(secret) if !secret.is_empty() => SigningSecret::Present(secret),
+        _ => SigningSecret::Missing(var.to_string()),
+    }
+}
+
+fn sign(secret: &str, timestamp: &str, body: &[u8]) -> String {
+    let mut mac =
+        Hmac::<Sha256>::new_from_slice(secret.as_bytes()).expect("HMAC accepts any key length");
+    mac.update(timestamp.as_bytes());
+    mac.update(b".");
+    mac.update(body);
+    format!("sha256={}", hex::encode(mac.finalize().into_bytes()))
 }
 
 /// `None` when the destination accepted the submission.

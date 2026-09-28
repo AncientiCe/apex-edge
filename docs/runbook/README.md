@@ -31,7 +31,7 @@ Related: [README](../../README.md) · [Architecture](../architecture/README.md) 
 | `APEX_EDGE_RESERVATION_TTL_SECONDS` | No | `3600` | Lifetime of a stock reservation before the sweeper may release it (frees stock from abandoned carts). |
 | `APEX_EDGE_RESERVATION_SWEEP_INTERVAL_SECONDS` | No | `60` | How often the background sweeper expires stale reservations. A sweep also runs once on startup (crash recovery). |
 | `APEX_EDGE_HQ_SUBMIT_URL` | No | unset | URL to POST outbox submissions to HQ. Registers the `hq` outbox destination; the dispatcher runs every 30 s whenever at least one destination exists. |
-| `APEX_EDGE_OUTBOX_DESTINATIONS` | No | unset | JSON array of extra destinations, e.g. `[{"code":"peppol","kind":"http","endpoint":"https://ap.example/as4","config":{"payload_kinds":["order","return"]}}]`. Omit `payload_kinds` to send everything. |
+| `APEX_EDGE_OUTBOX_DESTINATIONS` | No | unset | JSON array of extra destinations, e.g. `[{"code":"peppol","kind":"http","endpoint":"https://ap.example/as4","config":{"payload_kinds":["order","return"]}}]`. Omit `payload_kinds` to send everything. Add `"signing_secret_env":"NAME"` to `config` to HMAC-sign every delivery with the secret held in env var `NAME` ([architecture §43](../architecture/README.md#43-signed-webhook-delivery-v210)). |
 | `APEX_EDGE_OUTBOX_BATCH_SIZE` | No | `10` | Submissions considered and deliveries attempted per dispatch cycle. |
 | `APEX_EDGE_OUTBOX_MAX_ATTEMPTS` | No | `10` | Attempts a single destination gets before that delivery is dead-lettered. Counted per destination. |
 | `APEX_EDGE_OUTBOX_BASE_BACKOFF_SECONDS` | No | `5` | First retry delay, doubling per attempt up to a 320 s cap at the default. |

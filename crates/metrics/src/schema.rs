@@ -330,6 +330,11 @@ pub const OUTBOX_FANOUT_TOTAL: &str = "apex_edge_outbox_fanout_total";
 /// Counter: deliveries skipped because the destination does not want that payload kind.
 /// Labels: destination, kind.
 pub const OUTBOX_FILTERED_TOTAL: &str = "apex_edge_outbox_filtered_total";
+/// Counter: HMAC signing of webhook deliveries. Labels: destination, outcome (signed,
+/// secret_missing).
+pub const OUTBOX_SIGNING_TOTAL: &str = "apex_edge_outbox_signing_total";
+pub const OUTCOME_SIGNED: &str = "signed";
+pub const OUTCOME_SECRET_MISSING: &str = "secret_missing";
 
 /// outcome: accepted, rejected, http_error, timeout, dlq.
 pub const OUTCOME_ACCEPTED: &str = "accepted";

@@ -1573,3 +1573,47 @@ flowchart TD
 - **Metrics:** `apex_edge_tls_enabled{client_auth}` gauge (1 while serving HTTPS, labelled `off` or
   `required`), `apex_edge_rate_limit_decisions_total{bucket,outcome}`,
   `apex_edge_rate_limit_rejected_total{bucket}`.
+
+### 43. Signed Webhook Delivery (v2.1.0)
+
+**Purpose:** Let a receiver on the public internet prove a delivery came from this hub and is not a
+replay. Destinations opt in by naming an environment variable that holds a shared secret; the
+dispatcher then signs every delivery to that destination with HMAC-SHA256.
+
+```mermaid
+sequenceDiagram
+    participant D as Outbox dispatcher
+    participant Env as Process env
+    participant R as Webhook receiver
+
+    D->>D: config.signing_secret_env set?
+    alt not set
+        D->>R: POST body (unsigned, as before)
+    else set and env var present
+        D->>Env: read secret
+        D->>D: sig = HMAC-SHA256(secret, "{ts}.{body}")
+        D->>R: POST body + x-apexedge-timestamp: ts + x-apexedge-signature: sha256=<hex>
+        R->>R: recompute, constant-time compare, reject stale ts
+    else set but env var missing/empty
+        D->>D: record error, retry with backoff, DLQ after max attempts
+        Note over D,R: nothing is sent unsigned
+    end
+```
+
+**Notes:**
+- **Inputs:** `config.signing_secret_env` on an `APEX_EDGE_OUTBOX_DESTINATIONS` entry, and the
+  environment variable it names. The secret is read at delivery time and never stored in
+  `outbox_destinations`.
+- **Outputs:** The exact bytes signed are the bytes sent (the body is serialised once), with
+  `content-type: application/json`, `x-apexedge-timestamp` (unix seconds) and
+  `x-apexedge-signature` (`sha256=` + lowercase hex).
+- **Failure path:** A named but unset secret fails closed: the attempt is recorded with
+  `signing secret env var <NAME> is not set`, retried on the normal backoff, and dead-lettered after
+  `APEX_EDGE_OUTBOX_MAX_ATTEMPTS`, so an operator sees it. Destinations without the setting are
+  unaffected.
+- **Receiver guidance:** Recompute the HMAC over `"{timestamp}.{raw body}"`, compare in constant
+  time, and reject timestamps outside your tolerance window (for example five minutes).
+- **Metrics:** `apex_edge_outbox_signing_total{destination,outcome}` with `outcome` `signed` or
+  `secret_missing`, alongside the existing `apex_edge_outbox_dispatch_attempts_total`.
+- **Code:** `crates/outbox/src/dispatcher.rs` (`signing_secret`, `sign`); tests in
+  `crates/outbox/tests/signing_tests.rs`.
