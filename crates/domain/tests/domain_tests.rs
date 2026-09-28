@@ -38,7 +38,7 @@ fn pricing_pipeline_primitives_compute_expected_values() {
         inclusive: false,
         version: 1,
     }];
-    assert_eq!(tax_for_line(1200, tax_cat, &rules, false), 120);
+    assert_eq!(tax_for_line(1200, tax_cat, &rules).tax_cents, 120);
     assert_eq!(coupon_discount_cents(300, 250), 250);
 }
 
@@ -57,6 +57,7 @@ fn cart_payment_and_finalize_journey_works() {
         line_total_cents: 1000,
         discount_cents: 0,
         tax_cents: 100,
+        tax_inclusive: false,
     });
     cart.state = CartStateKind::Itemized;
     cart.set_tendering();

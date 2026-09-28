@@ -644,7 +644,9 @@ where
             })?;
         let tax_cat = category_by_item(line.item_id);
         let line_net = res.line_total_cents.saturating_sub(res.discount_cents);
-        res.tax_cents = tax_for_line(line_net, tax_cat, rules, false);
+        let tax = tax_for_line(line_net, tax_cat, rules);
+        res.tax_cents = tax.tax_cents;
+        res.tax_inclusive = tax.inclusive;
     }
     Ok(())
 }
@@ -818,7 +820,9 @@ fn apply_manual_discounts_to_lines(
     for line in &mut cart.lines {
         let tax_cat = category_by_item(line.item_id);
         let line_net = line.line_total_cents.saturating_sub(line.discount_cents);
-        line.tax_cents = tax_for_line(line_net, tax_cat, rules, false);
+        let tax = tax_for_line(line_net, tax_cat, rules);
+        line.tax_cents = tax.tax_cents;
+        line.tax_inclusive = tax.inclusive;
     }
     Ok(())
 }
@@ -2563,6 +2567,7 @@ pub async fn execute_pos_command(
                         line_total_cents: line.line_total_cents,
                         discount_cents: line.discount_cents,
                         tax_cents: line.tax_cents,
+                        tax_inclusive: line.tax_inclusive,
                     })
                     .collect(),
                 payments: order
@@ -3471,6 +3476,7 @@ mod tests {
             line_total_cents: 1000,
             discount_cents: 0,
             tax_cents: 0,
+            tax_inclusive: false,
         }];
 
         // A result whose line_id is NOT present in cart_lines — the invariant-violation case.
@@ -3480,6 +3486,7 @@ mod tests {
             line_total_cents: 1000,
             discount_cents: 0,
             tax_cents: 0,
+            tax_inclusive: false,
         }];
 
         let no_tax = |_: Uuid| Uuid::nil();

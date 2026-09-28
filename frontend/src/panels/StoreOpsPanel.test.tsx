@@ -42,8 +42,8 @@ const lastSale: LastSale = {
   orderId: 'order-1',
   totalCents: 2420,
   lines: [
-    { sku: 'SKU-1', name: 'Coffee', quantity: 2, unit_price_cents: 1000, tax_cents: 200 },
-    { sku: 'SKU-2', name: 'Cake', quantity: 1, unit_price_cents: 200, tax_cents: 20 },
+    { sku: 'SKU-1', name: 'Coffee', quantity: 2, unit_price_cents: 1000, tax_cents: 200, tax_inclusive: false },
+    { sku: 'SKU-2', name: 'Cake', quantity: 1, unit_price_cents: 200, tax_cents: 20, tax_inclusive: false },
   ],
 };
 
@@ -275,6 +275,7 @@ describe('StoreOpsPanel returns', () => {
         quantity: 2,
         unit_price_cents: 1000,
         tax_cents: 200,
+        tax_inclusive: false,
         original_line_id: null,
       },
     });

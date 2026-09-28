@@ -121,6 +121,7 @@ export interface ReturnLineItemPayload {
   quantity: number;
   unit_price_cents: number;
   tax_cents: number;
+  tax_inclusive: boolean;
   original_line_id: string | null;
 }
 
@@ -202,6 +203,8 @@ export interface CartLine {
   line_total_cents: number;
   discount_cents: number;
   tax_cents: number;
+  /** True when tax_cents is already inside the price (VAT-inclusive). */
+  tax_inclusive?: boolean;
   modifier_option_ids: string[];
   notes: string | null;
 }

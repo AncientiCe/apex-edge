@@ -11,6 +11,7 @@ export interface LastSale {
     quantity: number;
     unit_price_cents: number;
     tax_cents: number;
+    tax_inclusive: boolean;
   }[];
 }
 

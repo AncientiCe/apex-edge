@@ -18,6 +18,9 @@ pub struct OrderLine {
     pub line_total_cents: u64,
     pub discount_cents: u64,
     pub tax_cents: u64,
+    /// True when `tax_cents` is contained in the price (VAT-inclusive) rather than added to it.
+    #[serde(default)]
+    pub tax_inclusive: bool,
     pub modifier_option_ids: Vec<Uuid>,
     pub notes: Option<String>,
 }
@@ -34,6 +37,7 @@ impl OrderLine {
             line_total_cents: self.line_total_cents,
             discount_cents: self.discount_cents,
             tax_cents: self.tax_cents,
+            tax_inclusive: self.tax_inclusive,
             modifier_option_ids: self.modifier_option_ids.clone(),
             notes: self.notes.clone(),
         }

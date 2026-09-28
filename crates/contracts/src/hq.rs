@@ -76,6 +76,9 @@ pub struct HqOrderLine {
     pub line_total_cents: u64,
     pub discount_cents: u64,
     pub tax_cents: u64,
+    /// True when `tax_cents` is contained in the price (VAT-inclusive) rather than added to it.
+    #[serde(default)]
+    pub tax_inclusive: bool,
     pub modifier_option_ids: Vec<Uuid>,
     pub notes: Option<String>,
 }

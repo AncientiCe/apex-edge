@@ -80,6 +80,7 @@ pub fn apply_promos_with_attribution(
                 line_total_cents: l.line_total_cents,
                 discount_cents: discount,
                 tax_cents: l.tax_cents,
+                tax_inclusive: l.tax_inclusive,
             }
         })
         .collect();
@@ -409,6 +410,7 @@ mod tests {
             line_total_cents: total,
             discount_cents: 0,
             tax_cents: 0,
+            tax_inclusive: false,
         }
     }
 
@@ -425,6 +427,7 @@ mod tests {
             line_total_cents: unit_price_cents.saturating_mul(quantity as u64),
             discount_cents: 0,
             tax_cents: 0,
+            tax_inclusive: false,
         }
     }
 

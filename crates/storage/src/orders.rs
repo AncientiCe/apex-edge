@@ -44,6 +44,9 @@ pub struct NewOrderLineEntry {
     pub line_total_cents: u64,
     pub discount_cents: u64,
     pub tax_cents: u64,
+    /// True when `tax_cents` is contained in the price (VAT-inclusive).
+    #[serde(default)]
+    pub tax_inclusive: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -106,6 +109,9 @@ pub struct OrderLineEntry {
     pub line_total_cents: u64,
     pub discount_cents: u64,
     pub tax_cents: u64,
+    /// True when `tax_cents` is contained in the price (VAT-inclusive).
+    #[serde(default)]
+    pub tax_inclusive: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -186,8 +192,8 @@ pub async fn insert_order_ledger_entry(
 
     for line in &order.lines {
         sqlx::query(
-            "INSERT INTO order_lines (id, order_id, item_id, sku, name, quantity, unit_price_cents, line_total_cents, discount_cents, tax_cents, created_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO order_lines (id, order_id, item_id, sku, name, quantity, unit_price_cents, line_total_cents, discount_cents, tax_cents, tax_inclusive, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(line.line_id.to_string())
         .bind(order.order_id.to_string())
@@ -199,6 +205,7 @@ pub async fn insert_order_ledger_entry(
         .bind(line.line_total_cents as i64)
         .bind(line.discount_cents as i64)
         .bind(line.tax_cents as i64)
+        .bind(line.tax_inclusive as i64)
         .bind(&now)
         .execute(&mut *tx)
         .await?;
@@ -381,6 +388,7 @@ fn row_to_line(row: sqlx::sqlite::SqliteRow) -> Result<OrderLineEntry, PoolError
     let line_total: i64 = row.try_get("line_total_cents")?;
     let discount: i64 = row.try_get("discount_cents")?;
     let tax: i64 = row.try_get("tax_cents")?;
+    let tax_inclusive: i64 = row.try_get("tax_inclusive").unwrap_or(0);
     Ok(OrderLineEntry {
         line_id: parse_uuid(&id)?,
         item_id: parse_uuid(&item_id)?,
@@ -391,6 +399,7 @@ fn row_to_line(row: sqlx::sqlite::SqliteRow) -> Result<OrderLineEntry, PoolError
         line_total_cents: line_total.max(0) as u64,
         discount_cents: discount.max(0) as u64,
         tax_cents: tax.max(0) as u64,
+        tax_inclusive: tax_inclusive != 0,
     })
 }
 

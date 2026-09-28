@@ -81,10 +81,16 @@ pub async fn sale_transaction(
     let rules = list_tax_rules(pool, store_id).await.unwrap_or_default();
     let mut lines = Vec::with_capacity(order.lines.len());
     for line in &order.lines {
-        let (tax_rate_bps, tax_category, tax_inclusive) =
+        let (tax_rate_bps, tax_category) =
             tax_info_for_item(pool, store_id, line.item_id, &rules).await;
-        let net_cents = line.line_total_cents.saturating_sub(line.discount_cents) as i64;
+        // The line records how its tax was priced; the synced rule may have changed since.
+        let tax_inclusive = line.tax_inclusive;
         let tax_cents = line.tax_cents as i64;
+        let net_cents = net_of(
+            line.line_total_cents.saturating_sub(line.discount_cents) as i64,
+            tax_cents,
+            tax_inclusive,
+        );
         lines.push(FiscalLine {
             line_id: line.line_id,
             sku: line.sku.clone(),
@@ -159,10 +165,11 @@ pub async fn refund_transaction(
         .unwrap_or_default();
     let mut lines = Vec::with_capacity(snapshot.lines.len());
     for line in &snapshot.lines {
-        let (tax_rate_bps, tax_category, tax_inclusive) =
+        let (tax_rate_bps, tax_category) =
             tax_info_for_sku(pool, snapshot.store_id, &line.sku, &rules).await;
-        let net_cents = -(line.line_total_cents as i64);
+        let tax_inclusive = line.tax_inclusive;
         let tax_cents = -(line.tax_cents as i64);
+        let net_cents = net_of(-(line.line_total_cents as i64), tax_cents, tax_inclusive);
         lines.push(FiscalLine {
             line_id: line.line_id,
             sku: line.sku.clone(),
@@ -388,19 +395,28 @@ fn tender_type_from_label(reference: Option<&str>, provider: Option<&str>) -> Fi
     }
 }
 
+/// Net amount of a line priced at `price_cents`: an inclusive price already contains the tax.
+fn net_of(price_cents: i64, tax_cents: i64, tax_inclusive: bool) -> i64 {
+    if tax_inclusive {
+        price_cents - tax_cents
+    } else {
+        price_cents
+    }
+}
+
 async fn tax_info_for_item(
     pool: &SqlitePool,
     store_id: Uuid,
     item_id: Uuid,
     rules: &[apex_edge_contracts::TaxRule],
-) -> (u32, String, bool) {
+) -> (u32, String) {
     let tax_category_id = match get_catalog_item(pool, store_id, item_id).await {
         Ok(Some(item)) => item.tax_category_id,
-        _ => return (0, "untaxed".into(), false),
+        _ => return (0, "untaxed".into()),
     };
     match rules.iter().find(|r| r.tax_category_id == tax_category_id) {
-        Some(rule) => (rule.rate_bps, rule.name.clone(), rule.inclusive),
-        None => (0, "untaxed".into(), false),
+        Some(rule) => (rule.rate_bps, rule.name.clone()),
+        None => (0, "untaxed".into()),
     }
 }
 
@@ -409,14 +425,14 @@ async fn tax_info_for_sku(
     store_id: Uuid,
     sku: &str,
     rules: &[apex_edge_contracts::TaxRule],
-) -> (u32, String, bool) {
+) -> (u32, String) {
     let tax_category_id = match get_catalog_item_by_sku(pool, store_id, sku).await {
         Ok(Some(item)) => item.tax_category_id,
-        _ => return (0, "untaxed".into(), false),
+        _ => return (0, "untaxed".into()),
     };
     match rules.iter().find(|r| r.tax_category_id == tax_category_id) {
-        Some(rule) => (rule.rate_bps, rule.name.clone(), rule.inclusive),
-        None => (0, "untaxed".into(), false),
+        Some(rule) => (rule.rate_bps, rule.name.clone()),
+        None => (0, "untaxed".into()),
     }
 }
 
@@ -546,8 +562,12 @@ fn transaction_from_ledger(
         .lines
         .iter()
         .map(|line| {
-            let net_cents = line.line_total_cents.saturating_sub(line.discount_cents) as i64;
             let tax_cents = line.tax_cents as i64;
+            let net_cents = net_of(
+                line.line_total_cents.saturating_sub(line.discount_cents) as i64,
+                tax_cents,
+                line.tax_inclusive,
+            );
             let tax_rate_bps = if net_cents.abs() > 0 {
                 ((tax_cents.abs().saturating_mul(10_000)) / net_cents.abs()) as u32
             } else {
@@ -565,7 +585,7 @@ fn transaction_from_ledger(
                 discount_cents: line.discount_cents as i64,
                 tax_rate_bps,
                 tax_category: "standard".into(),
-                tax_inclusive: false,
+                tax_inclusive: line.tax_inclusive,
             }
         })
         .collect();

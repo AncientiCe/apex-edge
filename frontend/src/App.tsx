@@ -42,6 +42,7 @@ import { CatalogPanel } from './panels/CatalogPanel';
 import { CustomerPanel } from './panels/CustomerPanel';
 import { CartPanel } from './panels/CartPanel';
 import { StoreOpsPanel, type LastSale } from './panels/StoreOpsPanel';
+import { lastSaleFrom } from './lastSale';
 import { EventLogPanel } from './panels/EventLogPanel';
 import { SyncStatusPanel } from './panels/SyncStatusPanel';
 import { ProductDetailPage } from './panels/ProductDetailPage';
@@ -101,20 +102,6 @@ function useEventLog() {
     setEntries((prev) => [...prev.slice(-199), { ts, kind, text }]);
   }, []);
   return [entries, log] as const;
-}
-
-/** The lines of a finished sale, priced as sold, so the Store Ops panel can return it. */
-function lastSaleFrom(orderId: string, cart: CartState | null): LastSale | null {
-  if (!cart || cart.lines.length === 0) return null;
-  const lines = cart.lines.map((l) => ({
-    sku: l.sku,
-    name: l.name,
-    quantity: l.quantity,
-    unit_price_cents: Math.floor((l.line_total_cents - l.discount_cents) / Math.max(1, l.quantity)),
-    tax_cents: l.tax_cents,
-  }));
-  const totalCents = lines.reduce((sum, l) => sum + l.quantity * l.unit_price_cents + l.tax_cents, 0);
-  return { orderId, totalCents, lines };
 }
 
 function AppInner() {

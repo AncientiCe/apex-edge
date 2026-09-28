@@ -55,6 +55,21 @@ pub struct CartLineItem {
     pub line_total_cents: u64,
     pub discount_cents: u64,
     pub tax_cents: u64,
+    /// True when `tax_cents` is contained in the price (VAT-inclusive) rather than added to it.
+    #[serde(default)]
+    pub tax_inclusive: bool,
+}
+
+impl CartLineItem {
+    /// What the customer pays for this line after line discounts, tax included.
+    pub fn gross_cents(&self) -> u64 {
+        let price = self.line_total_cents.saturating_sub(self.discount_cents);
+        if self.tax_inclusive {
+            price
+        } else {
+            price.saturating_add(self.tax_cents)
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -118,6 +133,7 @@ impl Cart {
             line_total_cents,
             discount_cents: 0,
             tax_cents: 0,
+            tax_inclusive: false,
         });
         self.updated_at = Utc::now();
         self.state = if self.lines.is_empty() {
@@ -163,17 +179,10 @@ impl Cart {
         Ok(())
     }
 
-    /// Total = subtotal - discounts + tax (coupon discounts applied at basket level).
+    /// Total = subtotal - discounts + exclusive tax (coupon discounts applied at basket
+    /// level). Inclusive tax is already inside the price and is not added again.
     pub fn total_cents(&self) -> u64 {
-        let lines_net: u64 = self
-            .lines
-            .iter()
-            .map(|l| {
-                l.line_total_cents
-                    .saturating_sub(l.discount_cents)
-                    .saturating_add(l.tax_cents)
-            })
-            .sum();
+        let lines_net: u64 = self.lines.iter().map(CartLineItem::gross_cents).sum();
         let coupon_discount: u64 = self.applied_coupons.iter().map(|c| c.discount_cents).sum();
         lines_net.saturating_sub(coupon_discount)
     }
@@ -204,6 +213,7 @@ impl Cart {
                 line.line_total_cents = result.line_total_cents;
                 line.discount_cents = result.discount_cents;
                 line.tax_cents = result.tax_cents;
+                line.tax_inclusive = result.tax_inclusive;
             }
         }
         self.updated_at = Utc::now();
@@ -297,6 +307,7 @@ impl Cart {
                     line_total_cents: l.line_total_cents,
                     discount_cents: l.discount_cents,
                     tax_cents: l.tax_cents,
+                    tax_inclusive: l.tax_inclusive,
                     modifier_option_ids: l.modifier_option_ids.clone(),
                     notes: l.notes.clone(),
                 })
@@ -343,6 +354,7 @@ impl Cart {
                 line_total_cents: l.line_total_cents,
                 discount_cents: l.discount_cents,
                 tax_cents: l.tax_cents,
+                tax_inclusive: l.tax_inclusive,
                 modifier_option_ids: l.modifier_option_ids.clone(),
                 notes: l.notes.clone(),
             })
@@ -421,6 +433,7 @@ mod tests {
             line_total_cents: 500,
             discount_cents: 0,
             tax_cents: 0,
+            tax_inclusive: false,
         }
     }
 
@@ -522,6 +535,7 @@ mod tests {
             line_total_cents: 100,
             discount_cents: 0,
             tax_cents: 0,
+            tax_inclusive: false,
         });
         cart.state = CartStateKind::Tendering;
         cart.add_payment(payment_input(100))
@@ -544,6 +558,7 @@ mod tests {
             line_total_cents: 100,
             discount_cents: 0,
             tax_cents: 0,
+            tax_inclusive: false,
         });
         cart.state = CartStateKind::Tendering;
 

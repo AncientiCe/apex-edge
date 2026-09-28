@@ -208,6 +208,10 @@ pub struct ReturnLineItemPayload {
     /// typically the original line's unit price.
     pub unit_price_cents: u64,
     pub tax_cents: u64,
+    /// True when `tax_cents` is already inside `unit_price_cents` (VAT-inclusive), so the
+    /// refund is the price alone.
+    #[serde(default)]
+    pub tax_inclusive: bool,
     /// Optional link to the original order line (receipted returns).
     pub original_line_id: Option<Uuid>,
 }
@@ -484,6 +488,9 @@ pub struct CartLine {
     pub line_total_cents: u64,
     pub discount_cents: u64,
     pub tax_cents: u64,
+    /// True when `tax_cents` is contained in the price (VAT-inclusive) rather than added to it.
+    #[serde(default)]
+    pub tax_inclusive: bool,
     pub modifier_option_ids: Vec<Uuid>,
     pub notes: Option<String>,
 }

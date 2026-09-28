@@ -136,6 +136,7 @@ async fn order_ledger_roundtrips_lines_payments_and_shift_cash_totals() {
                 line_total_cents: 1_200,
                 discount_cents: 100,
                 tax_cents: 50,
+                tax_inclusive: false,
             }],
             payments: vec![NewOrderPaymentEntry {
                 tender_id,
@@ -236,6 +237,7 @@ async fn order_payment_without_provider_roundtrips_as_none_not_empty_string() {
                 line_total_cents: 500,
                 discount_cents: 0,
                 tax_cents: 0,
+                tax_inclusive: false,
             }],
             payments: vec![NewOrderPaymentEntry {
                 tender_id,

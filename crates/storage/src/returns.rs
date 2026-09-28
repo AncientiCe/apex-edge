@@ -44,6 +44,9 @@ pub struct ReturnLineRow {
     pub unit_price_cents: u64,
     pub line_total_cents: u64,
     pub tax_cents: u64,
+    /// True when `tax_cents` is contained in the price (VAT-inclusive).
+    #[serde(default)]
+    pub tax_inclusive: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -153,8 +156,8 @@ pub async fn void_return_row(pool: &SqlitePool, id: Uuid) -> Result<(), PoolErro
 pub async fn insert_return_line(pool: &SqlitePool, line: &ReturnLineRow) -> Result<(), PoolError> {
     let now = Utc::now().to_rfc3339();
     sqlx::query(
-        "INSERT INTO return_lines (id, return_id, original_line_id, sku, name, quantity, unit_price_cents, line_total_cents, tax_cents, created_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO return_lines (id, return_id, original_line_id, sku, name, quantity, unit_price_cents, line_total_cents, tax_cents, tax_inclusive, created_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(line.id.to_string())
     .bind(line.return_id.to_string())
@@ -165,6 +168,7 @@ pub async fn insert_return_line(pool: &SqlitePool, line: &ReturnLineRow) -> Resu
     .bind(line.unit_price_cents as i64)
     .bind(line.line_total_cents as i64)
     .bind(line.tax_cents as i64)
+    .bind(line.tax_inclusive as i64)
     .bind(&now)
     .execute(pool)
     .await?;
@@ -189,6 +193,7 @@ pub async fn list_return_lines(
         let price: i64 = r.try_get("unit_price_cents")?;
         let total: i64 = r.try_get("line_total_cents")?;
         let tax: i64 = r.try_get("tax_cents")?;
+        let tax_inclusive: i64 = r.try_get("tax_inclusive").unwrap_or(0);
         out.push(ReturnLineRow {
             id: Uuid::parse_str(&id_s).map_err(|_| PoolError::Other("bad uuid".into()))?,
             return_id: Uuid::parse_str(&ret_s).map_err(|_| PoolError::Other("bad uuid".into()))?,
@@ -199,6 +204,7 @@ pub async fn list_return_lines(
             unit_price_cents: price.max(0) as u64,
             line_total_cents: total.max(0) as u64,
             tax_cents: tax.max(0) as u64,
+            tax_inclusive: tax_inclusive != 0,
         });
     }
     Ok(out)
@@ -323,6 +329,7 @@ mod tests {
                 unit_price_cents: 500,
                 line_total_cents: 1000,
                 tax_cents: 100,
+                tax_inclusive: false,
             },
         )
         .await

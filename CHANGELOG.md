@@ -23,6 +23,12 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- VAT-inclusive tax rules were priced as exclusive: the tax was added on top of a price that
+  already contained it (11.00 at 10% VAT charged 12.10), while fiscal records marked the line
+  inclusive. Cart pricing now honours `TaxRule.inclusive`, and a `tax_inclusive` flag travels
+  with each line through the cart, order ledger, HQ payload, returns, and fiscal transactions
+  (new `order_lines`/`return_lines` columns, default `false`). POS clients returning inclusive
+  lines should send `tax_inclusive: true` on `return_line_item`.
 - Time clock: `clock_in` rejects an associate who is already clocked in (`ALREADY_CLOCKED_IN`)
   instead of opening a second overlapping entry, and both `clock_in`/`clock_out` reject a blank
   `associate_id` (`INVALID_ASSOCIATE_ID`). First API-level tests for the time clock.

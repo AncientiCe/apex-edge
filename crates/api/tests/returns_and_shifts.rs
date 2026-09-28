@@ -138,6 +138,7 @@ async fn full_return_flow_updates_outbox_and_audit() {
                 quantity: 2,
                 unit_price_cents: 1000,
                 tax_cents: 200,
+                tax_inclusive: false,
                 original_line_id: None,
             }),
         ),
@@ -242,6 +243,7 @@ async fn over_refund_is_rejected() {
                 quantity: 1,
                 unit_price_cents: 1000,
                 tax_cents: 0,
+                tax_inclusive: false,
                 original_line_id: None,
             }),
         ),
@@ -555,6 +557,7 @@ async fn x_report_and_close_till_include_ledger_cash_sales_and_refunds() {
                 line_total_cents: 1_500,
                 discount_cents: 0,
                 tax_cents: 0,
+                tax_inclusive: false,
             }],
             payments: vec![NewOrderPaymentEntry {
                 tender_id: Uuid::new_v4(),

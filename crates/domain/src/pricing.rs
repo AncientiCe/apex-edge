@@ -12,6 +12,9 @@ pub struct LinePriceResult {
     pub line_total_cents: u64,
     pub discount_cents: u64,
     pub tax_cents: u64,
+    /// True when `tax_cents` is contained in the price (VAT-inclusive) rather than added to it.
+    #[serde(default)]
+    pub tax_inclusive: bool,
 }
 
 /// Lookup base price for item + modifiers (from local price book).
@@ -84,18 +87,45 @@ pub fn apply_tax(amount_cents: u64, rate_bps: u32, inclusive: bool) -> u64 {
     }
 }
 
-/// Get tax amount for a line given tax category and rules.
-pub fn tax_for_line(
-    line_net_cents: u64,
-    tax_category_id: Uuid,
-    rules: &[TaxRule],
-    inclusive: bool,
-) -> u64 {
-    let rule = match rules.iter().find(|r| r.tax_category_id == tax_category_id) {
-        Some(r) => r,
-        None => return 0,
-    };
-    apply_tax(line_net_cents, rule.rate_bps, inclusive)
+/// Tax on one line, and whether it is contained in the line's price.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct LineTax {
+    pub tax_cents: u64,
+    pub inclusive: bool,
+}
+
+/// Tax for a line given its tax category and the synced rules.
+///
+/// `line_amount_cents` is the line's price after discounts. For an inclusive rule it already
+/// contains the tax, which is extracted; for an exclusive rule the tax is added on top.
+///
+/// # Examples
+///
+/// ```
+/// use apex_edge_contracts::TaxRule;
+/// use apex_edge_domain::tax_for_line;
+/// use uuid::Uuid;
+///
+/// let vat = Uuid::new_v4();
+/// let rules = vec![TaxRule {
+///     id: Uuid::new_v4(),
+///     tax_category_id: vat,
+///     rate_bps: 1000,
+///     name: "VAT".into(),
+///     inclusive: true,
+///     version: 1,
+/// }];
+/// let tax = tax_for_line(1100, vat, &rules);
+/// assert_eq!((tax.tax_cents, tax.inclusive), (100, true));
+/// ```
+pub fn tax_for_line(line_amount_cents: u64, tax_category_id: Uuid, rules: &[TaxRule]) -> LineTax {
+    match rules.iter().find(|r| r.tax_category_id == tax_category_id) {
+        Some(rule) => LineTax {
+            tax_cents: apply_tax(line_amount_cents, rule.rate_bps, rule.inclusive),
+            inclusive: rule.inclusive,
+        },
+        None => LineTax::default(),
+    }
 }
 
 pub fn currency_minor_units(currency: &str) -> u32 {

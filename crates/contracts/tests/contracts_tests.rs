@@ -26,6 +26,7 @@ fn hq_submission_checksum_is_deterministic_for_same_inputs() {
             line_total_cents: 300,
             discount_cents: 0,
             tax_cents: 30,
+            tax_inclusive: false,
             modifier_option_ids: vec![],
             notes: None,
         }],

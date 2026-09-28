@@ -27,6 +27,7 @@ fn sample_payload(order_id: Uuid) -> HqOrderPayload {
             line_total_cents: 1000,
             discount_cents: 0,
             tax_cents: 0,
+            tax_inclusive: false,
             modifier_option_ids: vec![],
             notes: None,
         }],

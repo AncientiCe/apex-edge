@@ -73,6 +73,20 @@ pub struct ReturnLineSnapshot {
     pub unit_price_cents: u64,
     pub line_total_cents: u64,
     pub tax_cents: u64,
+    /// True when `tax_cents` is contained in the price (VAT-inclusive).
+    #[serde(default)]
+    pub tax_inclusive: bool,
+}
+
+impl ReturnLineSnapshot {
+    /// What the customer is owed back for this line, tax included.
+    pub fn gross_cents(&self) -> u64 {
+        if self.tax_inclusive {
+            self.line_total_cents
+        } else {
+            self.line_total_cents.saturating_add(self.tax_cents)
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -127,9 +141,7 @@ impl ReturnSnapshot {
                 });
             }
         }
-        self.total_cents = self
-            .total_cents
-            .saturating_add(line.line_total_cents.saturating_add(line.tax_cents));
+        self.total_cents = self.total_cents.saturating_add(line.gross_cents());
         self.tax_cents = self.tax_cents.saturating_add(line.tax_cents);
         self.lines.push(line);
         self.state = ReturnState::Items;
@@ -209,6 +221,7 @@ mod tests {
             unit_price_cents: price,
             line_total_cents: price * qty as u64,
             tax_cents: tax,
+            tax_inclusive: false,
         }
     }
 

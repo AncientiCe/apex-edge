@@ -72,6 +72,7 @@ async fn load_snapshot(app: &AppState, id: Uuid) -> Result<ReturnSnapshot, Vec<P
             unit_price_cents: l.unit_price_cents,
             line_total_cents: l.line_total_cents,
             tax_cents: l.tax_cents,
+            tax_inclusive: l.tax_inclusive,
         })
         .collect();
     let refunds = list_refunds(&app.pool, id)
@@ -210,6 +211,7 @@ pub async fn return_line_item(
             .unit_price_cents
             .saturating_mul(payload.quantity as u64),
         tax_cents: payload.tax_cents,
+        tax_inclusive: payload.tax_inclusive,
     };
     // Receipted returns will ideally look up the original order's per-line max quantity.
     // For v0.6.0 we trust the POS to pass accurate `quantity`; a future PR will wire in
@@ -227,6 +229,7 @@ pub async fn return_line_item(
         unit_price_cents: line.unit_price_cents,
         line_total_cents: line.line_total_cents,
         tax_cents: line.tax_cents,
+        tax_inclusive: line.tax_inclusive,
     };
     if let Err(e) = insert_return_line(&app.pool, &row).await {
         return fail(

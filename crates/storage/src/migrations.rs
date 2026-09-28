@@ -396,6 +396,17 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), MigrationError> {
             "register_id",
             "ALTER TABLE trusted_devices ADD COLUMN register_id TEXT",
         ),
+        // 2.1.0: VAT-inclusive lines, whose tax sits inside the price.
+        (
+            "order_lines",
+            "tax_inclusive",
+            "ALTER TABLE order_lines ADD COLUMN tax_inclusive INTEGER NOT NULL DEFAULT 0",
+        ),
+        (
+            "return_lines",
+            "tax_inclusive",
+            "ALTER TABLE return_lines ADD COLUMN tax_inclusive INTEGER NOT NULL DEFAULT 0",
+        ),
     ] {
         if !column_exists(pool, table, column).await? {
             if let Err(e) = sqlx::query(ddl).execute(pool).await {

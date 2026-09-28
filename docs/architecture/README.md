@@ -877,6 +877,23 @@ flowchart TB
 > hub. Cart tax is computed in `apex-edge-domain` (`tax_for_line`) from synced `TaxRule`s, and
 > the `apex_edge_tax_quote_*` metrics are never emitted. The currency-rounding notes below are live.
 
+**Inclusive vs exclusive tax (v2.1.0).** `tax_for_line` reads each synced `TaxRule.inclusive` flag.
+An exclusive rule adds tax on top of the discounted price; an inclusive rule (EU VAT) extracts the
+tax already inside it (`price − price·10000/(10000+rate)`). Every line carries `tax_inclusive`
+from cart to order ledger (`order_lines.tax_inclusive`), HQ payload (`HqOrderLine.tax_inclusive`),
+returns (`ReturnLineItemPayload.tax_inclusive`, `return_lines.tax_inclusive`) and fiscal lines, so
+all records agree: exclusive gross = price + tax, inclusive gross = price and net = price − tax.
+The flag defaults to `false`, so stored data and older clients keep exclusive semantics.
+
+```mermaid
+flowchart LR
+    Line[line price after discounts] --> Rule{rule.inclusive?}
+    Rule -->|no| Excl[tax = price x rate; gross = price + tax]
+    Rule -->|yes| Incl[tax = price - price/(1+rate); gross = price; net = price - tax]
+    Excl --> Records[cart / order ledger / HQ / fiscal]
+    Incl --> Records
+```
+
 **Purpose:** Support US/Canada destination-style stacked tax, EU inclusive VAT, and hosted tax providers through a single tax quote boundary.
 
 ```mermaid
