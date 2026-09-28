@@ -9,6 +9,13 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.1.0] — 2026-09-28
+
+"Tell the truth": closes the gaps found after 2.0.0. Security defaults no longer rely on public
+values (session signing secret, CORS, pairing codes), VAT-inclusive pricing is correct end to
+end, webhooks can be signed, aarch64 packages ship, docs match the code, and the POS simulator
+shows store operations beyond a sale. Upgrade notes are marked inline below.
+
 ### Added
 
 - POS simulator **Store Ops** tab: open/close the till with an X report, park and recall carts,
@@ -601,7 +608,9 @@ Internal alpha release for team-only testing in a controlled environment.
 - Mock NDJSON sync server served raw bytes for catalog items; updated to serve valid
   `CatalogItem` JSON payloads so `apply_entity_batch` deserialization succeeds in tests.
 
-[Unreleased]: https://github.com/AncientiCe/apex-edge/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/AncientiCe/apex-edge/compare/v2.1.0...HEAD
+[2.1.0]: https://github.com/AncientiCe/apex-edge/compare/v2.0.0...v2.1.0
+[2.0.0]: https://github.com/AncientiCe/apex-edge/compare/v1.2.0...v2.0.0
 [1.2.0]: https://github.com/AncientiCe/apex-edge/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/AncientiCe/apex-edge/releases/tag/v1.1.0
 [1.0.0]: https://github.com/AncientiCe/apex-edge/releases/tag/v1.0.0
