@@ -39,6 +39,10 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+- CORS no longer defaults to allowing every origin. With `APEX_EDGE_ALLOWED_ORIGINS` unset, only
+  localhost origins (any port) get CORS grants, so a web page an employee visits cannot drive the
+  hub's public auth endpoints. **Upgrade note:** browser-based POS clients served from another
+  host must now be listed. New metric `apex_edge_cors_mode{mode}`.
 - Auth no longer falls back to the public `dev-hub-secret` for signing device sessions and admin
   API tokens. Without `APEX_EDGE_AUTH_SESSION_SIGNING_SECRET`, the hub loads or generates a random
   secret in `apex_edge_session.key` next to the database (`APEX_EDGE_AUTH_SESSION_KEY_PATH`

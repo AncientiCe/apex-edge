@@ -74,7 +74,7 @@ sequenceDiagram
     Main->>Metrics: install_recorder()
     Main->>App: build_router(pool, HubConfig { store_id, register_id, auth, rate_limit, ... })
     App->>App: AppState { pool, store_id, register_id, metrics_handle, rate_limiter, ... }
-    App->>App: CorsLayer — wildcard if empty, list if set
+    App->>App: CorsLayer — localhost-only if empty, list if set
     App->>App: Router with /health, /ready, /pos/command, /catalog/products, /catalog/prices, /documents, /orders, /metrics, /sync/status, ...
     alt APEX_EDGE_TLS_CERT_PATH set (see §42)
         Main->>Axum: axum-server bind_rustls, into_make_service_with_connect_info
@@ -85,7 +85,7 @@ sequenceDiagram
 ```
 
 **Notes:**
-- **Inputs:** Env `APEX_EDGE_DB` (default `apex_edge.db`); `APEX_EDGE_STORE_ID` / `APEX_EDGE_REGISTER_ID` (optional, see §42); `APEX_EDGE_SYNC_SOURCE_URL` (optional, enables sync); `APEX_EDGE_SYNC_INTERVAL_SECONDS` (optional, periodic sync interval in seconds; default `300`); `APEX_EDGE_HQ_SUBMIT_URL` (optional, enables outbox dispatch); `APEX_EDGE_SEED_DEMO` (optional, seeds demo catalog/customers/promotions); `APEX_EDGE_ALLOWED_ORIGINS` (optional, comma-separated; empty = wildcard CORS for local dev, non-empty = restricted); `APEX_EDGE_AUTH_ENABLED` (default **on** — see §16); `APEX_EDGE_TLS_*` (optional, see §42).
+- **Inputs:** Env `APEX_EDGE_DB` (default `apex_edge.db`); `APEX_EDGE_STORE_ID` / `APEX_EDGE_REGISTER_ID` (optional, see §42); `APEX_EDGE_SYNC_SOURCE_URL` (optional, enables sync); `APEX_EDGE_SYNC_INTERVAL_SECONDS` (optional, periodic sync interval in seconds; default `300`); `APEX_EDGE_HQ_SUBMIT_URL` (optional, enables outbox dispatch); `APEX_EDGE_SEED_DEMO` (optional, seeds demo catalog/customers/promotions); `APEX_EDGE_ALLOWED_ORIGINS` (optional, comma-separated; empty = localhost origins only, non-empty = restricted to the list); `APEX_EDGE_AUTH_ENABLED` (default **on** — see §16); `APEX_EDGE_TLS_*` (optional, see §42).
 - **Outputs:** HTTP or HTTPS server on port 3000; DB migrated; optional background sync and dispatcher tasks spawned.
 - **Failure path:** Pool or migration failure exits main; server bind failure propagates. Sync and dispatcher errors are logged and retried on next cycle without stopping the process.
 
@@ -511,25 +511,26 @@ sequenceDiagram
 
 ### 14. Internal Security Baseline (CORS)
 
-**Purpose:** Document the configurable CORS posture introduced for the v0.1.0 internal-alpha security baseline. By default the hub allows all origins (suitable for local dev); a comma-separated env var locks CORS to an explicit allowlist in controlled deployments.
+**Purpose:** Document the configurable CORS posture introduced for the v0.1.0 internal-alpha security baseline. Since v2.1.0 the default allows only localhost origins (`localhost`, `127.0.0.1`, `[::1]`, any port), which covers local development and the simulator; a comma-separated env var sets the explicit allow-list any other browser client needs. The old wildcard default let any web page an employee visited call the hub's public auth endpoints and read the responses.
 
 ```mermaid
 flowchart TD
     Start([build_router called]) --> CheckOrigins{APEX_EDGE_ALLOWED_ORIGINS set?}
-    CheckOrigins -->|Empty / unset| Wildcard["CorsLayer: allow_origin(Any)\n⚠ local dev only"]
+    CheckOrigins -->|Empty / unset| Wildcard["CorsLayer: AllowOrigin::predicate\nlocalhost / 127.0.0.1 / ::1 only"]
     CheckOrigins -->|Non-empty list| Restricted["CorsLayer: AllowOrigin::list(origins)\nonly listed origins receive CORS headers"]
     Wildcard --> Router[Axum Router]
     Restricted --> Router
     Router --> Browser[Browser preflight / request]
-    Browser -->|Origin in list or wildcard| ACAO["access-control-allow-origin: <origin>"]
+    Browser -->|Origin in list, or localhost by default| ACAO["access-control-allow-origin: <origin>"]
     Browser -->|Origin not in list| NoHeader["No access-control-allow-origin\nbrowser blocks request"]
 ```
 
 **Notes:**
-- **Inputs:** Env `APEX_EDGE_ALLOWED_ORIGINS` — comma-separated list of allowed origins (e.g. `http://localhost:5173,https://pos.example.internal`). Unset or empty = wildcard (logs a warning).
+- **Inputs:** Env `APEX_EDGE_ALLOWED_ORIGINS` — comma-separated list of allowed origins (e.g. `http://localhost:5173,https://pos.example.internal`). Unset or empty = localhost origins only.
 - **Outputs:** `access-control-allow-origin` header on preflight and actual responses; restricted list means unknown origins receive no matching header and browsers enforce the block.
-- **Failure path:** Malformed origin strings (not valid `HeaderValue`) are silently skipped; if all entries are invalid the fallback is wildcard with a warning.
-- **Tests:** `cors_restricted_trusted_origin_is_allowed` and `cors_restricted_unknown_origin_is_rejected` in `apex-edge/tests/cors_http.rs` verify both branches.
+- **Failure path:** Malformed origin strings (not valid `HeaderValue`) are silently skipped; if all entries are invalid the fallback is localhost-only.
+- **Tests:** `cors_restricted_trusted_origin_is_allowed` and `cors_restricted_unknown_origin_is_rejected` plus `with_no_allow_list_a_foreign_origin_gets_no_cors_grant` and `with_no_allow_list_localhost_origins_on_any_port_are_allowed` in `apex-edge/tests/cors_http.rs` verify every branch.
+- **Metrics:** `apex_edge_cors_mode{mode}` gauge (`allow_list` or `localhost_only`).
 
 ### 15. Synced PDF Receipt Templates
 

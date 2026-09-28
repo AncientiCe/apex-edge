@@ -35,7 +35,7 @@ Related: [README](../../README.md) · [Architecture](../architecture/README.md) 
 | `APEX_EDGE_OUTBOX_BATCH_SIZE` | No | `10` | Submissions considered and deliveries attempted per dispatch cycle. |
 | `APEX_EDGE_OUTBOX_MAX_ATTEMPTS` | No | `10` | Attempts a single destination gets before that delivery is dead-lettered. Counted per destination. |
 | `APEX_EDGE_OUTBOX_BASE_BACKOFF_SECONDS` | No | `5` | First retry delay, doubling per attempt up to a 320 s cap at the default. |
-| `APEX_EDGE_ALLOWED_ORIGINS` | No | unset (wildcard) | Comma-separated list of allowed CORS origins, e.g. `http://localhost:5173,https://pos.internal`. Empty = allow all (logs a warning). Always set this in non-local environments. |
+| `APEX_EDGE_ALLOWED_ORIGINS` | No | unset (localhost only) | Comma-separated list of allowed CORS origins, e.g. `https://pos.internal`. Empty = only `localhost` / `127.0.0.1` / `[::1]` origins. Native POS apps need nothing here; set it for any browser-based client served from another host. |
 | `APEX_EDGE_STORE_ID` | No | unset | UUID for this hub's store identity. Env wins and is persisted; if unset, the previously persisted identity (or a freshly generated one, on first boot) is reused across restarts. See [architecture §42](../architecture/README.md#42-hub-identity-tlsmtls-and-rate-limiting-v200). |
 | `APEX_EDGE_REGISTER_ID` | No | unset | UUID for this hub's register identity. Same resolution rules as `APEX_EDGE_STORE_ID`. |
 | `APEX_EDGE_TLS_CERT_PATH` | No | unset | Path to a PEM certificate. Set together with `APEX_EDGE_TLS_KEY_PATH` to switch the listener from plain HTTP to HTTPS. |
@@ -149,7 +149,7 @@ The service uses structured logging via `tracing`. Key log events:
 | `INFO` | `"Outbox dispatcher started ..."` | Dispatcher background task spawned. |
 | `INFO` | `"outbox dispatch cycle completed dispatched=N"` | N rows sent to HQ (only logged when N > 0). |
 | `ERROR` | `"outbox dispatch cycle error ..."` | Dispatch failed; will retry in 30 s. |
-| `WARN` | `"CORS: allowing all origins ..."` | Running in wildcard CORS mode — not for production. |
+| `INFO` | `"CORS: localhost origins only ..."` | No allow-list set; a browser POS on another host will be blocked by CORS until `APEX_EDGE_ALLOWED_ORIGINS` lists it. |
 | `INFO` | `"CORS restricted to N origin(s)"` | CORS is locked to an explicit allowlist. |
 | `INFO` | `"Seeded inventory ledger for N item(s)"` | Real-time oversell ledger initialised from local catalog stock on startup. |
 | `INFO` | `"Released N stale stock reservation(s)"` | Reservation TTL sweeper freed stock from abandoned/crashed carts. |
@@ -358,7 +358,7 @@ Before deploying a new release, verify each item:
 
 ### Security
 - [ ] `APEX_EDGE_ALLOWED_ORIGINS` is set to the expected frontend origin(s) in the deployment config.
-- [ ] Log line `"CORS restricted to N origin(s)"` appears on startup (not the wildcard warning).
+- [ ] Browser-based clients on other hosts are listed: log line `"CORS restricted to N origin(s)"` on startup, or `"localhost origins only"` when only native apps connect.
 - [ ] Preflight from an unrelated origin returns no `access-control-allow-origin` header (verify manually with `curl`).
 - [ ] `APEX_EDGE_AUTH_ENABLED` has not been left disabled unintentionally (default is on).
 - [ ] If the hub is reachable from beyond a trusted LAN, `APEX_EDGE_TLS_CERT_PATH`/`KEY_PATH` are

@@ -467,6 +467,10 @@ pub const RATE_LIMIT_REJECTED_TOTAL: &str = "apex_edge_rate_limit_rejected_total
 /// Gauge: 1 when the hub is serving HTTPS. Labels: client_auth (off, required).
 pub const TLS_ENABLED: &str = "apex_edge_tls_enabled";
 
+// ---------- CORS (apex-edge binary) ----------
+/// Gauge: 1 for the active CORS policy. Labels: mode (allow_list, localhost_only).
+pub const CORS_MODE: &str = "apex_edge_cors_mode";
+
 // ---------- Auth signing secret (apex-edge binary) ----------
 /// Gauge: 1 for where the session signing secret came from at boot. Labels: source (env,
 /// file_loaded, file_generated).

@@ -137,3 +137,56 @@ async fn cors_restricted_unknown_origin_is_rejected() {
         "untrusted origin must not be reflected in allow-origin"
     );
 }
+
+async fn preflight_allow_origin(port: u16, origin: &str) -> Option<String> {
+    reqwest::Client::new()
+        .request(
+            Method::OPTIONS,
+            format!("http://127.0.0.1:{port}/auth/pairing-codes"),
+        )
+        .header("Origin", origin)
+        .header("Access-Control-Request-Method", "POST")
+        .header("Access-Control-Request-Headers", "content-type")
+        .send()
+        .await
+        .expect("request")
+        .headers()
+        .get("access-control-allow-origin")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string)
+}
+
+/// With no allow-list, a web page on the internet must not be able to drive the hub's
+/// public auth endpoints from a store employee's browser.
+#[tokio::test]
+async fn with_no_allow_list_a_foreign_origin_gets_no_cors_grant() {
+    let port = start_app().await;
+    let granted = preflight_allow_origin(port, "https://evil.example").await;
+    assert!(
+        granted.is_none(),
+        "foreign origin must get no allow-origin, got {granted:?}"
+    );
+}
+
+/// Local development (the POS simulator on any port) keeps working without configuration.
+#[tokio::test]
+async fn with_no_allow_list_localhost_origins_on_any_port_are_allowed() {
+    let port = start_app().await;
+    for origin in [
+        "http://localhost:5173",
+        "http://127.0.0.1:4173",
+        "http://[::1]:8080",
+    ] {
+        assert_eq!(
+            preflight_allow_origin(port, origin).await.as_deref(),
+            Some(origin),
+            "{origin}"
+        );
+    }
+    // A lookalike host is not localhost.
+    assert!(
+        preflight_allow_origin(port, "http://localhost.evil.example")
+            .await
+            .is_none()
+    );
+}

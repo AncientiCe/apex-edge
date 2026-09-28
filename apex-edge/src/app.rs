@@ -102,7 +102,9 @@ pub fn build_router(pool: sqlx::SqlitePool, config: HubConfig) -> Router {
     };
     apex_edge_api::report_role(app_state.role);
     let cors_origin = if allowed_origins.is_empty() {
-        AllowOrigin::any()
+        // No allow-list: only local development origins. A wildcard would let any web page
+        // an employee visits drive the hub's public auth endpoints and read the answers.
+        AllowOrigin::predicate(|origin, _| origin.to_str().is_ok_and(is_localhost_origin))
     } else {
         AllowOrigin::list(allowed_origins)
     };
@@ -178,6 +180,27 @@ pub fn build_router(pool: sqlx::SqlitePool, config: HubConfig) -> Router {
         ))
         .with_state(app_state);
     routes.layer(cors).layer(HttpMetricsLayer)
+}
+
+/// `http(s)://localhost`, `127.0.0.1` or `[::1]`, on any port.
+fn is_localhost_origin(origin: &str) -> bool {
+    let Some(rest) = origin
+        .strip_prefix("http://")
+        .or_else(|| origin.strip_prefix("https://"))
+    else {
+        return false;
+    };
+    let host = if let Some(v6) = rest.strip_prefix('[') {
+        match v6.split_once(']') {
+            Some((addr, tail)) if tail.is_empty() || tail.starts_with(':') => {
+                return addr == "::1";
+            }
+            _ => return false,
+        }
+    } else {
+        rest.split(':').next().unwrap_or_default()
+    };
+    matches!(host, "localhost" | "127.0.0.1")
 }
 
 #[cfg(test)]

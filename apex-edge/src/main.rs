@@ -362,12 +362,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .filter(|s| !s.is_empty())
         .filter_map(|s| s.parse::<HeaderValue>().ok())
         .collect();
-    if !allowed_origins.is_empty() {
+    let cors_mode = if !allowed_origins.is_empty() {
         tracing::info!("CORS restricted to {} origin(s)", allowed_origins.len());
+        "allow_list"
     } else {
-        tracing::warn!("CORS: allowing all origins (set APEX_EDGE_ALLOWED_ORIGINS for production)");
-    }
+        tracing::info!(
+            "CORS: localhost origins only (set APEX_EDGE_ALLOWED_ORIGINS for browser clients on other hosts)"
+        );
+        "localhost_only"
+    };
     let metrics_handle = apex_edge_metrics::install_recorder()?;
+    metrics::gauge!(apex_edge_metrics::CORS_MODE, "mode" => cors_mode).set(1.0);
     metrics::gauge!(apex_edge_metrics::AUTH_SIGNING_SECRET_SOURCE, "source" => secret_source.as_str())
         .set(1.0);
     let fiscal_settings = fiscal_settings_from_env();
