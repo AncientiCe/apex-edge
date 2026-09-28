@@ -128,44 +128,34 @@ Install `cargo-audit` if missing: `cargo install cargo-audit` (or `make setup`).
 
 ## Manual testing: Local POS Simulator
 
-A local-only POS simulator frontend (Vite + React + TypeScript in `frontend/`) lets you drive the API from a browser for manual testing.
-
-### Prerequisites
-
-- Backend and frontend run as separate processes; the simulator talks to the API at a configurable base URL (default `http://localhost:3000`).
-- For a full cart → order → documents flow, the backend database must have catalog items, price book entries, tax rules, and optionally customers and promotions (e.g. seed data as in `apex-edge/tests/orchestrator_journey.rs` or your own fixtures).
+A local-only POS simulator (Vite + React + TypeScript in `frontend/`) drives the hub from a browser. It is a demo and manual-testing client; real POS apps talk to the same API.
 
 ### Steps
 
-1. **Start the backend**
-   - From the repo root: `cargo run -p apex-edge` (or `cargo build --release` then `APEX_EDGE_DB=./apex_edge.db ./target/release/apex-edge`).
-   - Leave it running (default: `http://0.0.0.0:3000`).
-
-2. **Start the frontend**
-   - `cd frontend`, then `npm install`, then `npm run dev`.
-   - Open the URL shown (e.g. `http://localhost:5173`) in a browser.
-
-3. **Configure connection**
-   - In the simulator, set **API base URL** to `http://localhost:3000` (or the host/port where the backend is listening).
-   - Click **Health** then **Ready**.  
-   - **Pass:** Health shows `ok`, Ready shows `ready`.  
-   - **Fail:** If you see an error or no response, check that the backend is running and CORS is enabled (backend uses `tower-http` CORS layer).
-
-4. **Run a POS journey**
-   - **Create cart:** Click **Create cart**. **Pass:** Cart ID appears and state is `open`.
-   - **Lookup product:** Enter a SKU that exists in your DB (e.g. from seeded data), click **Search products**. **Pass:** At least one product appears. Select it, set quantity, click **Add line**. **Pass:** Cart state updates; line appears; total/subtotal reflect the item.
-   - **Set customer (optional):** Enter a customer code that exists, click **Search customers**. Select a customer, click **Set customer**. **Pass:** Cart shows customer.
-   - **Checkout:** Click **Set tendering**. **Pass:** State becomes `tendering`. Enter an amount ≥ cart total (e.g. `10.00`), click **Add payment**. **Pass:** State becomes `paid`. Click **Finalize order**. **Pass:** Order ID and print job IDs appear; cart is cleared.
-
-5. **Validate documents**
-   - After finalize, the **Documents** panel can use the shown Order ID. Click **List documents**. **Pass:** At least one document summary is returned (e.g. receipt).
-   - Click a document link to **fetch** its content. **Pass:** Document content (or error message) is shown.
-
-6. **Negative checks**
-   - Search for an invalid SKU or customer code. **Pass:** UI shows empty list or error in event log; no crash.
-   - Send an unsupported command path if the UI exposes it. **Pass:** Backend error details appear in the event log.
-
-**Pass criteria (summary):** Health and Ready return OK; you can create a cart, add a line (with a valid product), set tendering, add payment, and finalize; order ID and print job IDs are shown; listing and fetching documents for that order succeed; errors for invalid input are visible in the UI/event log.
+1. **Start the hub with demo data and dev sign-in.** Auth is on by default, so give the hub an
+   external-token secret the simulator can use. Pick a random, local-only value:
+   ```bash
+   APEX_EDGE_SEED_DEMO=1    APEX_EDGE_STORE_ID=00000000-0000-0000-0000-000000000000    APEX_EDGE_REGISTER_ID=00000000-0000-0000-0000-000000000000    APEX_EDGE_AUTH_EXTERNAL_ISSUER=https://issuer.example    APEX_EDGE_AUTH_EXTERNAL_AUDIENCE=mpos    APEX_EDGE_AUTH_EXTERNAL_HS256_SECRET=<local-secret>    cargo run -p apex-edge
+   ```
+   The simulator uses the nil store/register ids, so pin the hub to them.
+2. **Start the simulator.** Copy `frontend/.env.local.example` to `frontend/.env.local`, set
+   `VITE_AUTH_EXTERNAL_HS256_SECRET` to the same `<local-secret>`, then
+   `cd frontend && npm install && npm run dev` and open `http://localhost:5173`.
+3. **Sign in.** Click **Health** and **Ready** (expect `ok` / `ready`), then **Pair & Sign In**.
+   **Pass:** the header shows *Authenticated*.
+4. **Sell.** In **Catalog**, add a few products; in **Cart**, press **Pay**; enter a cash amount
+   ≥ the total. **Pass:** the order finalizes automatically and the summary shows an order id;
+   **Print Receipt** / **Gift Receipt** fetch documents for it.
+5. **Store Ops** (bottom tab):
+   - **Till:** enter a float, **Open Till**, **X Report** (expected drawer total), then enter the
+     counted cash and **Close Till**. **Pass:** variance is shown and the shift reads *closed*.
+     Reloading the page mid-shift and pressing **Open Till** picks the open shift back up.
+   - **Parked carts:** with items in the cart, **Park Current Cart** (optional note), then
+     **Refresh Parked** and **Recall**. **Pass:** the cart comes back in **Cart**.
+   - **Returns:** after a sale, **Return Last Sale**. **Pass:** `Return <id> finalized, refunded
+     $X cash`.
+6. **Negative checks.** Search for an unknown SKU or customer, or open a till twice. **Pass:** the
+   error appears as a toast and in **Show event log**; nothing crashes.
 
 ## Testing
 

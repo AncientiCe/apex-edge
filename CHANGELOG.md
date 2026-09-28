@@ -11,6 +11,9 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- POS simulator **Store Ops** tab: open/close the till with an X report, park and recall carts,
+  and return the last sale against its original order. The open shift survives tab switches and
+  page reloads.
 - aarch64 Linux `.deb`/`.rpm` release packages, built on GitHub's native `ubuntu-24.04-arm`
   runner, with a matching CI job that builds the arm64 release binary on every push/PR.
 - Signed webhook delivery: an outbox destination with `config.signing_secret_env` gets every

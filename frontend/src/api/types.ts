@@ -76,6 +76,73 @@ export interface FinalizeOrderPayload {
   cart_id: string;
 }
 
+// Store operations: till, parked carts, returns.
+export interface OpenTillPayload {
+  register_id: string | null;
+  associate_id: string | null;
+  opening_float_cents: number;
+}
+
+export interface GetXReportPayload {
+  shift_id: string;
+}
+
+export interface CloseTillPayload {
+  shift_id: string;
+  counted_cents: number;
+  approval_id: string | null;
+}
+
+export interface ParkCartPayload {
+  cart_id: string;
+  note: string | null;
+}
+
+export interface RecallCartPayload {
+  parked_cart_id: string;
+}
+
+export interface ListParkedCartsPayload {
+  register_id: string | null;
+}
+
+export interface StartReturnPayload {
+  return_id: string | null;
+  original_order_id: string | null;
+  reason_code: string | null;
+  approval_id: string | null;
+  shift_id: string | null;
+}
+
+export interface ReturnLineItemPayload {
+  return_id: string;
+  sku: string;
+  name: string | null;
+  quantity: number;
+  unit_price_cents: number;
+  tax_cents: number;
+  original_line_id: string | null;
+}
+
+export interface RefundTenderPayload {
+  return_id: string;
+  tender_type: string;
+  amount_cents: number;
+  external_reference: string | null;
+}
+
+export interface FinalizeReturnPayload {
+  return_id: string;
+}
+
+export interface ParkedCartSummary {
+  parked_cart_id: string;
+  cart_id: string;
+  note: string | null;
+  total_cents: number;
+  line_count: number;
+}
+
 export type PosCommand =
   | { action: 'create_cart'; payload: CreateCartPayload }
   | { action: 'set_customer'; payload: SetCustomerPayload }
@@ -84,7 +151,17 @@ export type PosCommand =
   | { action: 'apply_coupon'; payload: ApplyCouponPayload }
   | { action: 'set_tendering'; payload: SetTenderingPayload }
   | { action: 'add_payment'; payload: AddPaymentPayload }
-  | { action: 'finalize_order'; payload: FinalizeOrderPayload };
+  | { action: 'finalize_order'; payload: FinalizeOrderPayload }
+  | { action: 'open_till'; payload: OpenTillPayload }
+  | { action: 'get_x_report'; payload: GetXReportPayload }
+  | { action: 'close_till'; payload: CloseTillPayload }
+  | { action: 'park_cart'; payload: ParkCartPayload }
+  | { action: 'recall_cart'; payload: RecallCartPayload }
+  | { action: 'list_parked_carts'; payload: ListParkedCartsPayload }
+  | { action: 'start_return'; payload: StartReturnPayload }
+  | { action: 'return_line_item'; payload: ReturnLineItemPayload }
+  | { action: 'refund_tender'; payload: RefundTenderPayload }
+  | { action: 'finalize_return'; payload: FinalizeReturnPayload };
 
 export interface CartState {
   cart_id: string;

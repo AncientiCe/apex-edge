@@ -1626,3 +1626,33 @@ sequenceDiagram
   `secret_missing`, alongside the existing `apex_edge_outbox_dispatch_attempts_total`.
 - **Code:** `crates/outbox/src/dispatcher.rs` (`signing_secret`, `sign`); tests in
   `crates/outbox/tests/signing_tests.rs`.
+
+### 44. POS Simulator Store Ops Tab (v2.1.0)
+
+**Purpose:** Show, in the local POS simulator (`frontend/`), that the hub runs a store and not
+only a cart: a till with X report and close, parked-cart hand-off, and a return linked to the
+original order. The simulator is a demo/manual-testing client, not a product surface.
+
+```mermaid
+flowchart LR
+    Ops[Store Ops tab] -->|open_till / get_x_report / close_till| Hub[(ApexEdge hub)]
+    Ops -->|park_cart / list_parked_carts / recall_cart| Hub
+    Ops -->|start_return → return_line_item × n → refund_tender → finalize_return| Hub
+    Hub -->|SHIFT_ALREADY_OPEN + shift_id| Ops
+    App[App state] -->|shiftId, cartId, lastSale| Ops
+    Ops -->|onShiftChange / onCartParked / onCartRecalled| App
+```
+
+**Notes:**
+- **Inputs:** Opening float and counted cash (dollars, sent as cents); an optional park note; the
+  last finalized sale (order id and lines as priced) captured by `App.tsx` at finalize.
+- **Outputs:** Shift id, expected drawer total, and close variance; the parked cart list with
+  recall; a one-line return status (`Return <id> finalized, refunded $X cash`).
+- **State ownership:** the open shift lives in `App` state, so switching tabs does not lose it.
+  After a page reload, `Open Till` adopts the shift named by `SHIFT_ALREADY_OPEN` (§23).
+- **Failure path:** each hub error is toasted and logged; a return stops at the first failed step
+  and names it (`Return failed at <action>`).
+- **Metrics:** hub-side `apex_edge_pos_commands_total{operation,outcome}` and
+  `apex_edge_pos_command_duration_seconds{operation}` cover every command the tab sends; the
+  simulator itself emits none.
+- **Code:** `frontend/src/panels/StoreOpsPanel.tsx`, tests in `StoreOpsPanel.test.tsx`.

@@ -41,6 +41,7 @@ import { StorePresenceBar } from './panels/StorePresenceBar';
 import { CatalogPanel } from './panels/CatalogPanel';
 import { CustomerPanel } from './panels/CustomerPanel';
 import { CartPanel } from './panels/CartPanel';
+import { StoreOpsPanel, type LastSale } from './panels/StoreOpsPanel';
 import { EventLogPanel } from './panels/EventLogPanel';
 import { SyncStatusPanel } from './panels/SyncStatusPanel';
 import { ProductDetailPage } from './panels/ProductDetailPage';
@@ -51,7 +52,7 @@ const LS_CART_ID = 'apex_edge_cart_id';
 const DEFAULT_ASSOCIATE_ID = 'associate-1';
 
 export type LogEntry = { ts: string; kind: 'req' | 'res' | 'err'; text: string };
-type Stage = 'customers' | 'catalog' | 'cart' | 'pay' | 'summary' | 'sync';
+type Stage = 'customers' | 'catalog' | 'cart' | 'pay' | 'summary' | 'sync' | 'ops';
 type Toast = { id: number; message: string };
 
 /** Inner PDP route that loads product by ID from URL params. */
@@ -102,6 +103,20 @@ function useEventLog() {
   return [entries, log] as const;
 }
 
+/** The lines of a finished sale, priced as sold, so the Store Ops panel can return it. */
+function lastSaleFrom(orderId: string, cart: CartState | null): LastSale | null {
+  if (!cart || cart.lines.length === 0) return null;
+  const lines = cart.lines.map((l) => ({
+    sku: l.sku,
+    name: l.name,
+    quantity: l.quantity,
+    unit_price_cents: Math.floor((l.line_total_cents - l.discount_cents) / Math.max(1, l.quantity)),
+    tax_cents: l.tax_cents,
+  }));
+  const totalCents = lines.reduce((sum, l) => sum + l.quantity * l.unit_price_cents + l.tax_cents, 0);
+  return { orderId, totalCents, lines };
+}
+
 function AppInner() {
   const navigate = useNavigate();
   const [baseUrl, setBaseUrl] = useState(
@@ -138,6 +153,8 @@ function AppInner() {
   );
   const [cartState, setCartState] = useState<CartState | null>(null);
   const [saleSummary, setSaleSummary] = useState<SaleSummary | null>(null);
+  const [lastSale, setLastSale] = useState<LastSale | null>(null);
+  const [shiftId, setShiftId] = useState<string | null>(null);
   const [categories, setCategories] = useState<CategoryResult[]>([]);
   const [productList, setProductList] = useState<ProductListResponse | null>(null);
   const [customers, setCustomers] = useState<CustomerSearchResult[]>([]);
@@ -399,6 +416,7 @@ function AppInner() {
               documents: [],
               journeyHttp,
             });
+            setLastSale(lastSaleFrom(finalize.order_id, cartState));
             setCartId(null);
             setCartState(null);
             setStage('summary');
@@ -429,6 +447,44 @@ function AppInner() {
     },
     [baseUrl, cartState, fetchSummaryDocuments, logEvent, pushToast, storeId]
   );
+
+  // Store-ops commands return shifts, returns, and parked-cart summaries rather than a cart,
+  // so they bypass the cart bookkeeping in sendPosCommand.
+  const sendOpsCommand = useCallback(
+    async (command: PosCommand): Promise<PosResponseEnvelope<unknown> | null> => {
+      const envelope = buildEnvelope(storeId, REGISTER_ID, command);
+      logEvent('req', `POST /pos/command ${command.action}`);
+      try {
+        const res = (await postPosCommand(baseUrl, envelope)) as PosResponseEnvelope<unknown>;
+        if (res.success) {
+          logEvent('res', `${command.action} ok`);
+        } else {
+          const errMsg =
+            res.errors?.length ? res.errors.map((e) => e.message).join('; ') : 'Unknown error';
+          logEvent('err', errMsg);
+          pushToast(errMsg);
+        }
+        return res;
+      } catch (e) {
+        const err = e as ApiError;
+        logEvent('err', `pos: ${err.message}`);
+        pushToast(err.message);
+        return null;
+      }
+    },
+    [baseUrl, logEvent, pushToast, storeId]
+  );
+
+  const onCartParked = useCallback(() => {
+    setCartId(null);
+    setCartState(null);
+  }, []);
+
+  const onCartRecalled = useCallback((recalled: CartState) => {
+    setCartState(recalled);
+    setCartId(recalled.cart_id);
+    setStage('cart');
+  }, []);
 
   const ensureCart = useCallback(async (): Promise<string | null> => {
     if (cartId) return cartId;
@@ -805,6 +861,19 @@ function AppInner() {
           <SyncStatusPanel baseUrl={baseUrl} disabled={!baseUrl} />
         )}
 
+        {/* ── Store Ops ── */}
+        {authReady && stage === 'ops' && (
+          <StoreOpsPanel
+            send={sendOpsCommand}
+            cartId={cartId}
+            lastSale={lastSale}
+            shiftId={shiftId}
+            onShiftChange={setShiftId}
+            onCartParked={onCartParked}
+            onCartRecalled={onCartRecalled}
+          />
+        )}
+
         {/* ── Catalog ── */}
         {authReady && stage === 'catalog' && (
           <CatalogPanel
@@ -990,6 +1059,15 @@ function AppInner() {
         >
           <span className="nav-icon">↻</span>
           <span className="nav-label">Sync</span>
+        </button>
+        <button
+          type="button"
+          className={stage === 'ops' ? 'active' : ''}
+          onClick={() => setStage('ops')}
+          aria-current={stage === 'ops' ? 'page' : undefined}
+        >
+          <span className="nav-icon">⚙</span>
+          <span className="nav-label">Store Ops</span>
         </button>
         <button
           type="button"
