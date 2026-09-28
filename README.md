@@ -268,11 +268,11 @@ Metrics are Prometheus-style (counters, histograms, gauges) with an `apex_edge_`
 | `apex-edge-outbox` | Durable outbox dispatcher (retry, backoff, DLQ) |
 | `apex-edge-printing` | Document generation (render + persist for POS retrieval) |
 | `apex-edge-metrics` | Prometheus metric names, labels, and recorder bootstrap |
-| `apex-edge-adapters-payment` | Payment provider adapter trait and Cash/Stripe Terminal/Adyen Terminal reference implementations |
-| `apex-edge-adapters-tax` | Tax provider adapter trait and Internal/Avalara/Stripe Tax reference implementations |
+| `apex-edge-adapters-payment` | Payment provider adapter trait and Cash, Stripe Terminal, and simulated-terminal providers (wired into `add_payment`) |
+| `apex-edge-adapters-tax` | Tax provider trait (Internal/Avalara/Stripe Tax). **Not wired into the hub:** cart tax is computed by `apex-edge-domain` pricing from synced `TaxRule`s |
 | `apex-edge-adapters-hardware` | Hardware adapter traits and ESC/POS, drawer, scanner, scale, and display reference implementations |
-| `apex-edge-adapters-cloud` | Cloud connector trait and hosted/signed-webhook reference implementations |
-| `apex-edge-adapters-fiscal` | Fiscal provider trait with NoOp and DE-TSE reference implementations |
+| `apex-edge-adapters-cloud` | Cloud connector trait. **Not wired into the hub:** outbox delivery, including signed webhooks, lives in `apex-edge-outbox` |
+| `apex-edge-adapters-fiscal` | Fiscal provider trait with NoOp, DE-TSE, and Fiskaly providers plus fiscal exports |
 | `apex-edge-giftcards` | Local-first gift card state machine |
 | `apex-edge-loyalty` | Loyalty provider trait and local earn/redeem implementation |
 | `apex-edge-api` | HTTP API (POS, health, ready, documents) |

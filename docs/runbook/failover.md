@@ -1,6 +1,7 @@
 # ApexEdge failover & recovery runbook
 
-**Applies to:** ApexEdge v0.6.0+.
+**Applies to:** ApexEdge v2.0.0+ (hub identity, auth-on-by-default, and TLS steps in §2b
+are v2.0.0 behaviour; the rest applies from v0.6.0).
 
 ApexEdge is a local store hub. It runs on a store-LAN box (bare metal, VM, or
 container — whatever the retailer already runs). The POS/MPOS talk to it on the
@@ -75,10 +76,25 @@ Then `litestream replicate -config /etc/litestream.yml` runs as a daemon.
 3. Copy the same `audit.key` the old box used, or point `APEX_EDGE_AUDIT_KEY_PATH`
    at your secrets store. If the key is lost, the chain is verifiable up to the
    key rotation point and a new key simply chains forward from the current tip.
-4. Start the hub binary.
-5. Verify: `/health` = 200, `/audit/verify` = `{ok: true}`.
-6. Re-attach POS/MPOS devices — they auto-reconnect to `/pos/stream`.
-7. Resume Litestream replication from the new box.
+4. Carry over the hub's secrets and identity configuration:
+   - `APEX_EDGE_AUTH_SESSION_SIGNING_SECRET` — must match the old box. Paired devices
+     live in the restored DB (`trusted_devices`), but their sessions and any admin API
+     tokens are signed with this secret; a different secret means every register must
+     pair again and every API token must be reissued. Never rely on the built-in
+     development default in production.
+   - `APEX_EDGE_STORE_ID` / `APEX_EDGE_REGISTER_ID` — optional. The restored
+     `hub_identity` row already carries them; if you set them, they must match, or
+     POS commands will fail with `STORE_MISMATCH`.
+   - TLS files (`APEX_EDGE_TLS_CERT_PATH`, `APEX_EDGE_TLS_KEY_PATH`, and
+     `APEX_EDGE_TLS_CLIENT_CA_PATH` for mTLS) — copy them, or issue a new certificate
+     for the same hostname, so registers trust the new box.
+   - Signing secrets named by `signing_secret_env` in `APEX_EDGE_OUTBOX_DESTINATIONS`
+     — without them, signed webhook deliveries queue and eventually dead-letter.
+5. Start the hub binary.
+6. Verify: `/health` = 200, `/ready` reports the expected `store_id`/`register_id`,
+   `/audit/verify` = `{ok: true}`.
+7. Re-attach POS/MPOS devices — they auto-reconnect to `/pos/stream`.
+8. Resume Litestream replication from the new box.
 
 Typical RTO on a small store: minutes. RPO ≤ `sync-interval` (1s by default).
 

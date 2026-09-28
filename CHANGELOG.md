@@ -31,6 +31,10 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Docs now match the code: the payment adapter diagram and README list the providers that exist
+  (no Adyen), the fiscal crate lists Fiskaly, the tax and cloud adapter crates are marked as not
+  wired into the hub, the packaging README describes the real release matrix, and the failover
+  runbook covers carrying over the session signing secret, hub identity, and TLS files.
 - Release workflow: GitHub release notes are now the matching `CHANGELOG.md` section for the
   tag instead of GitHub's auto-generated commit list (falls back to a pointer at the changelog
   when the section is missing).

@@ -855,12 +855,12 @@ flowchart TB
         Trait[PaymentProvider]
         Cash[CashPaymentProvider]
         Stripe[StripeTerminalProvider]
-        Adyen[AdyenTerminalProvider]
+        Simulated[SimulatedTerminalProvider]
     end
 
     Trait --> Cash
     Trait --> Stripe
-    Trait --> Adyen
+    Trait --> Simulated
     POS --> Trait
 ```
 
@@ -871,6 +871,10 @@ flowchart TB
 - **Metrics:** `apex_edge_payment_attempts_total{provider,outcome}` and `apex_edge_payment_duration_seconds{provider}` observe the `add_payment` path. Provider implementations are in `crates/adapters/payment`.
 
 ### 25. Tax Provider Adapters and Currency Rounding (v0.8.0)
+
+> **Status (v2.1.0):** the `TaxProvider` crate (`crates/adapters/tax`) is not a dependency of the
+> hub. Cart tax is computed in `apex-edge-domain` (`tax_for_line`) from synced `TaxRule`s, and
+> the `apex_edge_tax_quote_*` metrics are never emitted. The currency-rounding notes below are live.
 
 **Purpose:** Support US/Canada destination-style stacked tax, EU inclusive VAT, and hosted tax providers through a single tax quote boundary.
 
@@ -988,6 +992,10 @@ sequenceDiagram
 - **Metrics:** `apex_edge_gift_card_operations_total{operation,outcome}` / `apex_edge_gift_card_operation_duration_seconds{operation}` and `apex_edge_loyalty_operations_total{operation,outcome}` / `apex_edge_loyalty_operation_duration_seconds{operation}` are emitted on every issue/activate/reload/redeem/earn call (`operation` values: `issue`, `activate`, `reload`, `redeem`, `earn`, `earn_auto`).
 
 ### 29. Cloud Connector Framework (v0.10.0)
+
+> **Status (v2.1.0):** the `CloudConnector` crate (`crates/adapters/cloud`) is not a dependency of
+> the hub, and the `apex_edge_cloud_connector_*` metrics are never emitted. Multi-destination
+> delivery is implemented by the outbox dispatcher (§41), and HMAC-signed webhooks by §43.
 
 **Purpose:** Generalize the outbox from one HQ URL into a multi-destination connector model for e-commerce, ERP, accounting, and generic webhooks.
 
