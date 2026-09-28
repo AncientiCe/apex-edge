@@ -23,6 +23,8 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Time clock: `clock_in` rejects an associate who is already clocked in (`ALREADY_CLOCKED_IN`)
   instead of opening a second overlapping entry, and both `clock_in`/`clock_out` reject a blank
   `associate_id` (`INVALID_ASSOCIATE_ID`). First API-level tests for the time clock.
+- Behavioural tests for the four POS commands that had none: `apply_manual_discount`,
+  `list_parked_carts`, `transfer_stock`, and `adjust_stock`.
 
 ### Security
 
