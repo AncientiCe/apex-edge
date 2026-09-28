@@ -1,4 +1,4 @@
-# Cross-platform release artifacts: Linux .deb/.rpm, Windows .msi, checksums, GitHub Release.
+# Cross-platform release artifacts: Linux .deb/.rpm (x86_64, aarch64), Windows .msi, checksums, GitHub Release.
 # Triggered by pushing a version tag (v1.2.3) or manually via workflow_dispatch.
 name: Release
 
@@ -13,8 +13,18 @@ env:
 
 jobs:
   linux:
-    name: Linux (.deb, .rpm)
-    runs-on: ubuntu-latest
+    name: Linux ${{ matrix.arch }} (.deb, .rpm)
+    # Native runners per architecture: aws-lc-rs and bundled SQLite compile C, and a native
+    # arm64 build avoids maintaining a cross toolchain for them.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-latest
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -44,13 +54,13 @@ jobs:
           cp target/debian/*.deb dist/
           find target -iname "*.rpm" -exec cp {} dist/ \;
           cd dist
-          sha256sum * > SHA256SUMS-linux.txt
+          sha256sum * > SHA256SUMS-linux-${{ matrix.arch }}.txt
           ls -la
 
       - name: Upload Linux artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: apex-edge-linux
+          name: apex-edge-linux-${{ matrix.arch }}
           path: dist/
 
   windows:

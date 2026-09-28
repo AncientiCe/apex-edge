@@ -49,6 +49,24 @@ jobs:
       - name: Dependency audit
         run: make audit
 
+  arm64-build:
+    # The release ships aarch64 packages; catch a broken arm64 build here rather than on
+    # release day.
+    name: aarch64 release build
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --release -p apex-edge
+
   frontend:
     name: frontend lint and test
     runs-on: ubuntu-latest

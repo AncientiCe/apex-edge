@@ -11,6 +11,8 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- aarch64 Linux `.deb`/`.rpm` release packages, built on GitHub's native `ubuntu-24.04-arm`
+  runner, with a matching CI job that builds the arm64 release binary on every push/PR.
 - Signed webhook delivery: an outbox destination with `config.signing_secret_env` gets every
   delivery signed with HMAC-SHA256 over `"{timestamp}.{body}"` (`x-apexedge-timestamp`,
   `x-apexedge-signature` headers). A named but unset secret fails closed (retry, then DLQ) instead

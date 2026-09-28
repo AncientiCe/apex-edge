@@ -1,10 +1,19 @@
 # ApexEdge Packaging
 
-This directory is the release packaging scaffold for v1.0 GA.
+Release packages are built by `.github/workflows/release.yml` when a `v*.*.*` tag is pushed.
+Every package wraps the same `apex-edge` release binary.
 
-- Windows: build an MSI with WiX around the `apex-edge.exe` release binary.
-- Linux: build `.deb` and `.rpm` packages around the `apex-edge` release binary.
-- macOS: build a `.pkg` around the signed `apex-edge` release binary.
-- First run: execute `apex-edge init` to create the database, apply migrations, load or generate the audit key, and print setup details.
+| Platform | Artifact | Built with | Runner |
+|----------|----------|------------|--------|
+| Linux x86_64 | `.deb`, `.rpm` | `cargo-deb`, `cargo-generate-rpm` | `ubuntu-latest` |
+| Linux aarch64 | `.deb`, `.rpm` | `cargo-deb`, `cargo-generate-rpm` | `ubuntu-24.04-arm` (native) |
+| Windows x86_64 | `.msi` | `cargo-wix` (template in `apex-edge/wix/`) | `windows-latest` |
 
-The packaging jobs should call the same local quality gates as CI before producing artifacts.
+Each job publishes a `SHA256SUMS-<platform>.txt` next to its packages, and the GitHub release
+notes are the tag's section of `CHANGELOG.md`. Package metadata lives in `apex-edge/Cargo.toml`
+(`[package.metadata.deb]`, `[package.metadata.generate-rpm]`, `[package.metadata.wix]`).
+
+macOS is not packaged.
+
+First run: `apex-edge init` creates the database, applies migrations, loads or generates the audit
+key, and prints setup details. See `docs/runbook/README.md` for configuration.
