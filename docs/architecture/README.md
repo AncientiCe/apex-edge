@@ -944,7 +944,7 @@ flowchart TB
 **Notes:**
 - **Inputs:** POS commands `park_cart`, `recall_cart`, `list_parked_carts`, `clock_in`, and `clock_out`; synced `RegisterLayout` records for quick-pick/favorites; optional receipt/template language.
 - **Outputs:** Parked cart summaries, recalled `CartState`, and `TimeClockEntry` payloads. Register layouts store language-specific tile definitions for frontend rendering.
-- **Failure path:** Missing cart returns `CART_NOT_FOUND`; missing parked cart returns `PARKED_CART_NOT_FOUND`; clock-out without an open entry returns `CLOCK_ENTRY_NOT_FOUND`.
+- **Failure path:** Missing cart returns `CART_NOT_FOUND`; missing parked cart returns `PARKED_CART_NOT_FOUND`; clock-out without an open entry returns `CLOCK_ENTRY_NOT_FOUND`; a blank `associate_id` returns `INVALID_ASSOCIATE_ID`; clocking in an associate who already has an open entry returns `ALREADY_CLOCKED_IN` (enforced atomically in one `INSERT ... WHERE NOT EXISTS`, so two registers cannot open overlapping entries for payroll).
 - **Metrics:** `apex_edge_store_operations_total{operation,outcome}` and `apex_edge_store_operation_duration_seconds{operation}` are reserved for suspended sale and time-clock paths.
 
 ### 28. Gift Cards and Loyalty (domain v0.9.0, wired into POS commands v1.2.0)

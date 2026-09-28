@@ -144,27 +144,38 @@ pub async fn clock_in(
     store_id: Uuid,
     register_id: Uuid,
     associate_id: &str,
-) -> Result<TimeClockEntry, PoolError> {
+) -> Result<Option<TimeClockEntry>, PoolError> {
     let id = Uuid::new_v4();
     let now = Utc::now();
-    sqlx::query(
-        "INSERT INTO time_clock_entries (id, store_id, register_id, associate_id, clocked_in_at) VALUES (?, ?, ?, ?, ?)",
+    // One statement, so two registers clocking the same associate in at once cannot both
+    // see "no open entry" and both insert. `None` means the associate is already clocked in.
+    let inserted = sqlx::query(
+        "INSERT INTO time_clock_entries (id, store_id, register_id, associate_id, clocked_in_at) \
+         SELECT ?, ?, ?, ?, ? WHERE NOT EXISTS ( \
+             SELECT 1 FROM time_clock_entries \
+             WHERE store_id = ? AND associate_id = ? AND clocked_out_at IS NULL)",
     )
     .bind(id.to_string())
     .bind(store_id.to_string())
     .bind(register_id.to_string())
     .bind(associate_id)
     .bind(now.to_rfc3339())
+    .bind(store_id.to_string())
+    .bind(associate_id)
     .execute(pool)
-    .await?;
-    Ok(TimeClockEntry {
+    .await?
+    .rows_affected();
+    if inserted == 0 {
+        return Ok(None);
+    }
+    Ok(Some(TimeClockEntry {
         id,
         store_id,
         register_id,
         associate_id: associate_id.into(),
         clocked_in_at: now,
         clocked_out_at: None,
-    })
+    }))
 }
 
 pub async fn clock_out(

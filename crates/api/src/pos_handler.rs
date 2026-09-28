@@ -326,6 +326,21 @@ async fn take_payment(
     })
 }
 
+/// Time clock entries feed payroll, so they must name an associate.
+fn blank_associate_id(idempotency_key: Uuid) -> PosResponseEnvelope<serde_json::Value> {
+    PosResponseEnvelope {
+        version: ContractVersion::V1_0_0,
+        success: false,
+        idempotency_key,
+        payload: None,
+        errors: vec![PosError {
+            code: "INVALID_ASSOCIATE_ID".into(),
+            message: "associate_id must not be blank".into(),
+            field: Some("associate_id".into()),
+        }],
+    }
+}
+
 fn indeterminate_payment_id(error: &PaymentProviderError) -> Option<&str> {
     match error {
         PaymentProviderError::Indeterminate {
@@ -2295,15 +2310,28 @@ pub async fn execute_pos_command(
             },
         },
         PosCommand::ClockIn(p) => {
-            match apex_edge_storage::clock_in(pool, store_id, register_id, p.associate_id.trim())
-                .await
-            {
-                Ok(entry) => PosResponseEnvelope {
+            let associate_id = p.associate_id.trim();
+            if associate_id.is_empty() {
+                return blank_associate_id(idempotency_key);
+            }
+            match apex_edge_storage::clock_in(pool, store_id, register_id, associate_id).await {
+                Ok(Some(entry)) => PosResponseEnvelope {
                     version: ContractVersion::V1_0_0,
                     success: true,
                     idempotency_key,
                     payload: Some(serde_json::to_value(entry).unwrap_or(serde_json::Value::Null)),
                     errors: vec![],
+                },
+                Ok(None) => PosResponseEnvelope {
+                    version: ContractVersion::V1_0_0,
+                    success: false,
+                    idempotency_key,
+                    payload: None,
+                    errors: vec![PosError {
+                        code: "ALREADY_CLOCKED_IN".into(),
+                        message: "Associate already has an open time clock entry".into(),
+                        field: Some("associate_id".into()),
+                    }],
                 },
                 Err(e) => PosResponseEnvelope {
                     version: ContractVersion::V1_0_0,
@@ -2319,7 +2347,11 @@ pub async fn execute_pos_command(
             }
         }
         PosCommand::ClockOut(p) => {
-            match apex_edge_storage::clock_out(pool, store_id, p.associate_id.trim()).await {
+            let associate_id = p.associate_id.trim();
+            if associate_id.is_empty() {
+                return blank_associate_id(idempotency_key);
+            }
+            match apex_edge_storage::clock_out(pool, store_id, associate_id).await {
                 Ok(Some(entry)) => PosResponseEnvelope {
                     version: ContractVersion::V1_0_0,
                     success: true,

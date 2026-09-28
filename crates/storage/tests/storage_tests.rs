@@ -324,8 +324,16 @@ async fn parked_cart_and_time_clock_roundtrip() {
 
     let clocked_in = clock_in(&pool, store_id, register_id, "associate-1")
         .await
-        .expect("clock in");
+        .expect("clock in")
+        .expect("no open entry yet");
     assert_eq!(clocked_in.associate_id, "associate-1");
+    assert!(
+        clock_in(&pool, store_id, register_id, "associate-1")
+            .await
+            .expect("second clock in")
+            .is_none(),
+        "an associate has at most one open entry"
+    );
 
     let clocked_out = clock_out(&pool, store_id, "associate-1")
         .await

@@ -16,6 +16,12 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `x-apexedge-signature` headers). A named but unset secret fails closed (retry, then DLQ) instead
   of sending unsigned. New metric `apex_edge_outbox_signing_total{destination,outcome}`.
 
+### Fixed
+
+- Time clock: `clock_in` rejects an associate who is already clocked in (`ALREADY_CLOCKED_IN`)
+  instead of opening a second overlapping entry, and both `clock_in`/`clock_out` reject a blank
+  `associate_id` (`INVALID_ASSOCIATE_ID`). First API-level tests for the time clock.
+
 ### Security
 
 - Bump `rustls` 0.23.37 → 0.23.45 (RUSTSEC-2026-0285: TLS 1.3 handshake messages accepted
