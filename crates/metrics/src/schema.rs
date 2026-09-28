@@ -213,12 +213,6 @@ pub const OUTCOME_PARTIAL: &str = "partial";
 pub const OUTCOME_INDETERMINATE: &str = "indeterminate";
 pub const OUTCOME_UNKNOWN_PROVIDER: &str = "unknown_provider";
 
-// ---------- Tax providers (domain pricing + adapters) ----------
-/// Counter: tax quote attempts by provider and outcome. Labels: provider, outcome.
-pub const TAX_QUOTES_TOTAL: &str = "apex_edge_tax_quote_total";
-/// Histogram: tax quote duration in seconds. Labels: provider.
-pub const TAX_QUOTE_DURATION_SECONDS: &str = "apex_edge_tax_quote_duration_seconds";
-
 // ---------- Hardware adapters ----------
 /// Counter: hardware operations by device, operation, and outcome.
 pub const HARDWARE_OPERATIONS_TOTAL: &str = "apex_edge_hardware_operations_total";
@@ -242,13 +236,6 @@ pub const GIFT_CARD_OPERATION_DURATION_SECONDS: &str =
 pub const LOYALTY_OPERATIONS_TOTAL: &str = "apex_edge_loyalty_operations_total";
 /// Histogram: loyalty operation latency in seconds, labelled by operation.
 pub const LOYALTY_OPERATION_DURATION_SECONDS: &str = "apex_edge_loyalty_operation_duration_seconds";
-
-// ---------- Cloud connectors ----------
-/// Counter: cloud connector deliveries by connector and outcome.
-pub const CLOUD_CONNECTOR_DELIVERIES_TOTAL: &str = "apex_edge_cloud_connector_deliveries_total";
-/// Histogram: cloud connector delivery duration in seconds. Labels: connector.
-pub const CLOUD_CONNECTOR_DELIVERY_DURATION_SECONDS: &str =
-    "apex_edge_cloud_connector_delivery_duration_seconds";
 
 // ---------- Stock operations ----------
 /// Counter: stock movement operations by operation and outcome.

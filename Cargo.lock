@@ -75,17 +75,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "apex-edge-adapters-cloud"
-version = "0.1.0"
-dependencies = [
- "hex",
- "hmac",
- "sha2",
- "thiserror 1.0.69",
- "uuid",
-]
-
-[[package]]
 name = "apex-edge-adapters-fiscal"
 version = "0.2.0"
 dependencies = [
@@ -121,15 +110,6 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tracing",
- "uuid",
-]
-
-[[package]]
-name = "apex-edge-adapters-tax"
-version = "0.1.0"
-dependencies = [
- "apex-edge-contracts",
- "thiserror 1.0.69",
  "uuid",
 ]
 

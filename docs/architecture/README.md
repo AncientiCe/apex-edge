@@ -879,50 +879,38 @@ flowchart TB
 - **Failure path:** Unconfigured terminal adapters fail closed with `PaymentProviderError::NotConfigured`; zero-value provider payments fail as `InvalidAmount`. POS `add_payment` errors increment payment attempt metrics with `outcome=error`.
 - **Metrics:** `apex_edge_payment_attempts_total{provider,outcome}` and `apex_edge_payment_duration_seconds{provider}` observe the `add_payment` path. Provider implementations are in `crates/adapters/payment`.
 
-### 25. Tax Provider Adapters and Currency Rounding (v0.8.0)
+### 25. Tax and Currency Rounding (v0.8.0, reworked v2.1.0)
 
-> **Status (v2.1.0):** the `TaxProvider` crate (`crates/adapters/tax`) is not a dependency of the
-> hub. Cart tax is computed in `apex-edge-domain` (`tax_for_line`) from synced `TaxRule`s, and
-> the `apex_edge_tax_quote_*` metrics are never emitted. The currency-rounding notes below are live.
-
-**Inclusive vs exclusive tax (v2.1.0).** `tax_for_line` reads each synced `TaxRule.inclusive` flag.
-An exclusive rule adds tax on top of the discounted price; an inclusive rule (EU VAT) extracts the
-tax already inside it (`price − price·10000/(10000+rate)`). Every line carries `tax_inclusive`
-from cart to order ledger (`order_lines.tax_inclusive`), HQ payload (`HqOrderLine.tax_inclusive`),
-returns (`ReturnLineItemPayload.tax_inclusive`, `return_lines.tax_inclusive`) and fiscal lines, so
-all records agree: exclusive gross = price + tax, inclusive gross = price and net = price − tax.
-The flag defaults to `false`, so stored data and older clients keep exclusive semantics.
+**Purpose:** Compute line tax locally from synced `TaxRule`s, supporting US/Canada-style exclusive
+tax and EU-style inclusive VAT, and round to each currency's ISO minor units. There is no external
+tax-quote provider; the unused `TaxProvider` adapter crate was removed in v2.1.0.
 
 ```mermaid
 flowchart LR
-    Line[line price after discounts] --> Rule{rule.inclusive?}
+    HQ[(HQ sync: tax_rules)] --> Rules[TaxRule rate_bps + inclusive]
+    Line[line price after discounts] --> TaxForLine[domain::tax_for_line]
+    Rules --> TaxForLine
+    TaxForLine --> Rule{rule.inclusive?}
     Rule -->|no| Excl[tax = price x rate; gross = price + tax]
     Rule -->|yes| Incl[tax = price - price/(1+rate); gross = price; net = price - tax]
-    Excl --> Records[cart / order ledger / HQ / fiscal]
+    Excl --> Records[cart / order ledger / HQ / returns / fiscal]
     Incl --> Records
-```
-
-**Purpose:** Support US/Canada destination-style stacked tax, EU inclusive VAT, and hosted tax providers through a single tax quote boundary.
-
-```mermaid
-flowchart TB
-    CartPricing[PricingPipeline] --> TaxRequest[TaxQuoteRequest]
-    TaxRequest --> TaxProvider[TaxProvider]
-    TaxProvider --> Internal[InternalTaxProvider]
-    TaxProvider --> Avalara[Avalara]
-    TaxProvider --> StripeTax[StripeTax]
-    Internal --> Rules[(SyncedTaxRules)]
-    TaxProvider --> Quote[TaxQuoteBreakdown]
-    Quote --> CartTotals[CartTotals]
-    Currency[StoreConfigCurrency] --> Rounding[ISO Minor Unit Rounding]
-    Rounding --> CartTotals
+    Currency[APEX_EDGE_CURRENCY] --> Rounding[ISO minor-unit rounding]
 ```
 
 **Notes:**
-- **Inputs:** `TaxQuoteRequest` contains currency, line tax categories, taxable amounts, and optional destination data. Internal tax quotes use synced `TaxRule` rows.
-- **Outputs:** `TaxQuote` returns per-line jurisdiction breakdowns with rate, inclusive flag, and total tax cents. Domain pricing exposes ISO-minor-unit rounding for USD/CAD/EUR-style 2-decimal currencies, JPY/KRW-style zero-decimal currencies, and KWD/BHD-style 3-decimal currencies.
-- **Failure path:** Hosted `Avalara` and `StripeTax` adapters fail closed with `TaxProviderError::NotConfigured` until credentials are configured; empty quotes return `EmptyQuote`.
-- **Metrics:** `apex_edge_tax_quote_total{provider,outcome}` and `apex_edge_tax_quote_duration_seconds{provider}` are reserved for quote paths.
+- **Inputs:** Synced `TaxRule` rows (`tax_category_id`, `rate_bps`, `inclusive`) and each catalog
+  item's `tax_category_id`; a line with no matching rule is untaxed.
+- **Outputs:** `tax_cents` and `tax_inclusive` on every line. The flag travels from cart to order
+  ledger (`order_lines.tax_inclusive`), HQ payload (`HqOrderLine.tax_inclusive`), returns
+  (`ReturnLineItemPayload.tax_inclusive`, `return_lines.tax_inclusive`) and fiscal lines, so all
+  records agree: exclusive gross = price + tax; inclusive gross = price and net = price − tax. It
+  defaults to `false`, so stored data and older clients keep exclusive semantics. Domain pricing
+  also exposes ISO-minor-unit rounding (2-decimal USD/EUR, 0-decimal JPY/KRW, 3-decimal KWD/BHD).
+- **Failure path:** Missing rules degrade to zero tax rather than blocking a sale; a pricing result
+  for an unknown line returns `PRICING_INTERNAL`.
+- **Metrics:** Tax runs inside POS commands, so `apex_edge_pos_commands_total{operation,outcome}`
+  and `apex_edge_pos_command_duration_seconds{operation}` cover it.
 
 ### 26. Hardware Provider Boundary (v0.9.0)
 
@@ -1017,32 +1005,31 @@ sequenceDiagram
 - **Failure path:** Gift cards reject unknown codes, double activation, inactive-card operations, zero amounts, and over-balance redemptions (`GIFT_CARD_NOT_FOUND`, `GIFT_CARD_ALREADY_ACTIVE`, `GIFT_CARD_NOT_ACTIVE`, `INVALID_AMOUNT`, `INSUFFICIENT_GIFT_CARD_BALANCE`). Loyalty rejects zero-point/spend and over-balance redemptions (`LOYALTY_ACCOUNT_NOT_FOUND`, `INVALID_AMOUNT`, `INSUFFICIENT_LOYALTY_POINTS`). Both tender commands validate the cart is `Tendering`/`Paid` *before* debiting, so a bad cart state never costs the customer money or points. Auto-earn on finalize is best-effort: a loyalty storage failure logs a warning but never fails an already-persisted sale (unlike fiscal signing, which fails closed).
 - **Metrics:** `apex_edge_gift_card_operations_total{operation,outcome}` / `apex_edge_gift_card_operation_duration_seconds{operation}` and `apex_edge_loyalty_operations_total{operation,outcome}` / `apex_edge_loyalty_operation_duration_seconds{operation}` are emitted on every issue/activate/reload/redeem/earn call (`operation` values: `issue`, `activate`, `reload`, `redeem`, `earn`, `earn_auto`).
 
-### 29. Cloud Connector Framework (v0.10.0)
+### 29. Multi-Destination Delivery (v0.10.0, reworked v2.0.0/v2.1.0)
 
-> **Status (v2.1.0):** the `CloudConnector` crate (`crates/adapters/cloud`) is not a dependency of
-> the hub, and the `apex_edge_cloud_connector_*` metrics are never emitted. Multi-destination
-> delivery is implemented by the outbox dispatcher (§41), and HMAC-signed webhooks by §43.
-
-**Purpose:** Generalize the outbox from one HQ URL into a multi-destination connector model for e-commerce, ERP, accounting, and generic webhooks.
+**Purpose:** Deliver outbox events to more than HQ (Peppol access points, ERP or analytics
+webhooks), each destination with its own delivery state. The generic `CloudConnector` adapter crate
+this section once described was never wired in and was removed in v2.1.0; delivery is the outbox
+dispatcher.
 
 ```mermaid
 flowchart TB
     DomainEvent[DomainEvent] --> Outbox[(outbox)]
-    Outbox --> Delivery[(outbox_delivery_attempts)]
-    Destinations[(outbox_destinations)] --> Delivery
-    Delivery --> Connector[CloudConnector]
-    Connector --> Shopify[Shopify]
-    Connector --> NetSuite[NetSuite]
-    Connector --> QuickBooks[QuickBooks]
-    Connector --> Xero[Xero]
-    Connector --> Webhook[SignedWebhook]
+    Destinations[(outbox_destinations)] --> Dispatcher[outbox dispatcher]
+    Outbox --> Dispatcher
+    Dispatcher --> Delivery[(outbox_delivery_attempts)]
+    Dispatcher --> HQ[HQ submit URL]
+    Dispatcher --> Http[http / peppol destinations]
+    Dispatcher --> Webhook[webhook destinations, optionally HMAC-signed]
 ```
 
 **Notes:**
-- **Inputs:** Durable outbox events and configured destinations. Connectors receive bounded `CloudEvent` payloads with event id, type, and JSON payload.
-- **Outputs:** Each destination tracks independent delivery status, attempts, next retry, and last error. Signed webhooks use HMAC-SHA256 for replay-safe downstream verification.
-- **Failure path:** Hosted connectors fail closed with `CloudConnectorError::NotConfigured`; empty payloads return `EmptyPayload`; each destination can retry or DLQ independently.
-- **Metrics:** `apex_edge_cloud_connector_deliveries_total{connector,outcome}` and `apex_edge_cloud_connector_delivery_duration_seconds{connector}` observe connector dispatch.
+- **Inputs:** Durable outbox events; destinations from `APEX_EDGE_HQ_SUBMIT_URL` and
+  `APEX_EDGE_OUTBOX_DESTINATIONS` (optional `payload_kinds` filter and `signing_secret_env`).
+- **Outputs:** Per-destination delivery status, attempts, next retry, and last error.
+- **Failure path:** Each destination retries with backoff and dead-letters independently (§41);
+  signing failures fail closed (§43).
+- **Metrics:** `apex_edge_outbox_*` (§41, §43).
 
 ### 30. Third-Party API Tokens and Inbound Webhooks (v0.10.0)
 
@@ -1072,7 +1059,7 @@ sequenceDiagram
 
 ### 31. Stock Operations and Connector Outbox (v0.10.0)
 
-**Purpose:** Let stores record goods receipt, transfers, and stock adjustments locally, then push each movement through the durable outbox for cloud connectors.
+**Purpose:** Let stores record goods receipt, transfers, and stock adjustments locally, then push each movement through the durable outbox to the configured destinations (§29).
 
 ```mermaid
 flowchart TB
@@ -1080,7 +1067,7 @@ flowchart TB
     PosCommand --> Movement[(stock_movements)]
     Movement --> Outbox[(outbox)]
     Outbox --> Destinations[(outbox_destinations)]
-    Destinations --> Cloud[CloudConnectors]
+    Destinations --> Dispatch[outbox dispatcher: HQ / webhooks]
 ```
 
 **Notes:**

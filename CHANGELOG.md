@@ -63,6 +63,12 @@ shows store operations beyond a sale. Upgrade notes are marked inline below.
 - Bump `rustls` 0.23.37 → 0.23.45 (RUSTSEC-2026-0285: TLS 1.3 handshake messages accepted
   across encryption level boundaries), affecting the TLS/mTLS listener.
 
+### Removed
+
+- The unused `apex-edge-adapters-tax` and `apex-edge-adapters-cloud` crates, the `TaxQuote*`
+  contract types, and the never-emitted `apex_edge_tax_quote_*` / `apex_edge_cloud_connector_*`
+  metric names.
+
 ### Changed
 
 - Docs now match the code: the payment adapter diagram and README list the providers that exist
