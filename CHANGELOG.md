@@ -9,6 +9,12 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- Release workflow: GitHub release notes are now the matching `CHANGELOG.md` section for the
+  tag instead of GitHub's auto-generated commit list (falls back to a pointer at the changelog
+  when the section is missing).
+
 ## [2.0.0] — 2026-08-23
 
 "Prove It": turns the dormant adapter crates into live, verifiable code paths — real card
