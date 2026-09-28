@@ -16,6 +16,11 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `x-apexedge-signature` headers). A named but unset secret fails closed (retry, then DLQ) instead
   of sending unsigned. New metric `apex_edge_outbox_signing_total{destination,outcome}`.
 
+### Security
+
+- Bump `rustls` 0.23.37 → 0.23.45 (RUSTSEC-2026-0285: TLS 1.3 handshake messages accepted
+  across encryption level boundaries), affecting the TLS/mTLS listener.
+
 ### Changed
 
 - Release workflow: GitHub release notes are now the matching `CHANGELOG.md` section for the
