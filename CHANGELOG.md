@@ -59,7 +59,9 @@ shows store operations beyond a sale. Upgrade notes are marked inline below.
   secret in `apex_edge_session.key` next to the database (`APEX_EDGE_AUTH_SESSION_KEY_PATH`
   overrides; owner-only on Unix), so restarts keep devices paired. A truncated key file stops
   boot. **Upgrade note:** hubs that ran without the env var will issue new tokens; registers must
-  pair again once. New metric `apex_edge_auth_signing_secret_source{source}`.
+  pair again once. New metric `apex_edge_auth_signing_secret_source{source}`. With auth disabled
+  or an in-memory database, no key file is touched and the secret is random per process.
+- `APEX_EDGE_BIND` sets the listen address (default `0.0.0.0:3000`).
 - Bump `rustls` 0.23.37 → 0.23.45 (RUSTSEC-2026-0285: TLS 1.3 handshake messages accepted
   across encryption level boundaries), affecting the TLS/mTLS listener.
 

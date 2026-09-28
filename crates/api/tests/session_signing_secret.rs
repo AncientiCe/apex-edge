@@ -77,3 +77,68 @@ fn default_settings_never_carry_a_well_known_secret() {
         "random per instance, so no two hubs share a default"
     );
 }
+
+// ---------- where the key file lives, and when there is none ----------
+
+use apex_edge_api::session_key_path_for_db;
+
+#[test]
+fn the_key_file_sits_next_to_a_file_database_in_any_spelling() {
+    let expect = std::path::Path::new("/data").join("apex_edge_session.key");
+    for db in [
+        "/data/apex_edge.db",
+        "sqlite:/data/apex_edge.db",
+        "sqlite:///data/apex_edge.db",
+        "sqlite:/data/apex_edge.db?mode=rwc",
+    ] {
+        assert_eq!(
+            session_key_path_for_db(db).as_deref(),
+            Some(expect.as_path()),
+            "{db}"
+        );
+    }
+    assert_eq!(
+        session_key_path_for_db("apex_edge.db").as_deref(),
+        Some(std::path::Path::new("apex_edge_session.key"))
+    );
+}
+
+#[test]
+fn an_in_memory_database_has_no_key_file() {
+    for db in [
+        "sqlite::memory:",
+        ":memory:",
+        "sqlite:file:smoke_1_1?mode=memory&cache=shared",
+    ] {
+        assert_eq!(session_key_path_for_db(db), None, "{db}");
+    }
+}
+
+#[test]
+fn without_a_key_location_the_secret_is_ephemeral_and_nothing_is_written() {
+    let (secret, source) = AuthSettings::secret_for(None, None).unwrap();
+    assert_eq!(source, SigningSecretSource::Ephemeral);
+    assert!(secret.len() >= 64);
+}
+
+#[test]
+fn an_explicit_secret_still_wins_without_a_key_location() {
+    let (secret, source) = AuthSettings::secret_for(Some("set-by-operator".into()), None).unwrap();
+    assert_eq!(
+        (secret.as_str(), source),
+        ("set-by-operator", SigningSecretSource::Env)
+    );
+}
+
+#[test]
+fn an_unwritable_key_location_names_the_path_in_the_error() {
+    // A file standing where the key's parent directory should be makes create_dir_all fail
+    // on every platform, like the read-only /app a container user cannot write to.
+    let blocker = temp_key_path("not-a-dir");
+    std::fs::create_dir_all(blocker.parent().unwrap()).unwrap();
+    std::fs::write(&blocker, "x").unwrap();
+    let key = blocker.join("apex_edge_session.key");
+
+    let err = AuthSettings::secret_for(None, Some(&key)).unwrap_err();
+    assert!(err.to_string().contains("apex_edge_session.key"), "{err}");
+}

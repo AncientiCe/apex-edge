@@ -235,15 +235,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     // Never a built-in secret: without APEX_EDGE_AUTH_SESSION_SIGNING_SECRET the hub keeps a
     // random one next to its database, so sessions survive restarts and nobody can forge them.
-    let default_session_key_path =
-        std::path::Path::new(&db_path).with_file_name("apex_edge_session.key");
-    let (auth_settings, secret_source) = AuthSettings::from_env(&default_session_key_path)?;
+    let default_session_key_path = apex_edge_api::session_key_path_for_db(&db_path);
+    let (auth_settings, secret_source) =
+        AuthSettings::from_env(default_session_key_path.as_deref())?;
     match secret_source {
         SigningSecretSource::Env => tracing::info!("Session signing secret: from environment"),
+        SigningSecretSource::Ephemeral => tracing::info!(
+            "Session signing secret: ephemeral (auth disabled or in-memory database; sessions end on restart)"
+        ),
         source => tracing::info!(
             "Session signing secret: {} (key file; override with APEX_EDGE_AUTH_SESSION_KEY_PATH, default {})",
             source.as_str(),
-            default_session_key_path.display()
+            default_session_key_path
+                .as_deref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default()
         ),
     }
     if std::env::args().any(|a| a == "init" || a == "--init") {
@@ -423,7 +429,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         },
     );
 
-    let addr = std::net::SocketAddr::from(([0, 0, 0, 0], 3000));
+    let addr: std::net::SocketAddr = match std::env::var("APEX_EDGE_BIND") {
+        Ok(raw) if !raw.trim().is_empty() => raw
+            .trim()
+            .parse()
+            .map_err(|e| format!("APEX_EDGE_BIND={raw} is not a socket address: {e}"))?,
+        _ => std::net::SocketAddr::from(([0, 0, 0, 0], 3000)),
+    };
     let make_service = app.into_make_service_with_connect_info::<std::net::SocketAddr>();
     match tls::TlsSettings::from_env() {
         Some(tls_settings) => {

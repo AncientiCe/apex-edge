@@ -35,6 +35,7 @@ Related: [README](../../README.md) · [Architecture](../architecture/README.md) 
 | `APEX_EDGE_OUTBOX_BATCH_SIZE` | No | `10` | Submissions considered and deliveries attempted per dispatch cycle. |
 | `APEX_EDGE_OUTBOX_MAX_ATTEMPTS` | No | `10` | Attempts a single destination gets before that delivery is dead-lettered. Counted per destination. |
 | `APEX_EDGE_OUTBOX_BASE_BACKOFF_SECONDS` | No | `5` | First retry delay, doubling per attempt up to a 320 s cap at the default. |
+| `APEX_EDGE_BIND` | No | `0.0.0.0:3000` | Socket address the hub listens on. |
 | `APEX_EDGE_ALLOWED_ORIGINS` | No | unset (localhost only) | Comma-separated list of allowed CORS origins, e.g. `https://pos.internal`. Empty = only `localhost` / `127.0.0.1` / `[::1]` origins. Native POS apps need nothing here; set it for any browser-based client served from another host. |
 | `APEX_EDGE_STORE_ID` | No | unset | UUID for this hub's store identity. Env wins and is persisted; if unset, the previously persisted identity (or a freshly generated one, on first boot) is reused across restarts. See [architecture §42](../architecture/README.md#42-hub-identity-tlsmtls-and-rate-limiting-v200). |
 | `APEX_EDGE_REGISTER_ID` | No | unset | UUID for this hub's register identity. Same resolution rules as `APEX_EDGE_STORE_ID`. |
@@ -49,7 +50,7 @@ Related: [README](../../README.md) · [Architecture](../architecture/README.md) 
 | `APEX_EDGE_AUTH_EXTERNAL_PUBLIC_KEY_PEM_PATH` | Conditional | unset | Path to PEM public key for verifying external RS256 tokens. |
 | `APEX_EDGE_AUTH_EXTERNAL_HS256_SECRET` | Conditional | unset | Shared secret for verifying external HS256 tokens (dev/test mode). |
 | `APEX_EDGE_AUTH_SESSION_SIGNING_SECRET` | No | unset | Secret that signs device access/refresh tokens and admin API tokens. If unset, the hub loads a random secret from the key file below, generating it (owner-only permissions) on first boot. There is no built-in default. |
-| `APEX_EDGE_AUTH_SESSION_KEY_PATH` | No | `apex_edge_session.key` next to `APEX_EDGE_DB` | Key file used when `APEX_EDGE_AUTH_SESSION_SIGNING_SECRET` is unset. Back it up with the database; a truncated file stops the hub from starting rather than weakening the key. |
+| `APEX_EDGE_AUTH_SESSION_KEY_PATH` | No | `apex_edge_session.key` next to `APEX_EDGE_DB` | Key file used when `APEX_EDGE_AUTH_SESSION_SIGNING_SECRET` is unset. Not used when auth is disabled or the database is in memory (`sqlite::memory:`, `?mode=memory`): the secret is then random per process. Back it up with the database; a truncated file stops the hub from starting rather than weakening the key. |
 | `APEX_EDGE_AUTH_ACCESS_TTL_SECONDS` | No | `300` | Access token lifetime in seconds. |
 | `APEX_EDGE_AUTH_REFRESH_TTL_SECONDS` | No | `3600` | Refresh token lifetime in seconds. |
 | `APEX_EDGE_AUTH_PAIRING_CODE_TTL_SECONDS` | No | `300` | One-time device pairing code TTL. |

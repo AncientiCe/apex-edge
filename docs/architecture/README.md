@@ -1592,20 +1592,25 @@ flowchart TD
   (`APEX_EDGE_AUTH_SESSION_KEY_PATH`, default `apex_edge_session.key` beside the DB) or generates
   32 random bytes there on first boot (mode 0600 on Unix). There is no built-in fallback, since a
   known default would let anyone on the LAN forge tokens, and a truncated key file stops boot
-  rather than silently weakening the key. `AuthSettings::default()` (tests, auth disabled) is
+  rather than silently weakening the key. With auth disabled, or an in-memory database, no key
+  file is read or written and the secret is random per process (`source="ephemeral"`), so
+  a container with a read-only working directory still boots. `AuthSettings::default()` (tests, auth disabled) is
   random per instance for the same reason.
 
 ```mermaid
 flowchart LR
     Boot[Hub boot] --> Env{SESSION_SIGNING_SECRET set?}
     Env -->|yes| UseEnv[use env value]
-    Env -->|no| File{key file exists?}
+    Env -->|no| Mem{auth off or in-memory DB?}
+    Mem -->|yes| Eph[random, this process only]
+    Mem -->|no| File{key file exists?}
     File -->|yes, >= 64 hex| Load[load it]
     File -->|yes, too short| Fail[refuse to start]
     File -->|no| Gen[generate 32 random bytes, write 0600]
     UseEnv --> Metric[apex_edge_auth_signing_secret_source]
     Load --> Metric
     Gen --> Metric
+    Eph --> Metric
 ```
 
 - **Inputs:** `APEX_EDGE_STORE_ID`, `APEX_EDGE_REGISTER_ID`, `APEX_EDGE_TLS_CERT_PATH`,
@@ -1616,7 +1621,8 @@ flowchart LR
 - **Metrics:** `apex_edge_tls_enabled{client_auth}` gauge (1 while serving HTTPS, labelled `off` or
   `required`), `apex_edge_rate_limit_decisions_total{bucket,outcome}`,
   `apex_edge_rate_limit_rejected_total{bucket}`, and
-  `apex_edge_auth_signing_secret_source{source}` (`env`, `file_loaded`, `file_generated`).
+  `apex_edge_auth_signing_secret_source{source}` (`env`, `file_loaded`, `file_generated`,
+  `ephemeral`).
 
 ### 43. Signed Webhook Delivery (v2.1.0)
 

@@ -66,6 +66,9 @@ pub enum SigningSecretSource {
     FileLoaded,
     /// No secret existed; a random one was generated and written to the key file.
     FileGenerated,
+    /// Random for this process only: auth is disabled, or the database is in memory, so
+    /// there is nothing a persisted secret would protect across restarts.
+    Ephemeral,
 }
 
 impl SigningSecretSource {
@@ -74,8 +77,28 @@ impl SigningSecretSource {
             Self::Env => "env",
             Self::FileLoaded => "file_loaded",
             Self::FileGenerated => "file_generated",
+            Self::Ephemeral => "ephemeral",
         }
     }
+}
+
+/// Where the session key file lives for a given `APEX_EDGE_DB`: next to a file database,
+/// or `None` for an in-memory one. Accepts plain paths and `sqlite:` URLs.
+pub fn session_key_path_for_db(db: &str) -> Option<std::path::PathBuf> {
+    let (path, query) = match db.strip_prefix("sqlite:") {
+        Some(url) => {
+            let (path, query) = url.split_once('?').unwrap_or((url, ""));
+            let path = path.strip_prefix("//").unwrap_or(path);
+            (path.strip_prefix("file:").unwrap_or(path), query)
+        }
+        None => (db, ""),
+    };
+    let in_memory =
+        path.is_empty() || path == ":memory:" || query.split('&').any(|kv| kv == "mode=memory");
+    if in_memory {
+        return None;
+    }
+    Some(std::path::Path::new(path).with_file_name("apex_edge_session.key"))
 }
 
 /// Hex characters in a generated secret (32 random bytes). Shorter key files are refused.
@@ -147,31 +170,57 @@ fn write_owner_only(path: &std::path::Path, contents: &str) -> std::io::Result<(
 }
 
 impl AuthSettings {
+    /// The signing secret for an explicit value and an optional key-file location. With no
+    /// location there is nothing durable to keep a key in, so the secret is ephemeral.
+    pub fn secret_for(
+        env_value: Option<String>,
+        key_path: Option<&std::path::Path>,
+    ) -> std::io::Result<(String, SigningSecretSource)> {
+        match key_path {
+            Some(path) => resolve_session_signing_secret(env_value, path).map_err(|e| {
+                std::io::Error::new(
+                    e.kind(),
+                    format!(
+                        "session signing key file {}: {e} (set APEX_EDGE_AUTH_SESSION_KEY_PATH \
+                         to a writable location or APEX_EDGE_AUTH_SESSION_SIGNING_SECRET)",
+                        path.display()
+                    ),
+                )
+            }),
+            None => match env_value.filter(|v| !v.trim().is_empty()) {
+                Some(secret) => Ok((secret, SigningSecretSource::Env)),
+                None => Ok((random_secret(), SigningSecretSource::Ephemeral)),
+            },
+        }
+    }
+
     /// Production defaults: auth is on unless the env flag turns it off.
     ///
     /// `default_key_path` is where the session signing secret is kept when
-    /// `APEX_EDGE_AUTH_SESSION_SIGNING_SECRET` is unset; `APEX_EDGE_AUTH_SESSION_KEY_PATH`
-    /// overrides it.
+    /// `APEX_EDGE_AUTH_SESSION_SIGNING_SECRET` is unset (`None` for an in-memory database);
+    /// `APEX_EDGE_AUTH_SESSION_KEY_PATH` overrides it. With auth disabled no key file is
+    /// touched, since no token is ever checked.
     pub fn from_env(
-        default_key_path: &std::path::Path,
+        default_key_path: Option<&std::path::Path>,
     ) -> std::io::Result<(Self, SigningSecretSource)> {
+        let enabled = parse_enabled_flag(
+            std::env::var("APEX_EDGE_AUTH_ENABLED").ok().as_deref(),
+            true,
+        );
         let key_path = std::env::var("APEX_EDGE_AUTH_SESSION_KEY_PATH")
             .ok()
             .filter(|v| !v.trim().is_empty())
             .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| default_key_path.to_path_buf());
-        let (session_signing_secret, source) = resolve_session_signing_secret(
+            .or_else(|| default_key_path.map(std::path::Path::to_path_buf));
+        let (session_signing_secret, source) = Self::secret_for(
             std::env::var("APEX_EDGE_AUTH_SESSION_SIGNING_SECRET").ok(),
-            &key_path,
+            key_path.as_deref().filter(|_| enabled),
         )?;
         let external_public_key_pem = std::env::var("APEX_EDGE_AUTH_EXTERNAL_PUBLIC_KEY_PEM_PATH")
             .ok()
             .and_then(|path| std::fs::read_to_string(path).ok());
         let settings = Self {
-            enabled: parse_enabled_flag(
-                std::env::var("APEX_EDGE_AUTH_ENABLED").ok().as_deref(),
-                true,
-            ),
+            enabled,
             external_issuer: std::env::var("APEX_EDGE_AUTH_EXTERNAL_ISSUER").unwrap_or_default(),
             external_audience: std::env::var("APEX_EDGE_AUTH_EXTERNAL_AUDIENCE")
                 .unwrap_or_default(),
