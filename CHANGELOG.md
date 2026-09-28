@@ -33,6 +33,12 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+- Auth no longer falls back to the public `dev-hub-secret` for signing device sessions and admin
+  API tokens. Without `APEX_EDGE_AUTH_SESSION_SIGNING_SECRET`, the hub loads or generates a random
+  secret in `apex_edge_session.key` next to the database (`APEX_EDGE_AUTH_SESSION_KEY_PATH`
+  overrides; owner-only on Unix), so restarts keep devices paired. A truncated key file stops
+  boot. **Upgrade note:** hubs that ran without the env var will issue new tokens; registers must
+  pair again once. New metric `apex_edge_auth_signing_secret_source{source}`.
 - Bump `rustls` 0.23.37 → 0.23.45 (RUSTSEC-2026-0285: TLS 1.3 handshake messages accepted
   across encryption level boundaries), affecting the TLS/mTLS listener.
 

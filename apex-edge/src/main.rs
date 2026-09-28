@@ -7,7 +7,7 @@ use apex_edge_adapters_fiscal::{
     DeTseFiscalProvider, FiscalProvider, FiskalyConfig, FiskalyMarket, FiskalyProvider,
     NoOpFiscalProvider,
 };
-use apex_edge_api::{AuthSettings, FiscalSettings};
+use apex_edge_api::{AuthSettings, FiscalSettings, SigningSecretSource};
 use apex_edge_contracts::ContractVersion;
 use apex_edge_outbox::run_dispatcher_loop;
 use apex_edge_storage::{
@@ -232,10 +232,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     };
     set_audit_key(AuditKey::new(audit_key_id.clone(), audit_secret));
     tracing::info!("Audit chain signing key loaded (id={})", audit_key_id);
+
+    // Never a built-in secret: without APEX_EDGE_AUTH_SESSION_SIGNING_SECRET the hub keeps a
+    // random one next to its database, so sessions survive restarts and nobody can forge them.
+    let default_session_key_path =
+        std::path::Path::new(&db_path).with_file_name("apex_edge_session.key");
+    let (auth_settings, secret_source) = AuthSettings::from_env(&default_session_key_path)?;
+    match secret_source {
+        SigningSecretSource::Env => tracing::info!("Session signing secret: from environment"),
+        source => tracing::info!(
+            "Session signing secret: {} (key file; override with APEX_EDGE_AUTH_SESSION_KEY_PATH, default {})",
+            source.as_str(),
+            default_session_key_path.display()
+        ),
+    }
     if std::env::args().any(|a| a == "init" || a == "--init") {
         println!("ApexEdge initialized");
         println!("database={db_path}");
         println!("audit_key_id={audit_key_id}");
+        println!("session_signing_secret_source={}", secret_source.as_str());
         println!("admin_pairing_code_endpoint=POST /auth/pairing-codes");
         return Ok(());
     }
@@ -353,7 +368,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         tracing::warn!("CORS: allowing all origins (set APEX_EDGE_ALLOWED_ORIGINS for production)");
     }
     let metrics_handle = apex_edge_metrics::install_recorder()?;
-    let auth_settings = AuthSettings::from_env();
+    metrics::gauge!(apex_edge_metrics::AUTH_SIGNING_SECRET_SOURCE, "source" => secret_source.as_str())
+        .set(1.0);
     let fiscal_settings = fiscal_settings_from_env();
     tracing::info!(
         "Fiscal provider: {} (currency={})",

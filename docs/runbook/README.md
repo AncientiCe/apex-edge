@@ -48,7 +48,8 @@ Related: [README](../../README.md) · [Architecture](../architecture/README.md) 
 | `APEX_EDGE_AUTH_EXTERNAL_AUDIENCE` | Yes (if auth enabled) | unset | Expected audience (`aud`) for external associate token exchange. |
 | `APEX_EDGE_AUTH_EXTERNAL_PUBLIC_KEY_PEM_PATH` | Conditional | unset | Path to PEM public key for verifying external RS256 tokens. |
 | `APEX_EDGE_AUTH_EXTERNAL_HS256_SECRET` | Conditional | unset | Shared secret for verifying external HS256 tokens (dev/test mode). |
-| `APEX_EDGE_AUTH_SESSION_SIGNING_SECRET` | Yes (if auth enabled) | `dev-hub-secret` | Secret used to sign hub access/refresh tokens. |
+| `APEX_EDGE_AUTH_SESSION_SIGNING_SECRET` | No | unset | Secret that signs device access/refresh tokens and admin API tokens. If unset, the hub loads a random secret from the key file below, generating it (owner-only permissions) on first boot. There is no built-in default. |
+| `APEX_EDGE_AUTH_SESSION_KEY_PATH` | No | `apex_edge_session.key` next to `APEX_EDGE_DB` | Key file used when `APEX_EDGE_AUTH_SESSION_SIGNING_SECRET` is unset. Back it up with the database; a truncated file stops the hub from starting rather than weakening the key. |
 | `APEX_EDGE_AUTH_ACCESS_TTL_SECONDS` | No | `300` | Access token lifetime in seconds. |
 | `APEX_EDGE_AUTH_REFRESH_TTL_SECONDS` | No | `3600` | Refresh token lifetime in seconds. |
 | `APEX_EDGE_AUTH_PAIRING_CODE_TTL_SECONDS` | No | `300` | One-time device pairing code TTL. |

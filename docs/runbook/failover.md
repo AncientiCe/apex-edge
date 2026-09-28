@@ -77,11 +77,12 @@ Then `litestream replicate -config /etc/litestream.yml` runs as a daemon.
    at your secrets store. If the key is lost, the chain is verifiable up to the
    key rotation point and a new key simply chains forward from the current tip.
 4. Carry over the hub's secrets and identity configuration:
-   - `APEX_EDGE_AUTH_SESSION_SIGNING_SECRET` — must match the old box. Paired devices
-     live in the restored DB (`trusted_devices`), but their sessions and any admin API
-     tokens are signed with this secret; a different secret means every register must
-     pair again and every API token must be reissued. Never rely on the built-in
-     development default in production.
+   - The session signing secret — either the same `APEX_EDGE_AUTH_SESSION_SIGNING_SECRET`,
+     or a copy of the old box's key file (`apex_edge_session.key` next to the DB, or
+     `APEX_EDGE_AUTH_SESSION_KEY_PATH`). Paired devices live in the restored DB
+     (`trusted_devices`), but their sessions and any admin API tokens are signed with this
+     secret; without it the hub generates a new one, every register must pair again, and
+     every API token must be reissued.
    - `APEX_EDGE_STORE_ID` / `APEX_EDGE_REGISTER_ID` — optional. The restored
      `hub_identity` row already carries them; if you set them, they must match, or
      POS commands will fail with `STORE_MISMATCH`.

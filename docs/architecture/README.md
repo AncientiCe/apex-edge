@@ -1574,6 +1574,28 @@ flowchart TD
   The `/auth/*` limit is the one with a real attacker model (short pairing codes); the `/pos/*` limit
   is defense-in-depth against a misbehaving client, not an internet-facing threat model, and is safe
   to disable for a hub that is genuinely LAN-only.
+- **Session signing secret (v2.1.0):** device sessions and admin API tokens are HS256 JWTs
+  signed with one hub secret. `resolve_session_signing_secret` (`crates/api/src/auth.rs`) uses
+  `APEX_EDGE_AUTH_SESSION_SIGNING_SECRET` when set; otherwise it loads the key file
+  (`APEX_EDGE_AUTH_SESSION_KEY_PATH`, default `apex_edge_session.key` beside the DB) or generates
+  32 random bytes there on first boot (mode 0600 on Unix). There is no built-in fallback, since a
+  known default would let anyone on the LAN forge tokens, and a truncated key file stops boot
+  rather than silently weakening the key. `AuthSettings::default()` (tests, auth disabled) is
+  random per instance for the same reason.
+
+```mermaid
+flowchart LR
+    Boot[Hub boot] --> Env{SESSION_SIGNING_SECRET set?}
+    Env -->|yes| UseEnv[use env value]
+    Env -->|no| File{key file exists?}
+    File -->|yes, >= 64 hex| Load[load it]
+    File -->|yes, too short| Fail[refuse to start]
+    File -->|no| Gen[generate 32 random bytes, write 0600]
+    UseEnv --> Metric[apex_edge_auth_signing_secret_source]
+    Load --> Metric
+    Gen --> Metric
+```
+
 - **Inputs:** `APEX_EDGE_STORE_ID`, `APEX_EDGE_REGISTER_ID`, `APEX_EDGE_TLS_CERT_PATH`,
   `APEX_EDGE_TLS_KEY_PATH`, `APEX_EDGE_TLS_CLIENT_CA_PATH`, `APEX_EDGE_RATE_LIMIT_AUTH_PER_MINUTE`,
   `APEX_EDGE_RATE_LIMIT_POS_PER_MINUTE`.
@@ -1581,7 +1603,8 @@ flowchart TD
   `retry-after` header.
 - **Metrics:** `apex_edge_tls_enabled{client_auth}` gauge (1 while serving HTTPS, labelled `off` or
   `required`), `apex_edge_rate_limit_decisions_total{bucket,outcome}`,
-  `apex_edge_rate_limit_rejected_total{bucket}`.
+  `apex_edge_rate_limit_rejected_total{bucket}`, and
+  `apex_edge_auth_signing_secret_source{source}` (`env`, `file_loaded`, `file_generated`).
 
 ### 43. Signed Webhook Delivery (v2.1.0)
 

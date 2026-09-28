@@ -57,13 +57,117 @@ pub fn parse_enabled_flag(raw: Option<&str>, default: bool) -> bool {
     }
 }
 
+/// Where the session signing secret came from; reported at boot and as a metric.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SigningSecretSource {
+    /// `APEX_EDGE_AUTH_SESSION_SIGNING_SECRET`.
+    Env,
+    /// Read from the key file written on an earlier boot.
+    FileLoaded,
+    /// No secret existed; a random one was generated and written to the key file.
+    FileGenerated,
+}
+
+impl SigningSecretSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Env => "env",
+            Self::FileLoaded => "file_loaded",
+            Self::FileGenerated => "file_generated",
+        }
+    }
+}
+
+/// Hex characters in a generated secret (32 random bytes). Shorter key files are refused.
+const GENERATED_SECRET_HEX_LEN: usize = 64;
+
+fn random_secret() -> String {
+    hex::encode(rand::thread_rng().gen::<[u8; 32]>())
+}
+
+/// Resolves the secret that signs device sessions and admin API tokens.
+///
+/// An explicit non-blank `env_value` wins. Otherwise the secret is read from `key_path`,
+/// or generated and written there (owner-only on Unix) on first boot, so it survives
+/// restarts without ever falling back to a value anyone could guess. A key file that
+/// exists but is too short is an error rather than a silently weak key.
+pub fn resolve_session_signing_secret(
+    env_value: Option<String>,
+    key_path: &std::path::Path,
+) -> std::io::Result<(String, SigningSecretSource)> {
+    if let Some(secret) = env_value.filter(|v| !v.trim().is_empty()) {
+        return Ok((secret, SigningSecretSource::Env));
+    }
+    match std::fs::read_to_string(key_path) {
+        Ok(contents) => {
+            let secret = contents.trim().to_string();
+            if secret.len() < GENERATED_SECRET_HEX_LEN {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "session signing key file {} is too short; delete it to regenerate",
+                        key_path.display()
+                    ),
+                ));
+            }
+            Ok((secret, SigningSecretSource::FileLoaded))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            if let Some(parent) = key_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let secret = random_secret();
+            write_owner_only(key_path, &secret)?;
+            Ok((secret, SigningSecretSource::FileGenerated))
+        }
+        Err(e) => Err(e),
+    }
+}
+
+#[cfg(unix)]
+fn write_owner_only(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)?;
+    file.write_all(contents.as_bytes())
+}
+
+#[cfg(not(unix))]
+fn write_owner_only(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)?;
+    file.write_all(contents.as_bytes())
+}
+
 impl AuthSettings {
     /// Production defaults: auth is on unless the env flag turns it off.
-    pub fn from_env() -> Self {
+    ///
+    /// `default_key_path` is where the session signing secret is kept when
+    /// `APEX_EDGE_AUTH_SESSION_SIGNING_SECRET` is unset; `APEX_EDGE_AUTH_SESSION_KEY_PATH`
+    /// overrides it.
+    pub fn from_env(
+        default_key_path: &std::path::Path,
+    ) -> std::io::Result<(Self, SigningSecretSource)> {
+        let key_path = std::env::var("APEX_EDGE_AUTH_SESSION_KEY_PATH")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| default_key_path.to_path_buf());
+        let (session_signing_secret, source) = resolve_session_signing_secret(
+            std::env::var("APEX_EDGE_AUTH_SESSION_SIGNING_SECRET").ok(),
+            &key_path,
+        )?;
         let external_public_key_pem = std::env::var("APEX_EDGE_AUTH_EXTERNAL_PUBLIC_KEY_PEM_PATH")
             .ok()
             .and_then(|path| std::fs::read_to_string(path).ok());
-        Self {
+        let settings = Self {
             enabled: parse_enabled_flag(
                 std::env::var("APEX_EDGE_AUTH_ENABLED").ok().as_deref(),
                 true,
@@ -73,8 +177,7 @@ impl AuthSettings {
                 .unwrap_or_default(),
             external_hs256_secret: std::env::var("APEX_EDGE_AUTH_EXTERNAL_HS256_SECRET").ok(),
             external_public_key_pem,
-            session_signing_secret: std::env::var("APEX_EDGE_AUTH_SESSION_SIGNING_SECRET")
-                .unwrap_or_else(|_| "dev-hub-secret".into()),
+            session_signing_secret,
             access_ttl_seconds: std::env::var("APEX_EDGE_AUTH_ACCESS_TTL_SECONDS")
                 .ok()
                 .and_then(|v| v.parse::<i64>().ok())
@@ -95,7 +198,8 @@ impl AuthSettings {
                 .ok()
                 .and_then(|v| v.parse::<i64>().ok())
                 .unwrap_or(3),
-        }
+        };
+        Ok((settings, source))
     }
 }
 
@@ -107,7 +211,8 @@ impl Default for AuthSettings {
             external_audience: String::new(),
             external_hs256_secret: None,
             external_public_key_pem: None,
-            session_signing_secret: "dev-hub-secret".into(),
+            // Random per instance: a default must never be a secret anyone else knows.
+            session_signing_secret: random_secret(),
             access_ttl_seconds: 300,
             refresh_ttl_seconds: 3600,
             pairing_code_ttl_seconds: 300,
