@@ -568,7 +568,8 @@ sequenceDiagram
     participant Store as apex_edge_storage(auth tables)
     participant Ext as External IdP Token
 
-    Admin->>API: POST /auth/pairing-codes
+    Admin->>API: POST /auth/pairing-codes (from the hub machine, or Bearer API token with pairing scope)
+    API->>API: loopback peer or pairing/admin/* token? else 403
     API->>Store: create device_pairing_codes (hashed code, TTL, attempts)
     API-->>Admin: one-time pairing code
 
@@ -591,6 +592,12 @@ sequenceDiagram
 - **Inputs:** Pairing requests (`store_id`, `created_by`), device metadata (`device_name`, optional `platform`), external associate token (`iss`, `aud`, `sub`, `store_id` claims), and bearer session tokens on protected routes.
 - **Outputs:** `trusted_devices`, `device_pairing_codes`, `auth_sessions`, and `associate_identities` persisted locally. Protected routes return `401` when session/device validation fails.
 - **Protection scope:** `/pos/*`, `/catalog/*`, `/customers`, `/documents/*`, `/orders/*`, `/sync/status` are protected. Auth is **enabled by default** (`APEX_EDGE_AUTH_ENABLED` opts out) as of v2.0.0 — see [§42](#42-hub-identity-tlsmtls-and-rate-limiting-v200). `/health`, `/ready`, and auth bootstrap/session endpoints remain callable as designed. Third-party API tokens (§30) are additionally scope-checked per route by `required_scope_for_path`/`token_scopes_allow` — a token missing the route's required scope gets `403`, not just `401` for a missing token.
+- **Who may mint a pairing code (v2.1.0):** `/auth/pairing-codes` skips the session middleware, so
+  the handler authorizes it itself: a request whose peer address is loopback (`127.0.0.1`/`::1`,
+  i.e. an operator on the hub machine) or one carrying an API token (§30) with the `pairing`,
+  `admin` or `*` scope. Anything else, including a request with no known peer, gets `403`
+  (`apex_edge_auth_requests_total{operation="pairing_codes_create",outcome="forbidden"}`). Behind
+  a reverse proxy or container bridge the peer is not loopback, so use a `pairing` token there.
 - **Failure path:** Invalid/expired/consumed pairing code, device mismatch, token validation failure, and revoked/expired sessions all fail closed with `401`/`400`; attempts are tracked on pairing codes.
 - **Metrics:** `apex_edge_auth_requests_total{operation,outcome}`, `apex_edge_auth_request_duration_seconds{operation}`, `apex_edge_auth_sessions_total{outcome}`, `apex_edge_device_pairings_total{outcome}`.
 

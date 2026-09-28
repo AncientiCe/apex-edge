@@ -39,6 +39,10 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+- `POST /auth/pairing-codes` was open to anyone who could reach the hub. It now requires a
+  loopback peer (an operator on the hub machine) or an API token with the `pairing`, `admin`, or
+  `*` scope; everything else gets `403`. **Upgrade note:** tooling that mints pairing codes from
+  another machine or through a proxy needs a `pairing` token.
 - CORS no longer defaults to allowing every origin. With `APEX_EDGE_ALLOWED_ORIGINS` unset, only
   localhost origins (any port) get CORS grants, so a web page an employee visits cannot drive the
   hub's public auth endpoints. **Upgrade note:** browser-based POS clients served from another

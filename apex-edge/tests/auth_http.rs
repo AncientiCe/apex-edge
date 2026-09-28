@@ -66,7 +66,12 @@ async fn start_auth_server() -> (u16, Uuid) {
         .expect("bind");
     let port = listener.local_addr().expect("addr").port();
     tokio::spawn(async move {
-        let _ = axum::serve(listener, app).await;
+        // Serve like production: peer addresses reach handlers (pairing trusts loopback).
+        let _ = axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await;
     });
     tokio::time::sleep(std::time::Duration::from_millis(60)).await;
     (port, store_id)

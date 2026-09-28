@@ -260,6 +260,10 @@ Live availability is `available_to_sell = hq_baseline + local_adjust - reserved 
    - HS256: valid `APEX_EDGE_AUTH_EXTERNAL_HS256_SECRET`.
 4. Ensure device is paired first:
    - `POST /auth/pairing-codes` -> `POST /auth/devices/pair` -> `POST /auth/sessions/exchange`.
+   - `POST /auth/pairing-codes` returns `403` unless it comes from the hub machine itself
+     (loopback) or carries an API token with the `pairing` (or `admin`) scope. Behind a proxy or
+     from another machine, issue a `pairing` token via `POST /admin/api-tokens` and send it as
+     `Authorization: Bearer <token>`.
 5. If refresh succeeds but API calls fail, verify session revoke/expiry and clock skew.
 
 ### API token call returns 403 instead of 401

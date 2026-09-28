@@ -514,14 +514,57 @@ async fn authenticate_api_token(
     })
 }
 
+/// Pairing codes turn an unknown device into a trusted register, so minting one needs
+/// either the hub machine itself (loopback peer) or an API token with the `pairing` scope.
+/// An unknown peer (no connection info) is not treated as loopback.
+async fn may_mint_pairing_code(
+    app: &AppState,
+    peer: Option<std::net::SocketAddr>,
+    headers: &axum::http::HeaderMap,
+) -> bool {
+    if peer.is_some_and(|addr| addr.ip().is_loopback()) {
+        return true;
+    }
+    let Some(token) = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|raw| raw.strip_prefix("Bearer "))
+    else {
+        return false;
+    };
+    let mut validation = Validation::new(Algorithm::HS256);
+    validation.validate_aud = false;
+    validation.validate_exp = true;
+    let Ok(claims) = decode::<crate::admin_api::ApiTokenClaims>(
+        token,
+        &DecodingKey::from_secret(app.auth.session_signing_secret.as_bytes()),
+        &validation,
+    ) else {
+        return false;
+    };
+    let Ok(token_id) = Uuid::parse_str(&claims.claims.sub) else {
+        return false;
+    };
+    match crate::admin_api::load_api_token(&app.pool, token_id).await {
+        Some(stored) => !stored.revoked && token_scopes_allow(&stored.scopes, "pairing"),
+        None => false,
+    }
+}
+
 pub async fn create_pairing_code(
     State(app): State<AppState>,
+    connect_info: Option<axum::extract::ConnectInfo<std::net::SocketAddr>>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<AuthCreatePairingCodeRequest>,
 ) -> Result<Json<AuthCreatePairingCodeResponse>, StatusCode> {
     let start = Utc::now();
     if !app.auth.enabled {
         record_auth_metrics("pairing_codes_create", "disabled", start);
         return Err(StatusCode::SERVICE_UNAVAILABLE);
+    }
+    if !may_mint_pairing_code(&app, connect_info.map(|c| c.0), &headers).await {
+        record_auth_metrics("pairing_codes_create", "forbidden", start);
+        return Err(StatusCode::FORBIDDEN);
     }
     if req.store_id != app.store_id {
         record_auth_metrics("pairing_codes_create", "store_mismatch", start);
