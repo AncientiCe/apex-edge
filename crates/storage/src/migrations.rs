@@ -407,6 +407,13 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), MigrationError> {
             "tax_inclusive",
             "ALTER TABLE return_lines ADD COLUMN tax_inclusive INTEGER NOT NULL DEFAULT 0",
         ),
+        // 2.2.0: failed tries that never reached the destination, kept apart from
+        // `attempts` so a WAN outage cannot use up the dead-letter budget.
+        (
+            "outbox_delivery_attempts",
+            "unreachable_attempts",
+            "ALTER TABLE outbox_delivery_attempts ADD COLUMN unreachable_attempts INTEGER NOT NULL DEFAULT 0",
+        ),
     ] {
         if !column_exists(pool, table, column).await? {
             if let Err(e) = sqlx::query(ddl).execute(pool).await {

@@ -87,6 +87,9 @@ pub struct DueDelivery {
     pub config: Value,
     /// Attempts already made against this destination, not against the submission.
     pub attempts: i64,
+    /// Tries that never reached the destination. They pace the retries but never count
+    /// toward the dead-letter budget.
+    pub unreachable_attempts: i64,
     pub last_error: Option<String>,
 }
 
@@ -99,6 +102,7 @@ pub struct DeliveryAttemptRow {
     pub destination_code: String,
     pub state: DeliveryState,
     pub attempts: i64,
+    pub unreachable_attempts: i64,
     pub last_error: Option<String>,
     pub next_attempt_at: Option<DateTime<Utc>>,
     pub updated_at: DateTime<Utc>,
@@ -289,7 +293,8 @@ pub async fn fetch_due_deliveries(
     let now = Utc::now().to_rfc3339();
     let rows = observed("fetch_due_outbox_deliveries", async {
         sqlx::query(
-            "SELECT a.id AS attempt_id, a.outbox_id, a.destination_id, a.attempts, a.last_error, \
+            "SELECT a.id AS attempt_id, a.outbox_id, a.destination_id, a.attempts, \
+                    a.unreachable_attempts, a.last_error, \
                     o.payload, d.code, d.kind, d.endpoint, d.config_json \
              FROM outbox_delivery_attempts a \
              JOIN outbox o ON o.id = a.outbox_id \
@@ -320,6 +325,7 @@ pub async fn fetch_due_deliveries(
             endpoint: row.try_get("endpoint").unwrap_or_default(),
             config: parse_config(&row.try_get::<String, _>("config_json").unwrap_or_default()),
             attempts: row.try_get("attempts").unwrap_or_default(),
+            unreachable_attempts: row.try_get("unreachable_attempts").unwrap_or_default(),
             last_error: row.try_get("last_error").unwrap_or_default(),
         })
         .collect())
@@ -367,6 +373,37 @@ pub async fn schedule_delivery_retry(
     Ok(())
 }
 
+/// Schedules another try after the destination could not be reached at all.
+///
+/// Unlike [`schedule_delivery_retry`] this leaves `attempts` alone: the store's uplink
+/// being down says nothing about whether the destination would accept the payload, and
+/// an outage of a few hours must not push every sale taken during it into the
+/// dead-letter queue.
+pub async fn schedule_unreachable_delivery_retry(
+    pool: &SqlitePool,
+    attempt_id: Uuid,
+    next_attempt_at: DateTime<Utc>,
+    error: &str,
+) -> Result<(), PoolError> {
+    let now = Utc::now().to_rfc3339();
+    observed("schedule_outbox_unreachable_retry", async {
+        sqlx::query(
+            "UPDATE outbox_delivery_attempts \
+             SET unreachable_attempts = unreachable_attempts + 1, next_attempt_at = ?, \
+                 last_error = ?, updated_at = ? \
+             WHERE id = ?",
+        )
+        .bind(next_attempt_at.to_rfc3339())
+        .bind(error)
+        .bind(&now)
+        .bind(attempt_id.to_string())
+        .execute(pool)
+        .await
+    })
+    .await?;
+    Ok(())
+}
+
 /// Gives up on one destination. The delivery is never retried automatically again, which
 /// is the point: an endless retry loop hides a failure behind a queue that never drains.
 pub async fn mark_delivery_dead_letter(
@@ -401,7 +438,8 @@ pub async fn retry_dead_letter_delivery(
     let result = observed("retry_outbox_dead_letter", async {
         sqlx::query(
             "UPDATE outbox_delivery_attempts \
-             SET status = 'pending', attempts = 0, next_attempt_at = NULL, updated_at = ? \
+             SET status = 'pending', attempts = 0, unreachable_attempts = 0, \
+                 next_attempt_at = NULL, updated_at = ? \
              WHERE id = ? AND status = 'dead_letter'",
         )
         .bind(&now)
@@ -421,7 +459,8 @@ pub async fn retry_dead_letter_delivery(
 }
 
 const ATTEMPT_COLUMNS: &str = "a.id AS attempt_id, a.outbox_id, a.destination_id, d.code, \
-     a.status, a.attempts, a.last_error, a.next_attempt_at, a.updated_at";
+     a.status, a.attempts, a.unreachable_attempts, a.last_error, a.next_attempt_at, \
+     a.updated_at";
 
 fn row_to_attempt(row: &sqlx::sqlite::SqliteRow) -> DeliveryAttemptRow {
     let next_attempt_at: Option<String> = row.try_get("next_attempt_at").unwrap_or_default();
@@ -435,6 +474,7 @@ fn row_to_attempt(row: &sqlx::sqlite::SqliteRow) -> DeliveryAttemptRow {
         destination_code: row.try_get("code").unwrap_or_default(),
         state: DeliveryState::from_str(&row.try_get::<String, _>("status").unwrap_or_default()),
         attempts: row.try_get("attempts").unwrap_or_default(),
+        unreachable_attempts: row.try_get("unreachable_attempts").unwrap_or_default(),
         last_error: row.try_get("last_error").unwrap_or_default(),
         next_attempt_at: next_attempt_at.as_deref().map(parse_timestamp),
         updated_at: parse_timestamp(&row.try_get::<String, _>("updated_at").unwrap_or_default()),

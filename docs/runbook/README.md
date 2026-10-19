@@ -33,7 +33,7 @@ Related: [README](../../README.md) · [Architecture](../architecture/README.md) 
 | `APEX_EDGE_HQ_SUBMIT_URL` | No | unset | URL to POST outbox submissions to HQ. Registers the `hq` outbox destination; the dispatcher runs every 30 s whenever at least one destination exists. |
 | `APEX_EDGE_OUTBOX_DESTINATIONS` | No | unset | JSON array of extra destinations, e.g. `[{"code":"peppol","kind":"http","endpoint":"https://ap.example/as4","config":{"payload_kinds":["order","return"]}}]`. Omit `payload_kinds` to send everything. Add `"signing_secret_env":"NAME"` to `config` to HMAC-sign every delivery with the secret held in env var `NAME` ([architecture §43](../architecture/README.md#43-signed-webhook-delivery-v210)). |
 | `APEX_EDGE_OUTBOX_BATCH_SIZE` | No | `10` | Submissions considered and deliveries attempted per dispatch cycle. |
-| `APEX_EDGE_OUTBOX_MAX_ATTEMPTS` | No | `10` | Attempts a single destination gets before that delivery is dead-lettered. Counted per destination. |
+| `APEX_EDGE_OUTBOX_MAX_ATTEMPTS` | No | `10` | Attempts a single destination gets before that delivery is dead-lettered. Counted per destination. Only tries the destination answered (HTTP errors, rejections) count; an unreachable destination is retried indefinitely. |
 | `APEX_EDGE_OUTBOX_BASE_BACKOFF_SECONDS` | No | `5` | First retry delay, doubling per attempt up to a 320 s cap at the default. |
 | `APEX_EDGE_BIND` | No | `0.0.0.0:3000` | Socket address the hub listens on. |
 | `APEX_EDGE_ALLOWED_ORIGINS` | No | unset (localhost only) | Comma-separated list of allowed CORS origins, e.g. `https://pos.internal`. Empty = only `localhost` / `127.0.0.1` / `[::1]` origins. Native POS apps need nothing here; set it for any browser-based client served from another host. |
@@ -190,6 +190,9 @@ schedule, so start by finding out *which* destination is behind.
 2. Check `apex_edge_outbox_queue_depth{state="pending"}` and
    `apex_edge_outbox_dispatch_attempts_total{destination,outcome}` for the failing destination, and
    the logs for `outbox dispatch cycle error`.
+   `outcome="unreachable"` means the request never reached the destination (WAN down, DNS,
+   refused). Those deliveries keep retrying at up to 320s intervals and drain on their own once the
+   link is back; they never reach the dead-letter queue.
 3. Deliveries that used all of `APEX_EDGE_OUTBOX_MAX_ATTEMPTS` are dead-lettered and never retried
    automatically. List them with the last error:
    ```bash

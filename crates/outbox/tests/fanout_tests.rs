@@ -352,8 +352,48 @@ async fn an_unreachable_destination_is_retried_not_dropped() {
         .await
         .expect("attempts");
     assert_eq!(attempts[0].state, DeliveryState::Pending);
-    assert_eq!(attempts[0].attempts, 1);
+    assert_eq!(
+        attempts[0].attempts, 0,
+        "an unreachable network is not a verdict from the destination"
+    );
+    assert_eq!(attempts[0].unreachable_attempts, 1);
     assert!(attempts[0].last_error.is_some());
+}
+
+#[tokio::test]
+async fn an_unreachable_destination_never_runs_out_of_attempts() {
+    // A store's uplink can be down for hours. With the old budget (10 attempts, ~21
+    // minutes) every sale from the start of a long outage ended up dead-lettered and
+    // needed an operator, which is exactly the situation the hub exists to ride out.
+    let pool = pool().await;
+    register(&pool, "hq", "http://127.0.0.1:1/submit", json!({})).await;
+    let outbox_id = queue_order(&pool).await;
+    let policy = DispatcherPolicy {
+        max_attempts: 2,
+        base_backoff_seconds: 0,
+        ..DispatcherPolicy::default()
+    };
+
+    for _ in 0..4 {
+        run_once(&pool, &Client::new(), &policy)
+            .await
+            .expect("dispatch");
+    }
+
+    assert!(dead_letter_deliveries(&pool, 10)
+        .await
+        .expect("dlq")
+        .is_empty());
+    let attempts = delivery_attempts_for_submission(&pool, outbox_id)
+        .await
+        .expect("attempts");
+    assert_eq!(attempts[0].state, DeliveryState::Pending);
+    assert_eq!(attempts[0].attempts, 0);
+    assert_eq!(attempts[0].unreachable_attempts, 4);
+    assert_eq!(
+        outbox_row_status(&pool, outbox_id).await.expect("status"),
+        Some("pending".to_string())
+    );
 }
 
 #[tokio::test]

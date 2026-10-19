@@ -1491,10 +1491,12 @@ flowchart TD
     DEST --> PEP{peppol}
     DEST --> KSEF{ksef}
     HQ -->|2xx accepted| OKA[delivered]
-    PEP -->|connection refused| RETRY[retry: 5s doubling to 320s]
-    KSEF -->|rejected payload| RETRY
+    PEP -->|unreachable: refused, DNS, connect timeout| WAITNET[retry: 5s doubling to 320s, attempts untouched]
+    WAITNET -->|link back| PEP
+    KSEF -->|rejected payload or HTTP error| RETRY[retry: 5s doubling to 320s]
     RETRY -->|attempts exhausted| DLQ[dead letter: needs an operator]
     OKA --> SETTLE{every destination finished?}
+    WAITNET --> SETTLE
     RETRY --> SETTLE
     DLQ --> SETTLE
     SETTLE -->|all delivered| DONE[submission delivered]
@@ -1516,6 +1518,11 @@ flowchart TD
   classify correctly.
 - **Backoff is per destination:** 5s doubling to a 320s cap, counted against the destination rather
   than the submission, so a broken Peppol endpoint cannot exhaust HQ's attempts.
+- **An outage is not an attempt.** A request that never reached the destination (connection
+  refused, DNS failure, connect timeout) bumps `unreachable_attempts`, which only paces the retries.
+  It never counts toward `APEX_EDGE_OUTBOX_MAX_ATTEMPTS`. With the defaults that budget runs out in
+  about 21 minutes, so counting outages against it dead-lettered every sale taken during a longer
+  WAN outage, which is the situation the hub exists to ride out.
 - **A rejection is a verdict, not an outage.** A destination answering "not accepted" is retried a
   few times and then dead-lettered; the previous dispatcher retried rejections forever, which hid
   invalid payloads behind a queue that never drained.
@@ -1533,7 +1540,8 @@ flowchart TD
 - **Failure path:** nothing is ever dropped. A hub with no destinations configured queues
   submissions indefinitely rather than marking them delivered to nobody. Exhausted deliveries land
   in the dead-letter queue and are only ever retried when an operator asks.
-- **Metrics:** `apex_edge_outbox_dispatch_attempts_total{destination,outcome}`,
+- **Metrics:** `apex_edge_outbox_dispatch_attempts_total{destination,outcome}` (outcome
+  `unreachable` for tries that never reached the destination),
   `apex_edge_outbox_dispatch_duration_seconds{destination}`,
   `apex_edge_outbox_dlq_total{destination}`, `apex_edge_outbox_fanout_total{destination}`,
   `apex_edge_outbox_filtered_total{destination,kind}` and the

@@ -323,11 +323,14 @@ pub const OUTBOX_SIGNING_TOTAL: &str = "apex_edge_outbox_signing_total";
 pub const OUTCOME_SIGNED: &str = "signed";
 pub const OUTCOME_SECRET_MISSING: &str = "secret_missing";
 
-/// outcome: accepted, rejected, http_error, timeout, dlq.
+/// outcome: accepted, rejected, http_error, timeout, unreachable, dlq.
 pub const OUTCOME_ACCEPTED: &str = "accepted";
 pub const OUTCOME_REJECTED: &str = "rejected";
 pub const OUTCOME_HTTP_ERROR: &str = "http_error";
 pub const OUTCOME_TIMEOUT: &str = "timeout";
+/// The request never reached the destination (DNS, refused, connect timeout). Retried
+/// without using up the dead-letter budget.
+pub const OUTCOME_UNREACHABLE: &str = "unreachable";
 pub const OUTCOME_DLQ: &str = "dlq";
 
 // ---------- Sync ingest (sync::ingest) ----------

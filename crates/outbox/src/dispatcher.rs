@@ -16,13 +16,13 @@ use apex_edge_metrics::{
     OUTBOX_DISPATCHER_CYCLES_TOTAL, OUTBOX_DISPATCH_ATTEMPTS_TOTAL,
     OUTBOX_DISPATCH_DURATION_SECONDS, OUTBOX_DLQ_TOTAL, OUTBOX_FANOUT_TOTAL, OUTBOX_FILTERED_TOTAL,
     OUTBOX_QUEUE_DEPTH, OUTBOX_SIGNING_TOTAL, OUTCOME_ACCEPTED, OUTCOME_ERROR, OUTCOME_HTTP_ERROR,
-    OUTCOME_REJECTED, OUTCOME_SECRET_MISSING, OUTCOME_SIGNED, OUTCOME_TIMEOUT,
+    OUTCOME_REJECTED, OUTCOME_SECRET_MISSING, OUTCOME_SIGNED, OUTCOME_TIMEOUT, OUTCOME_UNREACHABLE,
 };
 use apex_edge_storage::outbox_destinations::{
     count_deliveries_in_state, ensure_delivery, fetch_due_deliveries, list_enabled_destinations,
     mark_delivery_dead_letter, mark_delivery_delivered, pending_submissions,
-    schedule_delivery_retry, settle_finished_submissions, upsert_destination, DeliveryState,
-    DestinationRow, DueDelivery, NewDestination,
+    schedule_delivery_retry, schedule_unreachable_delivery_retry, settle_finished_submissions,
+    upsert_destination, DeliveryState, DestinationRow, DueDelivery, NewDestination,
 };
 use chrono::{Duration, Utc};
 use hmac::{Hmac, Mac};
@@ -344,6 +344,18 @@ async fn attempt_delivery(
             let status = response.status();
             let text = response.text().await.unwrap_or_default();
             retry_or_give_up(pool, policy, delivery, &format!("{status}: {text}")).await?;
+            Ok(false)
+        }
+        Err(e) if e.is_connect() => {
+            // The request never reached the destination: the uplink is down, DNS failed
+            // or the host refused the connection. That is not a verdict on the payload,
+            // so it must not use up attempts, or an outage longer than the retry budget
+            // would dead-letter every sale taken during it.
+            record_attempt(&delivery.destination_code, OUTCOME_UNREACHABLE);
+            let next = Utc::now()
+                + Duration::seconds(policy.backoff_delay_seconds(delivery.unreachable_attempts));
+            schedule_unreachable_delivery_retry(pool, delivery.attempt_id, next, &e.to_string())
+                .await?;
             Ok(false)
         }
         Err(e) => {
