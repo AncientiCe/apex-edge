@@ -850,3 +850,146 @@ async fn an_order_is_not_recorded_if_its_outbox_row_cannot_be() {
         "the ledger write was rolled back with it"
     );
 }
+
+async fn open_return(pool: &sqlx::SqlitePool) -> Uuid {
+    let id = Uuid::new_v4();
+    insert_return(
+        pool,
+        &NewReturn {
+            id,
+            store_id: Uuid::new_v4(),
+            register_id: Uuid::new_v4(),
+            shift_id: None,
+            original_order_id: None,
+            reason_code: None,
+            approval_id: None,
+        },
+    )
+    .await
+    .expect("insert return");
+    id
+}
+
+#[tokio::test]
+async fn a_finalized_return_and_its_outbox_row_are_written_together() {
+    let pool = test_pool().await;
+    let return_id = open_return(&pool).await;
+    let submission_id = Uuid::new_v4();
+
+    finalize_return_row_with_outbox(&pool, return_id, submission_id, r#"{"ret":{}}"#)
+        .await
+        .expect("finalize return and queue it");
+
+    let ret = fetch_return(&pool, return_id)
+        .await
+        .expect("fetch")
+        .expect("row");
+    assert_eq!(ret.state, "finalized");
+    assert_eq!(
+        outbox_row_status(&pool, submission_id)
+            .await
+            .expect("status"),
+        Some("pending".to_string())
+    );
+}
+
+#[tokio::test]
+async fn a_return_is_not_finalized_if_its_outbox_row_cannot_be_written() {
+    let pool = test_pool().await;
+    let return_id = open_return(&pool).await;
+    let submission_id = Uuid::new_v4();
+    insert_outbox(&pool, submission_id, r#"{"ret":{}}"#)
+        .await
+        .expect("pre-existing outbox row");
+
+    let result =
+        finalize_return_row_with_outbox(&pool, return_id, submission_id, r#"{"ret":{}}"#).await;
+
+    assert!(result.is_err(), "the outbox insert conflicts");
+    let ret = fetch_return(&pool, return_id)
+        .await
+        .expect("fetch")
+        .expect("row");
+    assert_eq!(ret.state, "open", "the finalize was rolled back with it");
+}
+
+#[tokio::test]
+async fn a_closed_shift_and_its_outbox_row_are_written_together() {
+    let pool = test_pool().await;
+    let shift_id = Uuid::new_v4();
+    open_shift(
+        &pool,
+        shift_id,
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+        None,
+        10_000,
+    )
+    .await
+    .expect("open shift");
+    let submission_id = Uuid::new_v4();
+
+    close_shift_with_outbox(
+        &pool,
+        shift_id,
+        10_000,
+        10_000,
+        0,
+        submission_id,
+        r#"{"shift":{}}"#,
+    )
+    .await
+    .expect("close shift and queue it");
+
+    let shift = fetch_shift(&pool, shift_id)
+        .await
+        .expect("fetch")
+        .expect("row");
+    assert_eq!(shift.state, "closed");
+    assert_eq!(
+        outbox_row_status(&pool, submission_id)
+            .await
+            .expect("status"),
+        Some("pending".to_string())
+    );
+}
+
+#[tokio::test]
+async fn a_shift_stays_open_if_its_z_report_cannot_be_queued() {
+    // A till that is closed locally but whose Z-report never reaches HQ leaves HQ's cash
+    // reconciliation silently short a day.
+    let pool = test_pool().await;
+    let shift_id = Uuid::new_v4();
+    open_shift(
+        &pool,
+        shift_id,
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+        None,
+        10_000,
+    )
+    .await
+    .expect("open shift");
+    let submission_id = Uuid::new_v4();
+    insert_outbox(&pool, submission_id, r#"{"shift":{}}"#)
+        .await
+        .expect("pre-existing outbox row");
+
+    let result = close_shift_with_outbox(
+        &pool,
+        shift_id,
+        10_000,
+        10_000,
+        0,
+        submission_id,
+        r#"{"shift":{}}"#,
+    )
+    .await;
+
+    assert!(result.is_err(), "the outbox insert conflicts");
+    let shift = fetch_shift(&pool, shift_id)
+        .await
+        .expect("fetch")
+        .expect("row");
+    assert_eq!(shift.state, "open", "the close was rolled back with it");
+}

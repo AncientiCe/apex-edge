@@ -19,8 +19,8 @@ use apex_edge_metrics::{
     CASH_MOVEMENTS_TOTAL, OUTCOME_ERROR, OUTCOME_SUCCESS, SHIFTS_TOTAL, SHIFT_VARIANCE_CENTS,
 };
 use apex_edge_storage::{
-    cash_refunds_cents_for_shift, cash_sales_cents_for_shift, close_shift, fetch_approval,
-    fetch_open_shift, fetch_shift, insert_outbox, insert_shift_movement, list_shift_movements,
+    cash_refunds_cents_for_shift, cash_sales_cents_for_shift, close_shift_with_outbox,
+    fetch_approval, fetch_open_shift, fetch_shift, insert_shift_movement, list_shift_movements,
     open_shift, record, ApprovalState,
 };
 use chrono::{DateTime, Utc};
@@ -399,18 +399,6 @@ pub async fn close_till(
             }
         }
     }
-    if let Err(e) = close_shift(
-        &app.pool,
-        shift.id,
-        payload.counted_cents as i64,
-        expected,
-        variance,
-    )
-    .await
-    {
-        return fail(idempotency_key, err("SHIFT_CLOSE_FAILED", e.to_string()));
-    }
-
     // Build HQ shift submission.
     let hq_payload = HqShiftPayload {
         shift_id: shift.id,
@@ -439,8 +427,20 @@ pub async fn close_till(
     let envelope =
         build_shift_submission_envelope(submission_id, store_id, register_id, 1, hq_payload);
     let envelope_json = serde_json::to_string(&envelope).unwrap_or_default();
-    if let Err(e) = insert_outbox(&app.pool, submission_id, &envelope_json).await {
-        return fail(idempotency_key, err("OUTBOX_FAILED", e.to_string()));
+    // Closing the till and queueing its Z-report happen in one transaction: a till closed
+    // here but never reported would leave HQ's cash reconciliation short.
+    if let Err(e) = close_shift_with_outbox(
+        &app.pool,
+        shift.id,
+        payload.counted_cents as i64,
+        expected,
+        variance,
+        submission_id,
+        &envelope_json,
+    )
+    .await
+    {
+        return fail(idempotency_key, err("SHIFT_CLOSE_FAILED", e.to_string()));
     }
     let _ = record(&app.pool, "shift_closed", Some(shift.id), &envelope_json).await;
 

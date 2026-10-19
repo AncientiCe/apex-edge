@@ -135,13 +135,31 @@ pub async fn update_return_totals(
     Ok(())
 }
 
-pub async fn finalize_return_row(pool: &SqlitePool, id: Uuid) -> Result<(), PoolError> {
+pub async fn finalize_return_row<'e, E>(executor: E, id: Uuid) -> Result<(), PoolError>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+{
     let now = Utc::now().to_rfc3339();
     sqlx::query("UPDATE returns SET state = 'finalized', finalized_at = ? WHERE id = ?")
         .bind(&now)
         .bind(id.to_string())
-        .execute(pool)
+        .execute(executor)
         .await?;
+    Ok(())
+}
+
+/// Finalizes a return and queues it for HQ in one transaction, so a crash cannot leave a
+/// refund that is final locally but never reported.
+pub async fn finalize_return_row_with_outbox(
+    pool: &SqlitePool,
+    id: Uuid,
+    outbox_id: Uuid,
+    outbox_payload: &str,
+) -> Result<(), PoolError> {
+    let mut tx = pool.begin().await?;
+    finalize_return_row(&mut *tx, id).await?;
+    crate::outbox::insert_outbox(&mut *tx, outbox_id, outbox_payload).await?;
+    tx.commit().await?;
     Ok(())
 }
 

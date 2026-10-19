@@ -95,13 +95,35 @@ fn row_to_shift(r: sqlx::sqlite::SqliteRow) -> Result<ShiftRow, PoolError> {
     })
 }
 
-pub async fn close_shift(
+/// Closes a till and queues its Z-report for HQ in one transaction. A shift that is closed
+/// locally but never reported leaves HQ's cash reconciliation short with nothing to show
+/// for it.
+pub async fn close_shift_with_outbox(
     pool: &SqlitePool,
     id: Uuid,
     counted_cents: i64,
     expected_cents: i64,
     variance_cents: i64,
+    outbox_id: Uuid,
+    outbox_payload: &str,
 ) -> Result<(), PoolError> {
+    let mut tx = pool.begin().await?;
+    close_shift(&mut *tx, id, counted_cents, expected_cents, variance_cents).await?;
+    crate::outbox::insert_outbox(&mut *tx, outbox_id, outbox_payload).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+pub async fn close_shift<'e, E>(
+    executor: E,
+    id: Uuid,
+    counted_cents: i64,
+    expected_cents: i64,
+    variance_cents: i64,
+) -> Result<(), PoolError>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+{
     let now = Utc::now().to_rfc3339();
     sqlx::query(
         "UPDATE shifts SET state = 'closed', closing_counted_cents = ?, expected_cents = ?, \
@@ -112,7 +134,7 @@ pub async fn close_shift(
     .bind(variance_cents)
     .bind(&now)
     .bind(id.to_string())
-    .execute(pool)
+    .execute(executor)
     .await?;
     Ok(())
 }
