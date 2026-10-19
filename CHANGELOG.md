@@ -9,6 +9,46 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.2.0] — 2026-10-19
+
+"Ride it out": the hub now gets through a long internet outage without anyone stepping in, and
+every sale, return and Z-report is queued for HQ in the same transaction that records it. Upgrade
+notes are marked inline below.
+
+### Changed
+
+- Outbox: a delivery that never reaches its destination (connection refused, DNS failure,
+  connect timeout) no longer counts toward `APEX_EDGE_OUTBOX_MAX_ATTEMPTS`. It keeps retrying on
+  the usual backoff (5s doubling to 320s) and drains on its own once the link is back. Before,
+  the default budget ran out after about 21 minutes, so every sale from the start of a longer
+  outage was dead-lettered and needed a manual requeue. HTTP errors and rejections still count
+  and still dead-letter. New column `outbox_delivery_attempts.unreachable_attempts` (default `0`,
+  added on startup) and new outcome `unreachable` on
+  `apex_edge_outbox_dispatch_attempts_total{destination,outcome}`. **Upgrade note:** alerts that
+  relied on dead-letters to notice an unreachable destination should watch
+  `apex_edge_outbox_queue_depth{state="pending"}` or the `unreachable` outcome instead.
+- Release workflow: a tag without a matching `CHANGELOG.md` section now fails before anything is
+  built, instead of publishing placeholder release notes.
+- README opens with who ApexEdge is for, what breaks in a store without it, and how it handles
+  each failure, with an animation of tills selling through an outage.
+- Bump `async-trait` 0.1.89 → 0.1.92 so clippy on Rust 1.99 passes.
+
+### Fixed
+
+- Finalize wrote the order ledger row and the outbox row as two separate writes, so a crash
+  between them left a sale recorded locally that HQ never received. Both are now one SQLite
+  transaction. If queueing fails, finalize returns `ORDER_LEDGER_FAILED` and flags the card
+  payment for reversal; it no longer returns `OUTBOX_FAILED`.
+- `finalize_return` and `close_till` had the same gap. The return or shift row and its HQ
+  submission are now written together, and failures surface as `RETURN_FINALIZE_FAILED` /
+  `SHIFT_CLOSE_FAILED` instead of `OUTBOX_FAILED`. Returned items are restocked only after the
+  return is committed.
+
+### Security
+
+- Bump `quinn-proto` 0.11.16 → 0.11.19 (RUSTSEC-2026-0338 to RUSTSEC-2026-0342) and `rustls`
+  0.23.45 → 0.23.46 (RUSTSEC-2026-0346 to RUSTSEC-2026-0349).
+
 ## [2.1.0] — 2026-09-28
 
 "Tell the truth": closes the gaps found after 2.0.0. Security defaults no longer rely on public
@@ -616,7 +656,8 @@ Internal alpha release for team-only testing in a controlled environment.
 - Mock NDJSON sync server served raw bytes for catalog items; updated to serve valid
   `CatalogItem` JSON payloads so `apply_entity_batch` deserialization succeeds in tests.
 
-[Unreleased]: https://github.com/AncientiCe/apex-edge/compare/v2.1.0...HEAD
+[Unreleased]: https://github.com/AncientiCe/apex-edge/compare/v2.2.0...HEAD
+[2.2.0]: https://github.com/AncientiCe/apex-edge/compare/v2.1.0...v2.2.0
 [2.1.0]: https://github.com/AncientiCe/apex-edge/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/AncientiCe/apex-edge/compare/v1.2.0...v2.0.0
 [1.2.0]: https://github.com/AncientiCe/apex-edge/compare/v1.1.0...v1.2.0
