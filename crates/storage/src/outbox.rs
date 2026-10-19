@@ -32,7 +32,12 @@ fn parse_opt_datetime(s: Option<&str>) -> Option<DateTime<Utc>> {
         .map(|dt| dt.with_timezone(&Utc))
 }
 
-pub async fn insert_outbox(pool: &SqlitePool, id: Uuid, payload: &str) -> Result<(), PoolError> {
+/// Queues a submission. Takes a pool or an open transaction, so a caller can queue it in
+/// the same transaction as the write that produced it.
+pub async fn insert_outbox<'e, E>(executor: E, id: Uuid, payload: &str) -> Result<(), PoolError>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+{
     let now = Utc::now().to_rfc3339();
     sqlx::query(
         "INSERT INTO outbox (id, payload, status, created_at, attempts) VALUES (?, ?, 'pending', ?, 0)",
@@ -40,7 +45,7 @@ pub async fn insert_outbox(pool: &SqlitePool, id: Uuid, payload: &str) -> Result
     .bind(id.to_string())
     .bind(payload)
     .bind(&now)
-    .execute(pool)
+    .execute(executor)
     .await?;
     Ok(())
 }

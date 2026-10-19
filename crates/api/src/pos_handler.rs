@@ -18,16 +18,16 @@ use apex_edge_storage::{
     activate_gift_card, apply_local_delta, claim_parked_cart, commit_cart_sale,
     earn_loyalty_points, ensure_inventory_state, fetch_open_shift,
     flag_payment_intent_for_reversal, flag_payment_intents_for_reversal, get_catalog_item,
-    get_coupon_definition_by_code, get_customer, get_print_template, insert_order_ledger_entry,
-    insert_outbox, insert_payment_intent, insert_stock_movement, issue_gift_card,
-    list_parked_carts, list_price_book_entries, list_promotions, list_tax_rules, load_cart,
-    mark_payment_intent_captured, mark_payment_intent_declined, mark_payment_intent_failed,
-    park_cart, redeem_gift_card, redeem_loyalty_points, release_cart_reservations,
-    release_line_reservation, reload_gift_card, save_cart, settle_payment_intents_for_cart,
-    try_reserve, ActivateOutcome, ClaimOutcome, IssueOutcome, NewOrderLedgerEntry,
-    NewOrderLineEntry, NewOrderPaymentEntry, NewPaymentIntent, ParkCartInput, PaymentIntentState,
-    RedeemOutcome, RedeemPointsOutcome, ReloadOutcome, ReserveInput, ReserveOutcome,
-    StockMovementInput,
+    get_coupon_definition_by_code, get_customer, get_print_template,
+    insert_order_ledger_entry_with_outbox, insert_outbox, insert_payment_intent,
+    insert_stock_movement, issue_gift_card, list_parked_carts, list_price_book_entries,
+    list_promotions, list_tax_rules, load_cart, mark_payment_intent_captured,
+    mark_payment_intent_declined, mark_payment_intent_failed, park_cart, redeem_gift_card,
+    redeem_loyalty_points, release_cart_reservations, release_line_reservation, reload_gift_card,
+    save_cart, settle_payment_intents_for_cart, try_reserve, ActivateOutcome, ClaimOutcome,
+    IssueOutcome, NewOrderLedgerEntry, NewOrderLineEntry, NewOrderPaymentEntry, NewPaymentIntent,
+    ParkCartInput, PaymentIntentState, RedeemOutcome, RedeemPointsOutcome, ReloadOutcome,
+    ReserveInput, ReserveOutcome, StockMovementInput,
 };
 use sqlx::SqlitePool;
 use std::sync::OnceLock;
@@ -2596,7 +2596,17 @@ pub async fn execute_pos_command(
                 .iter()
                 .any(|payment| payment.tender_type.eq_ignore_ascii_case("cash"));
             let ledger_started_at = Instant::now();
-            if let Err(e) = insert_order_ledger_entry(pool, &ledger_entry).await {
+            // The ledger row and its outbox row are written in one transaction: a sale that
+            // is recorded here must also be owed to HQ, or a crash between the two writes
+            // would leave a sale HQ never hears about.
+            if let Err(e) = insert_order_ledger_entry_with_outbox(
+                pool,
+                &ledger_entry,
+                submission_id,
+                &envelope_json,
+            )
+            .await
+            {
                 metrics::counter!(apex_edge_metrics::ORDERS_FINALIZED_TOTAL, "outcome" => apex_edge_metrics::OUTCOME_ERROR).increment(1);
                 flag_cart_payments_for_reversal(
                     pool,
@@ -2667,19 +2677,6 @@ pub async fn execute_pos_command(
             // Commit reserved stock as sold so availability reflects the completed sale.
             let _ = commit_cart_sale(pool, store_id, cart.id).await;
             let sold_item_ids: Vec<Uuid> = order.lines.iter().map(|l| l.item_id).collect();
-            if let Err(e) = insert_outbox(pool, submission_id, &envelope_json).await {
-                return PosResponseEnvelope {
-                    version: ContractVersion::V1_0_0,
-                    success: false,
-                    idempotency_key,
-                    payload: None,
-                    errors: vec![PosError {
-                        code: "OUTBOX_FAILED".into(),
-                        message: e.to_string(),
-                        field: None,
-                    }],
-                };
-            }
             log_finalize_timing(
                 "outbox_inserted",
                 &[

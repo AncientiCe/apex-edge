@@ -3,7 +3,7 @@
 use apex_edge_contracts::PaymentEntryMethod;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::{Row, SqlitePool};
+use sqlx::{Row, SqliteConnection, SqlitePool};
 use uuid::Uuid;
 
 use crate::pool::PoolError;
@@ -151,6 +151,33 @@ pub async fn insert_order_ledger_entry(
     order: &NewOrderLedgerEntry,
 ) -> Result<(), PoolError> {
     let mut tx = pool.begin().await?;
+    write_order_ledger_entry(&mut tx, order).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Records a finalized sale and queues it for delivery in one transaction.
+///
+/// A sale that exists in the ledger but never reached the outbox is a sale HQ never hears
+/// about, and a crash between two separate writes is enough to cause one. Writing both
+/// together means either the sale is recorded and owed to HQ, or neither happened.
+pub async fn insert_order_ledger_entry_with_outbox(
+    pool: &SqlitePool,
+    order: &NewOrderLedgerEntry,
+    outbox_id: Uuid,
+    outbox_payload: &str,
+) -> Result<(), PoolError> {
+    let mut tx = pool.begin().await?;
+    write_order_ledger_entry(&mut tx, order).await?;
+    crate::outbox::insert_outbox(&mut *tx, outbox_id, outbox_payload).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+async fn write_order_ledger_entry(
+    tx: &mut SqliteConnection,
+    order: &NewOrderLedgerEntry,
+) -> Result<(), PoolError> {
     let now = Utc::now().to_rfc3339();
     sqlx::query(
         "INSERT INTO orders (id, cart_id, store_id, register_id, shift_id, state, subtotal_cents, discount_cents, tax_cents, total_cents, submission_id, created_at, finalized_at, fiscal_provider, fiscal_id, fiscal_signature, fiscal_qr_payload, fiscal_signed_at, fiscal_pending) \
@@ -231,7 +258,6 @@ pub async fn insert_order_ledger_entry(
         .await?;
     }
 
-    tx.commit().await?;
     Ok(())
 }
 

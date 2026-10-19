@@ -770,3 +770,83 @@ async fn coupon_definition_upsert_and_lookup_by_code() {
     assert_eq!(fetched.max_redemptions_total, Some(100));
     assert_eq!(fetched.max_redemptions_per_customer, Some(2));
 }
+
+fn minimal_ledger_entry(order_id: Uuid, submission_id: Uuid) -> NewOrderLedgerEntry {
+    NewOrderLedgerEntry {
+        order_id,
+        cart_id: Uuid::new_v4(),
+        store_id: Uuid::new_v4(),
+        register_id: Uuid::new_v4(),
+        shift_id: None,
+        subtotal_cents: 500,
+        discount_cents: 0,
+        tax_cents: 0,
+        total_cents: 500,
+        submission_id: Some(submission_id),
+        lines: vec![],
+        payments: vec![],
+        fiscal_provider: None,
+        fiscal_id: None,
+        fiscal_signature: None,
+        fiscal_qr_payload: None,
+        fiscal_signed_at: None,
+        fiscal_pending: false,
+    }
+}
+
+#[tokio::test]
+async fn a_finalized_order_and_its_outbox_row_are_written_together() {
+    let pool = test_pool().await;
+    let order_id = Uuid::new_v4();
+    let submission_id = Uuid::new_v4();
+
+    insert_order_ledger_entry_with_outbox(
+        &pool,
+        &minimal_ledger_entry(order_id, submission_id),
+        submission_id,
+        r#"{"order":{}}"#,
+    )
+    .await
+    .expect("insert order and outbox");
+
+    assert!(fetch_order_ledger_entry(&pool, order_id)
+        .await
+        .expect("fetch order")
+        .is_some());
+    assert_eq!(
+        outbox_row_status(&pool, submission_id)
+            .await
+            .expect("outbox status"),
+        Some("pending".to_string())
+    );
+}
+
+#[tokio::test]
+async fn an_order_is_not_recorded_if_its_outbox_row_cannot_be() {
+    // A sale that exists locally but was never queued for HQ is a sale HQ never hears
+    // about, so the two writes must succeed or fail together.
+    let pool = test_pool().await;
+    let order_id = Uuid::new_v4();
+    let submission_id = Uuid::new_v4();
+    // Occupy the submission id so the outbox insert fails.
+    insert_outbox(&pool, submission_id, r#"{"order":{}}"#)
+        .await
+        .expect("pre-existing outbox row");
+
+    let result = insert_order_ledger_entry_with_outbox(
+        &pool,
+        &minimal_ledger_entry(order_id, submission_id),
+        submission_id,
+        r#"{"order":{}}"#,
+    )
+    .await;
+
+    assert!(result.is_err(), "the outbox insert conflicts");
+    assert!(
+        fetch_order_ledger_entry(&pool, order_id)
+            .await
+            .expect("fetch order")
+            .is_none(),
+        "the ledger write was rolled back with it"
+    );
+}
