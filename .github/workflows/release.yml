@@ -1,5 +1,6 @@
 # Cross-platform release artifacts: Linux .deb/.rpm (x86_64, aarch64), Windows .msi, checksums, GitHub Release.
-# Triggered by pushing a version tag (v1.2.3) or manually via workflow_dispatch.
+# Triggered by pushing a version tag (v1.2.3). The release notes are that tag's CHANGELOG.md section,
+# verbatim; a tag without one fails before anything is built. workflow_dispatch must be run on a tag.
 name: Release
 
 on:
@@ -12,8 +13,41 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # The release notes are this tag's CHANGELOG.md section, copied verbatim. Extracted first so
+  # a tag without a section fails in seconds, before any package is built or anything is
+  # published.
+  notes:
+    name: Release notes from CHANGELOG
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Extract this version's CHANGELOG section
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          HEADER="## [${VERSION}]"
+          awk -v header="$HEADER" '
+            index($0, header) == 1 { found=1; next }
+            found && index($0, "## [") == 1 { exit }
+            found { print }
+          ' CHANGELOG.md > release_notes.md
+          if ! grep -q '[^[:space:]]' release_notes.md; then
+            echo "::error file=CHANGELOG.md::No '${HEADER}' section with content; add it before tagging ${GITHUB_REF_NAME}."
+            exit 1
+          fi
+          cat release_notes.md
+
+      - name: Upload release notes
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-notes
+          path: release_notes.md
+
   linux:
     name: Linux ${{ matrix.arch }} (.deb, .rpm)
+    needs: notes
     # Native runners per architecture: aws-lc-rs and bundled SQLite compile C, and a native
     # arm64 build avoids maintaining a cross toolchain for them.
     strategy:
@@ -65,6 +99,7 @@ jobs:
 
   windows:
     name: Windows (.msi)
+    needs: notes
     runs-on: windows-latest
     steps:
       - name: Checkout
@@ -101,7 +136,7 @@ jobs:
 
   release:
     name: Publish GitHub Release
-    needs: [linux, windows]
+    needs: [notes, linux, windows]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -121,23 +156,8 @@ jobs:
             -exec cp {} release/ \;
           ls -la release
 
-      - name: Extract this version's CHANGELOG section
-        run: |
-          set -euo pipefail
-          VERSION="${GITHUB_REF_NAME#v}"
-          HEADER="## [${VERSION}]"
-          awk -v header="$HEADER" '
-            index($0, header) == 1 { found=1; next }
-            found && index($0, "## [") == 1 { exit }
-            found { print }
-          ' CHANGELOG.md > release_notes.md
-          if [ ! -s release_notes.md ]; then
-            echo "See CHANGELOG.md for details." > release_notes.md
-          fi
-          cat release_notes.md
-
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: release/*
-          body_path: release_notes.md
+          body_path: artifacts/release-notes/release_notes.md
