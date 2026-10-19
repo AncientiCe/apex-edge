@@ -10,7 +10,31 @@
 [![License](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue)](#license)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-blue)](#build-and-run)
 
-Store hub orchestrator: **POS/MPOS <-> ApexEdge <-> HQ**. Offline-first, contract-driven, with durable order submission and document generation.
+**ApexEdge is an in-store server that keeps checkout working when the store's internet goes down.** Tills talk to it over the store network. It prices the cart, takes payment, signs the fiscal receipt and records the sale locally. When the connection comes back it delivers every sale to HQ, and to any other endpoint you configure (e-invoicing, webhooks), exactly as it was recorded.
+
+![Internet drops, tills keep selling, the queue drains when the link returns](docs/assets/apex-edge-offline-demo.svg)
+
+### Who it's for
+
+Teams that build or run point-of-sale for physical stores: POS software vendors, and retailers' own engineering teams. If your tills call a cloud API to price, sell or sign a receipt, a WAN outage stops the store.
+
+### What goes wrong without it
+
+- **Tills stop selling.** Catalog, price and promotion lookups go to the cloud, so a dead uplink means a dead checkout.
+- **Offline sales go missing or get counted twice.** Each till keeps its own buffer. One gets reset before it syncs, another retries a sale HQ already has.
+- **Fiscal signing fails.** In regulated markets (for example Germany's TSE, through fiskaly) the signer is a network call too. You either block the sale or print a receipt that isn't compliant.
+- **Nobody notices HQ stopped accepting orders** until the end-of-day numbers don't match.
+
+### What ApexEdge does about it
+
+| Problem | How ApexEdge handles it |
+|---------|-------------------------|
+| Pricing needs the cloud | Catalog, prices, promotions, coupons and config sync down ahead of time, so checkout makes no external calls. |
+| Sales lost or duplicated | Every finalized sale is written to a local order ledger and a durable outbox before the till is told "done". Commands carry an idempotency key, so a retried command doesn't charge or record the sale twice. |
+| Fiscal signer unreachable | Transient signer failures put the transaction in a sign-later queue that a background job drains. A misconfigured signer fails the sale closed and flags the card payment for reversal. |
+| Silent delivery failures | Each destination gets its own retry state, exponential backoff and dead-letter queue, all exposed as Prometheus metrics (`apex_edge_outbox_queue_depth`, `apex_edge_outbox_dlq_total`). |
+
+Try it in a few minutes with the [local POS simulator](#manual-testing-local-pos-simulator). The [architecture diagrams](docs/architecture/README.md) show how every flow works.
 
 ## Table of Contents
 
