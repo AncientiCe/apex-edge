@@ -431,10 +431,22 @@ impl PaymentProvider for StripeTerminalProvider {
         if let Some(reason) = request.reason.as_deref() {
             form.push(("metadata[reason]", reason.to_string()));
         }
-        let refund = self
+        let mut refund = self
             .post_form("/v1/refunds", request.idempotency_key, &form)
             .await?;
 
+        if refund.get("status").and_then(Value::as_str) == Some("pending") {
+            if let Some(id) = refund.get("id").and_then(Value::as_str) {
+                refund = self.get(&format!("/v1/refunds/{id}")).await?;
+            }
+        }
+        if refund.get("status").and_then(Value::as_str) != Some("succeeded") {
+            return Err(PaymentProviderError::Indeterminate {
+                provider: PROVIDER_CODE.into(),
+                provider_payment_id: Some(request.provider_payment_id.clone()),
+                message: "refund is not confirmed".into(),
+            });
+        }
         let provider_refund_id = refund
             .get("id")
             .and_then(Value::as_str)

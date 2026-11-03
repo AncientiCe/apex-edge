@@ -26,6 +26,7 @@ struct FakeStripe {
     /// When set, the reader action reports this failure code instead of succeeding.
     failure_code: Arc<Mutex<Option<String>>>,
     captured: Arc<Mutex<bool>>,
+    refund_pending: Arc<Mutex<bool>>,
 }
 
 impl FakeStripe {
@@ -175,8 +176,15 @@ async fn create_refund(State(state): State<FakeStripe>, _body: String) -> Json<s
         "id": "re_test_456",
         "object": "refund",
         "amount": 1_000,
-        "status": "succeeded",
+        "status": if *state.refund_pending.lock().unwrap() { "pending" } else { "succeeded" },
     }))
+}
+
+async fn get_refund(State(state): State<FakeStripe>) -> Json<serde_json::Value> {
+    state.record("get_refund");
+    Json(
+        serde_json::json!({"id":"re_test_456","amount":1000,"status":if *state.refund_pending.lock().unwrap(){"pending"}else{"succeeded"}}),
+    )
 }
 
 async fn spawn_fake_stripe(state: FakeStripe) -> SocketAddr {
@@ -197,6 +205,7 @@ async fn spawn_fake_stripe(state: FakeStripe) -> SocketAddr {
         )
         .route("/v1/terminal/readers/:id", get(get_reader))
         .route("/v1/refunds", post(create_refund))
+        .route("/v1/refunds/:id", get(get_refund))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -399,4 +408,20 @@ async fn void_cancels_an_uncaptured_authorization() {
         .expect("cancel authorization");
     assert!(state.calls().contains(&"cancel_payment_intent".to_string()));
     assert!(!state.calls().contains(&"create_refund".to_string()));
+}
+
+#[tokio::test]
+async fn pending_refund_is_not_reported_as_completed() {
+    let state = FakeStripe::default();
+    *state.refund_pending.lock().unwrap() = true;
+    let addr = spawn_fake_stripe(state).await;
+    assert!(provider(addr)
+        .refund(RefundRequest {
+            idempotency_key: Uuid::new_v4(),
+            provider_payment_id: "pi_test_123".into(),
+            amount_cents: 1000,
+            reason: None
+        })
+        .await
+        .is_err());
 }
