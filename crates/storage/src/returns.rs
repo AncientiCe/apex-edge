@@ -370,3 +370,53 @@ mod tests {
         assert_eq!(list_refunds(&pool, rid).await.unwrap().len(), 1);
     }
 }
+
+/// Reserve value before any external refund. A stable id binds retries to identical
+/// terms and incomplete reservations count against the remaining return balance.
+pub async fn prepare_refund(pool: &SqlitePool, refund: &RefundRow) -> Result<bool, PoolError> {
+    let amount = i64::try_from(refund.amount_cents)
+        .map_err(|_| PoolError::Other("invalid refund amount".into()))?;
+    sqlx::query("INSERT INTO refund_intents (id, return_id, tender_type, amount_cents, created_at) \
+        SELECT ?, r.id, ?, ?, ? FROM returns r WHERE r.id = ? AND r.state IN ('items','tendered') \
+        AND ? > 0 AND r.total_cents >= ? + COALESCE((SELECT SUM(f.amount_cents) FROM refunds f WHERE f.return_id = r.id),0) \
+        + COALESCE((SELECT SUM(i.amount_cents) FROM refund_intents i WHERE i.return_id=r.id AND NOT EXISTS (SELECT 1 FROM refunds f WHERE f.id=i.id)),0) \
+        ON CONFLICT(id) DO NOTHING")
+        .bind(refund.id.to_string()).bind(&refund.tender_type).bind(amount).bind(Utc::now().to_rfc3339())
+        .bind(refund.return_id.to_string()).bind(amount).bind(amount).execute(pool).await?;
+    let existing: Option<(String, String, i64)> =
+        sqlx::query_as("SELECT return_id,tender_type,amount_cents FROM refund_intents WHERE id=?")
+            .bind(refund.id.to_string())
+            .fetch_optional(pool)
+            .await?;
+    match existing {
+        Some((return_id, tender, stored))
+            if return_id == refund.return_id.to_string()
+                && tender == refund.tender_type
+                && stored == amount => {}
+        _ => {
+            return Err(PoolError::Other(
+                "refund exceeds remaining balance or command key was reused with different terms"
+                    .into(),
+            ))
+        }
+    }
+    let recorded: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM refunds WHERE id=?")
+        .bind(refund.id.to_string())
+        .fetch_one(pool)
+        .await?;
+    Ok(recorded > 0)
+}
+
+/// Commit the provider result and return totals together. Repeating this after a
+/// crash is harmless; the primary key is the durable refund identity.
+pub async fn complete_refund(pool: &SqlitePool, refund: &RefundRow) -> Result<(), PoolError> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("INSERT INTO refunds (id,return_id,tender_type,amount_cents,external_reference,created_at) VALUES (?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING")
+        .bind(refund.id.to_string()).bind(refund.return_id.to_string()).bind(&refund.tender_type)
+        .bind(refund.amount_cents as i64).bind(&refund.external_reference).bind(Utc::now().to_rfc3339()).execute(&mut *tx).await?;
+    sqlx::query("UPDATE returns SET refunded_cents=(SELECT COALESCE(SUM(amount_cents),0) FROM refunds WHERE return_id=returns.id), \
+        state=CASE WHEN (SELECT COALESCE(SUM(amount_cents),0) FROM refunds WHERE return_id=returns.id)>=total_cents THEN 'paid' ELSE 'tendered' END WHERE id=?")
+        .bind(refund.return_id.to_string()).execute(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(())
+}

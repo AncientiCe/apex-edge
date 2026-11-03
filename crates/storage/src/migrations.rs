@@ -27,6 +27,9 @@ const MIGRATION_025: &str = include_str!("../migrations/025_outbox_fanout.sql");
 const MIGRATION_026: &str = include_str!("../migrations/026_fiscal_queue.sql");
 const MIGRATION_027: &str = include_str!("../migrations/027_hub_identity.sql");
 
+const MIGRATION_028: &str = include_str!("../migrations/028_refund_intents.sql");
+const DOWN_028: &str = include_str!("../migrations/028_refund_intents.down.sql");
+
 const DOWN_010: &str = include_str!("../migrations/010_returns.down.sql");
 const DOWN_011: &str = include_str!("../migrations/011_shifts.down.sql");
 const DOWN_012: &str = include_str!("../migrations/012_audit_chain.down.sql");
@@ -335,7 +338,13 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), MigrationError> {
     // Migration 025 (2.0.0): indexes that make per-destination outbox fan-out safe.
     // Migration 026 (2.0.0): fiscal sign-later queue plus receipt metadata on orders/returns.
     // Migration 027 (2.0.0): durable hub store/register identity.
-    for migration in [MIGRATION_024, MIGRATION_025, MIGRATION_026, MIGRATION_027] {
+    for migration in [
+        MIGRATION_024,
+        MIGRATION_025,
+        MIGRATION_026,
+        MIGRATION_027,
+        MIGRATION_028,
+    ] {
         let sql_no_comments = strip_sql_comment_lines(migration);
         for stmt in sql_no_comments.split(';').filter(|s| !s.trim().is_empty()) {
             let stmt = stmt.trim();
@@ -438,8 +447,8 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), MigrationError> {
 /// check is idempotent when those columns already exist.
 pub async fn run_down_v0_6_0(pool: &SqlitePool) -> Result<(), MigrationError> {
     for sql in &[
-        DOWN_027, DOWN_026, DOWN_025, DOWN_024, DOWN_021, DOWN_020, DOWN_019, DOWN_018, DOWN_017,
-        DOWN_016, DOWN_015, DOWN_014, DOWN_013, DOWN_012, DOWN_011, DOWN_010,
+        DOWN_028, DOWN_027, DOWN_026, DOWN_025, DOWN_024, DOWN_021, DOWN_020, DOWN_019, DOWN_018,
+        DOWN_017, DOWN_016, DOWN_015, DOWN_014, DOWN_013, DOWN_012, DOWN_011, DOWN_010,
     ] {
         let sql_no_comments = strip_sql_comment_lines(sql);
         for stmt in sql_no_comments.split(';').filter(|s| !s.trim().is_empty()) {

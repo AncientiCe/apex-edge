@@ -21,10 +21,10 @@ use apex_edge_metrics::{
     OUTCOME_ERROR, OUTCOME_SUCCESS, REFUND_TENDER_TOTAL, RETURNS_TOTAL, RETURN_DURATION_SECONDS,
 };
 use apex_edge_storage::{
-    apply_local_delta, fetch_approval, fetch_order_ledger_entry, fetch_return,
-    finalize_return_row_with_outbox, get_catalog_item_by_sku, insert_refund, insert_return,
-    insert_return_line, list_refunds, list_return_lines, record, update_return_totals,
-    void_return_row, ApprovalState, NewReturn, RefundRow, ReturnLineRow,
+    apply_local_delta, complete_refund, fetch_approval, fetch_order_ledger_entry, fetch_return,
+    finalize_return_row_with_outbox, get_catalog_item_by_sku, insert_return, insert_return_line,
+    list_refunds, list_return_lines, prepare_refund, record, update_return_totals, void_return_row,
+    ApprovalState, NewReturn, RefundRow, ReturnLineRow,
 };
 use chrono::Utc;
 use std::time::Instant;
@@ -361,62 +361,56 @@ pub async fn refund_tender(
     payload: &RefundTenderPayload,
 ) -> PosResponseEnvelope<serde_json::Value> {
     let started = Instant::now();
-    let mut snapshot = match load_snapshot(app, payload.return_id).await {
+    let snapshot = match load_snapshot(app, payload.return_id).await {
+        Ok(s) if s.store_id == store_id => s,
+        Ok(_) => {
+            return fail(
+                idempotency_key,
+                err("STORE_MISMATCH", "return belongs to another store"),
+            )
+        }
+        Err(errors) => return fail(idempotency_key, errors),
+    };
+    let refund_id = provider_idempotency_key(idempotency_key, payload.return_id, "refund_identity");
+    let mut row = RefundRow {
+        id: refund_id,
+        return_id: payload.return_id,
+        tender_type: payload.tender_type.clone(),
+        amount_cents: payload.amount_cents,
+        external_reference: payload.external_reference.clone(),
+    };
+    let recorded = match prepare_refund(&app.pool, &row).await {
+        Ok(recorded) => recorded,
+        Err(e) => {
+            metrics::counter!(REFUND_TENDER_TOTAL, "tender_type" => payload.tender_type.clone(), "outcome" => "rejected").increment(1);
+            return fail(idempotency_key, err("REFUND_REJECTED", e.to_string()));
+        }
+    };
+    if !recorded {
+        row.external_reference = match refund_through_provider(
+            app,
+            snapshot.original_order_id,
+            &payload.tender_type,
+            payload.amount_cents,
+            idempotency_key,
+            refund_id,
+        )
+        .await
+        {
+            Ok(reference) => reference.or_else(|| payload.external_reference.clone()),
+            Err(failure) => {
+                metrics::counter!(REFUND_TENDER_TOTAL, "tender_type" => payload.tender_type.clone(), "outcome" => "rejected").increment(1);
+                return fail(idempotency_key, err(failure.code, failure.message));
+            }
+        };
+        if let Err(e) = complete_refund(&app.pool, &row).await {
+            return fail(idempotency_key, err("REFUND_INSERT_FAILED", e.to_string()));
+        }
+    }
+    let snapshot = match load_snapshot(app, payload.return_id).await {
         Ok(s) => s,
         Err(errors) => return fail(idempotency_key, errors),
     };
-    let refund = RefundSnapshot {
-        refund_id: Uuid::new_v4(),
-        tender_type: payload.tender_type.clone(),
-        amount_cents: payload.amount_cents,
-    };
-    if let Err(e) = snapshot.apply_refund(refund.clone()) {
-        metrics::counter!(REFUND_TENDER_TOTAL, "tender_type" => payload.tender_type.clone(), "outcome" => "rejected").increment(1);
-        return fail(idempotency_key, err("REFUND_REJECTED", e.to_string()));
-    }
-
-    // Give the money back through the same provider that took it, before recording the
-    // refund locally. Recording a card refund that the acquirer never processed would
-    // leave the store's books claiming money it still holds.
-    let provider_reference = match refund_through_provider(
-        app,
-        snapshot.original_order_id,
-        &payload.tender_type,
-        payload.amount_cents,
-        idempotency_key,
-        refund.refund_id,
-    )
-    .await
-    {
-        Ok(reference) => reference,
-        Err(failure) => {
-            metrics::counter!(REFUND_TENDER_TOTAL, "tender_type" => payload.tender_type.clone(), "outcome" => "rejected").increment(1);
-            return fail(idempotency_key, err(failure.code, failure.message));
-        }
-    };
-
-    let row = RefundRow {
-        id: refund.refund_id,
-        return_id: payload.return_id,
-        tender_type: refund.tender_type.clone(),
-        amount_cents: refund.amount_cents,
-        external_reference: provider_reference.or_else(|| payload.external_reference.clone()),
-    };
-    if let Err(e) = insert_refund(&app.pool, &row).await {
-        return fail(idempotency_key, err("REFUND_INSERT_FAILED", e.to_string()));
-    }
-    if let Err(e) = update_return_totals(
-        &app.pool,
-        payload.return_id,
-        snapshot.total_cents,
-        snapshot.tax_cents,
-        snapshot.refunded_cents,
-        snapshot.state.as_str(),
-    )
-    .await
-    {
-        return fail(idempotency_key, err("RETURN_UPDATE_FAILED", e.to_string()));
-    }
     metrics::counter!(REFUND_TENDER_TOTAL, "tender_type" => payload.tender_type.clone(), "outcome" => OUTCOME_SUCCESS).increment(1);
     stream_broadcast(
         app,

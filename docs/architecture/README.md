@@ -1745,3 +1745,27 @@ sequenceDiagram
 ```
 
 **Notes:** Router state clones share the gate. Weak lock entries are reclaimed, and cancellation releases the lock. This is concurrency protection for the single active hub, not a distributed execution lease or a crash-atomic replacement for financial ledgers. Existing POS count and latency metrics include queued retries.
+
+### 47. Durable Refund Recovery
+
+**Purpose:** Prevent duplicate provider refunds across crashes and reserve the remaining return balance before money moves.
+
+```mermaid
+sequenceDiagram
+    participant POS
+    participant Hub
+    participant DB
+    participant PSP
+    POS->>Hub: refund command with stable envelope key
+    Hub->>DB: reserve amount under deterministic refund id
+    alt refund already recorded
+        DB-->>Hub: replay existing result
+    else reserved and incomplete
+        Hub->>PSP: refund using stable provider key
+        PSP-->>Hub: result or retryable uncertainty
+        Hub->>DB: atomically insert refund and update return totals
+    end
+    Hub-->>POS: current return snapshot
+```
+
+**Notes:** Pending reservations count against the refundable balance, including concurrent commands with different keys. A crash after provider acceptance retries the original operation. Uncertain or failed operations retain their reservation and must be retried using the same envelope key; operators must reconcile the provider before abandoning them. Financial rows and HQ payload formats are unchanged. Existing refund count/error counters and return duration metrics cover execution.
