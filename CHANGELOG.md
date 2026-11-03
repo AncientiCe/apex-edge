@@ -9,6 +9,18 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- Refunds persist a stable operation identity and reserve the return balance before provider calls; retry after provider acceptance and local failure cannot create a second provider operation. Refund rows and totals commit together.
+- Concurrent retries of one POS command are serialized within the active hub before checking the durable response cache.
+- Stripe recovery cancels uncaptured authorizations and refunds succeeded captures; pending provider refunds remain unresolved until confirmed.
+- Approval grant/deny requires a trusted manager, supervisor or admin role, or an appropriately scoped API token. Requester and approver identities come from authentication; self-approval is rejected. Ordinary sessions cannot mint privileged admin tokens. Identity providers must issue a signed `roles` array; missing roles do not grant privilege.
+- Receipted return quantities and paid values come from the original order, with cumulative limits across returns and exact partial-return rounding. Client price/tax overrides are ignored. Paid and refund-pending returns cannot be voided.
+
+### Security
+
+- Refresh compatible locked dependencies to address current certificate-verification and unsoundness advisories and remove yanked versions.
+
 ## [2.2.0] — 2026-10-19
 
 "Ride it out": the hub now gets through a long internet outage without anyone stepping in, and
