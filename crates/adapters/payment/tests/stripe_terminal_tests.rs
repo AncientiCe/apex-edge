@@ -25,6 +25,7 @@ struct FakeStripe {
     idempotency_keys: Arc<Mutex<Vec<String>>>,
     /// When set, the reader action reports this failure code instead of succeeding.
     failure_code: Arc<Mutex<Option<String>>>,
+    captured: Arc<Mutex<bool>>,
 }
 
 impl FakeStripe {
@@ -124,7 +125,7 @@ async fn get_payment_intent(
         "object": "payment_intent",
         "amount": 2_500,
         "amount_received": 2_500,
-        "status": "requires_capture",
+        "status": if *state.captured.lock().unwrap() { "succeeded" } else { "requires_capture" },
         "latest_charge": {
             "payment_method_details": {
                 "card_present": {
@@ -143,6 +144,7 @@ async fn capture_payment_intent(
     Path(intent_id): Path<String>,
 ) -> Json<serde_json::Value> {
     state.record("capture_payment_intent");
+    *state.captured.lock().unwrap() = true;
     Json(serde_json::json!({
         "id": intent_id,
         "object": "payment_intent",
@@ -155,13 +157,16 @@ async fn capture_payment_intent(
 async fn cancel_payment_intent(
     State(state): State<FakeStripe>,
     Path(intent_id): Path<String>,
-) -> Json<serde_json::Value> {
+) -> Result<Json<serde_json::Value>, axum::http::StatusCode> {
     state.record("cancel_payment_intent");
-    Json(serde_json::json!({
+    if *state.captured.lock().unwrap() {
+        return Err(axum::http::StatusCode::BAD_REQUEST);
+    }
+    Ok(Json(serde_json::json!({
         "id": intent_id,
         "object": "payment_intent",
         "status": "canceled",
-    }))
+    })))
 }
 
 async fn create_refund(State(state): State<FakeStripe>, _body: String) -> Json<serde_json::Value> {
@@ -330,7 +335,7 @@ async fn capture_void_and_refund_hit_the_expected_endpoints() {
 
     let calls = state.calls();
     assert!(calls.contains(&"capture_payment_intent".to_string()));
-    assert!(calls.contains(&"cancel_payment_intent".to_string()));
+    assert!(!calls.contains(&"cancel_payment_intent".to_string()));
     assert!(calls.contains(&"create_refund".to_string()));
 }
 
@@ -378,4 +383,20 @@ async fn a_missing_secret_key_fails_closed() {
     .expect_err("empty secret key must not build a provider");
 
     assert!(matches!(err, PaymentProviderError::NotConfigured { .. }));
+}
+
+#[tokio::test]
+async fn void_cancels_an_uncaptured_authorization() {
+    let state = FakeStripe::default();
+    let addr = spawn_fake_stripe(state.clone()).await;
+    provider(addr)
+        .void(VoidRequest {
+            idempotency_key: Uuid::new_v4(),
+            provider_payment_id: "pi_test_123".into(),
+            reason: None,
+        })
+        .await
+        .expect("cancel authorization");
+    assert!(state.calls().contains(&"cancel_payment_intent".to_string()));
+    assert!(!state.calls().contains(&"create_refund".to_string()));
 }

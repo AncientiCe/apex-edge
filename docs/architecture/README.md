@@ -1705,3 +1705,20 @@ flowchart LR
   `apex_edge_pos_command_duration_seconds{operation}` cover every command the tab sends; the
   simulator itself emits none.
 - **Code:** `frontend/src/panels/StoreOpsPanel.tsx`, tests in `StoreOpsPanel.test.tsx`.
+
+### 45. Stripe Reversal Recovery
+
+**Purpose:** Return captured funds for an abandoned sale without trying to cancel a succeeded PaymentIntent.
+
+```mermaid
+flowchart LR
+    Sweep[Durable reversal sweep] --> Lookup[Read Stripe PaymentIntent]
+    Lookup -->|uncaptured| Cancel[Cancel authorization]
+    Lookup -->|succeeded| Refund[Refund remaining capture with stable sweep key]
+    Lookup -->|canceled| Done[Mark reversed]
+    Cancel --> Done
+    Refund -->|confirmed succeeded| Done
+    Refund -->|pending or unknown| Retry[Keep pending and retry]
+```
+
+**Notes:** Inputs are the durable intent id and provider payment id. Stripe owns payment state. Pending refunds are queried again before marking recovery complete. Errors remain visible through existing payment reversal counters and pending gauge; the sweep retries the same provider idempotency key.

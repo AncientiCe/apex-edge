@@ -366,16 +366,59 @@ impl PaymentProvider for StripeTerminalProvider {
     }
 
     async fn void(&self, request: VoidRequest) -> Result<(), PaymentProviderError> {
+        let intent = self
+            .get(&format!(
+                "/v1/payment_intents/{}",
+                request.provider_payment_id
+            ))
+            .await?;
         let mut form = Vec::new();
         if let Some(reason) = request.reason.as_deref() {
             form.push(("metadata[reversal_reason]", reason.to_string()));
         }
-        self.post_form(
-            &format!("/v1/payment_intents/{}/cancel", request.provider_payment_id),
-            request.idempotency_key,
-            &form,
-        )
-        .await?;
+        match intent.get("status").and_then(Value::as_str) {
+            Some("canceled") => return Ok(()),
+            Some("succeeded") => {
+                form.push(("payment_intent", request.provider_payment_id.clone()));
+                // No amount means the full remaining capture. The durable sweep key makes
+                // a timeout/restart retry the same refund rather than return funds twice.
+                let mut refund = self
+                    .post_form("/v1/refunds", request.idempotency_key, &form)
+                    .await?;
+                if refund.get("status").and_then(Value::as_str) == Some("pending") {
+                    if let Some(id) = refund.get("id").and_then(Value::as_str) {
+                        refund = self.get(&format!("/v1/refunds/{id}")).await?;
+                    }
+                }
+                if refund.get("status").and_then(Value::as_str) != Some("succeeded") {
+                    return Err(PaymentProviderError::Indeterminate {
+                        provider: PROVIDER_CODE.into(),
+                        provider_payment_id: Some(request.provider_payment_id),
+                        message: "capture reversal refund is not confirmed".into(),
+                    });
+                }
+            }
+            Some(
+                "requires_capture"
+                | "requires_payment_method"
+                | "requires_confirmation"
+                | "requires_action",
+            ) => {
+                self.post_form(
+                    &format!("/v1/payment_intents/{}/cancel", request.provider_payment_id),
+                    request.idempotency_key,
+                    &form,
+                )
+                .await?;
+            }
+            _ => {
+                return Err(PaymentProviderError::Indeterminate {
+                    provider: PROVIDER_CODE.into(),
+                    provider_payment_id: Some(request.provider_payment_id),
+                    message: "payment state is not yet reversible".into(),
+                })
+            }
+        }
         Ok(())
     }
 
