@@ -10,7 +10,33 @@ use axum::{
     extract::{Extension, Path, State},
     Json,
 };
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Instant;
+
+/// One executor per command key in the active hub. Clones share locks; entries are
+/// weak so completed commands do not grow an unbounded in-memory cache.
+#[derive(Clone, Default)]
+pub struct CommandLocks {
+    keys: Arc<Mutex<HashMap<Uuid, Weak<tokio::sync::Mutex<()>>>>>,
+}
+impl CommandLocks {
+    async fn claim(&self, key: Uuid) -> tokio::sync::OwnedMutexGuard<()> {
+        let lock = {
+            let mut keys = self.keys.lock().unwrap_or_else(|e| e.into_inner());
+            keys.retain(|_, lock| lock.strong_count() > 0);
+            match keys.get(&key).and_then(Weak::upgrade) {
+                Some(lock) => lock,
+                None => {
+                    let lock = Arc::new(tokio::sync::Mutex::new(()));
+                    keys.insert(key, Arc::downgrade(&lock));
+                    lock
+                }
+            }
+        };
+        lock.lock_owned().await
+    }
+}
 use uuid::Uuid;
 
 fn pos_operation_label(cmd: &PosCommand) -> &'static str {
@@ -128,6 +154,7 @@ pub async fn handle_pos_command(
             }],
         })
     } else {
+        let _claim = app.command_locks.claim(envelope.idempotency_key).await;
         if let Ok(Some(stored_response)) =
             apex_edge_storage::get_response(&app.pool, envelope.idempotency_key).await
         {
@@ -184,6 +211,7 @@ pub async fn get_cart_state_handler(
 
 #[derive(Clone)]
 pub struct AppState {
+    pub command_locks: CommandLocks,
     pub store_id: Uuid,
     /// Default register this hub presents on `/ready` and binds unpaired devices to.
     pub register_id: Uuid,
@@ -211,6 +239,7 @@ impl AppState {
     /// `AppState { fiscal, ..AppState::new(pool, store_id) }`.
     pub fn new(pool: sqlx::SqlitePool, store_id: Uuid) -> Self {
         Self {
+            command_locks: CommandLocks::default(),
             store_id,
             register_id: Uuid::nil(),
             pool,

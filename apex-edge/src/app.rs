@@ -88,6 +88,7 @@ pub fn build_router(pool: sqlx::SqlitePool, config: HubConfig) -> Router {
         rate_limit,
     } = config;
     let app_state = AppState {
+        command_locks: Default::default(),
         store_id,
         register_id,
         pool,

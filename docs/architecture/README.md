@@ -1722,3 +1722,26 @@ flowchart LR
 ```
 
 **Notes:** Inputs are the durable intent id and provider payment id. Stripe owns payment state. Pending refunds are queried again before marking recovery complete. Errors remain visible through existing payment reversal counters and pending gauge; the sweep retries the same provider idempotency key.
+
+### 46. Concurrent Command Retries
+
+**Purpose:** Execute an in-flight POS command once in the active hub while unrelated keys remain independent.
+
+```mermaid
+sequenceDiagram
+    participant POS
+    participant Gate as Per-key command lock
+    participant Cache as Durable response cache
+    participant Command
+    POS->>Gate: claim envelope key
+    Gate->>Cache: read after previous executor finishes
+    alt completed response exists
+        Cache-->>POS: replay
+    else no completed response
+        Gate->>Command: execute
+        Command->>Cache: persist success
+        Command-->>POS: result
+    end
+```
+
+**Notes:** Router state clones share the gate. Weak lock entries are reclaimed, and cancellation releases the lock. This is concurrency protection for the single active hub, not a distributed execution lease or a crash-atomic replacement for financial ledgers. Existing POS count and latency metrics include queued retries.
