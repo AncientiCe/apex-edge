@@ -9,6 +9,12 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.2.1] — 2026-11-03
+
+Payment and return safety fixes, trusted approval authorization, and dependency security updates.
+
+**Upgrade note:** identity providers must issue a signed `roles` array for manager, supervisor, or admin approval access. Missing roles no longer grant privilege.
+
 ### Fixed
 
 - Refunds persist a stable operation identity and reserve the return balance before provider calls; retry after provider acceptance and local failure cannot create a second provider operation. Refund rows and totals commit together.
