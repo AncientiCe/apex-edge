@@ -292,6 +292,8 @@ struct ExternalClaims {
     name: Option<String>,
     #[serde(default)]
     email: Option<String>,
+    #[serde(default)]
+    roles: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -392,6 +394,30 @@ fn verify_external_token(
 fn bearer_token(req: &Request<Body>) -> Option<String> {
     let raw = req.headers().get(header::AUTHORIZATION)?.to_str().ok()?;
     raw.strip_prefix("Bearer ").map(|s| s.to_string())
+}
+
+/// Roles come only from the verified external identity token cached at sign-in.
+pub(crate) async fn associate_can_approve(
+    app: &AppState,
+    associate_id: &str,
+) -> Result<bool, StatusCode> {
+    let claims: Option<String> = sqlx::query_scalar(
+        "SELECT claims_json FROM associate_identities WHERE associate_id=? AND store_id=?",
+    )
+    .bind(associate_id)
+    .bind(app.store_id.to_string())
+    .fetch_optional(&app.pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(claims
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| v.get("roles").and_then(|v| v.as_array()).cloned())
+        .is_some_and(|roles| {
+            roles
+                .iter()
+                .filter_map(|v| v.as_str())
+                .any(|role| matches!(role, "manager" | "supervisor" | "admin"))
+        }))
 }
 
 pub fn is_public_path(path: &str) -> bool {
@@ -514,6 +540,14 @@ pub async fn auth_middleware(
     let claims_store = Uuid::parse_str(&decoded.store_id).unwrap_or_default();
     if claims_store != app.store_id || session.store_id != app.store_id {
         return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if req.uri().path().starts_with("/admin")
+        && !associate_can_approve(&app, &session.associate_id)
+            .await
+            .unwrap_or(false)
+    {
+        record_auth_metrics("session", "forbidden", Utc::now());
+        return StatusCode::FORBIDDEN.into_response();
     }
     req.extensions_mut().insert(AuthPrincipal {
         session_id,

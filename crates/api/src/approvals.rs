@@ -15,12 +15,13 @@ use apex_edge_storage::{
     deny_approval, fetch_approval, grant_approval, request_approval, ApprovalRecord, ApprovalState,
 };
 use axum::{
-    extract::{Path, State},
+    extract::{Extension, Path, State},
     http::StatusCode,
     Json,
 };
 use uuid::Uuid;
 
+use crate::auth::AuthPrincipal;
 use crate::stream::{stream_broadcast, StreamKind};
 use crate::AppState;
 
@@ -49,10 +50,49 @@ fn to_response(record: ApprovalRecord) -> ApprovalResponse {
     }
 }
 
+async fn decision_actor(
+    state: &AppState,
+    principal: Option<Extension<AuthPrincipal>>,
+    approval: &ApprovalRecord,
+) -> Result<String, StatusCode> {
+    let started = std::time::Instant::now();
+    let result = async {
+        let Extension(principal) = principal.ok_or(StatusCode::UNAUTHORIZED)?;
+        if principal.store_id != state.store_id || approval.store_id != state.store_id {
+            return Err(StatusCode::FORBIDDEN);
+        }
+        let service = crate::admin_api::load_api_token(&state.pool, principal.session_id).await;
+        let permitted = if let Some(token) = service {
+            !token.revoked && crate::auth::token_scopes_allow(&token.scopes, "approvals")
+        } else {
+            crate::auth::associate_can_approve(state, &principal.associate_id).await?
+        };
+        if !permitted || approval.requested_by.as_deref() == Some(principal.associate_id.as_str()) {
+            return Err(StatusCode::FORBIDDEN);
+        }
+        Ok(principal.associate_id)
+    }
+    .await;
+    metrics::counter!(APPROVALS_TOTAL,"action"=>"authorize_decision","outcome"=>if result.is_ok(){"allowed"}else{"forbidden"}).increment(1);
+    metrics::histogram!(APPROVAL_WAIT_DURATION_SECONDS,"operation"=>"authorize_decision")
+        .record(started.elapsed().as_secs_f64());
+    result
+}
+
 pub async fn create_approval(
     State(state): State<AppState>,
+    principal: Option<Extension<AuthPrincipal>>,
     Json(payload): Json<RequestApprovalPayload>,
 ) -> Result<(StatusCode, Json<ApprovalResponse>), StatusCode> {
+    let Extension(actor) = principal.ok_or(StatusCode::UNAUTHORIZED)?;
+    if actor.store_id != state.store_id
+        || payload.store_id != state.store_id
+        || actor
+            .register_id
+            .is_some_and(|id| payload.register_id != Some(id))
+    {
+        return Err(StatusCode::FORBIDDEN);
+    }
     let context_json = payload.context.to_string();
     let ttl = payload.ttl_seconds.unwrap_or(DEFAULT_TTL_SECONDS);
     let record = request_approval(
@@ -60,7 +100,7 @@ pub async fn create_approval(
         payload.store_id,
         payload.register_id,
         &payload.action,
-        payload.requested_by.as_deref(),
+        Some(actor.associate_id.as_str()),
         &context_json,
         ttl,
     )
@@ -83,6 +123,7 @@ pub async fn create_approval(
 
 pub async fn grant_approval_handler(
     State(state): State<AppState>,
+    principal: Option<Extension<AuthPrincipal>>,
     Path(id): Path<Uuid>,
     Json(payload): Json<GrantApprovalPayload>,
 ) -> Result<Json<ApprovalResponse>, StatusCode> {
@@ -90,10 +131,14 @@ pub async fn grant_approval_handler(
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::NOT_FOUND)?;
+    if payload.approval_id != id {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let actor = decision_actor(&state, principal, &existing).await?;
     let record = grant_approval(
         &state.pool,
         id,
-        payload.approver_id.as_deref(),
+        Some(actor.as_str()),
         payload.reason.as_deref(),
     )
     .await
@@ -124,6 +169,7 @@ pub async fn grant_approval_handler(
 
 pub async fn deny_approval_handler(
     State(state): State<AppState>,
+    principal: Option<Extension<AuthPrincipal>>,
     Path(id): Path<Uuid>,
     Json(payload): Json<DenyApprovalPayload>,
 ) -> Result<Json<ApprovalResponse>, StatusCode> {
@@ -131,10 +177,14 @@ pub async fn deny_approval_handler(
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::NOT_FOUND)?;
+    if payload.approval_id != id {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let actor = decision_actor(&state, principal, &existing).await?;
     let record = deny_approval(
         &state.pool,
         id,
-        payload.approver_id.as_deref(),
+        Some(actor.as_str()),
         payload.reason.as_deref(),
     )
     .await

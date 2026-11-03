@@ -1769,3 +1769,19 @@ sequenceDiagram
 ```
 
 **Notes:** Pending reservations count against the refundable balance, including concurrent commands with different keys. A crash after provider acceptance retries the original operation. Uncertain or failed operations retain their reservation and must be retried using the same envelope key; operators must reconcile the provider before abandoning them. Financial rows and HQ payload formats are unchanged. Existing refund count/error counters and return duration metrics cover execution.
+
+### 48. Authenticated Approval Decisions
+
+**Purpose:** Restrict grant/deny decisions to trusted supervisors and prevent request-body identity spoofing.
+
+```mermaid
+flowchart LR
+    Token[Verified external token roles] --> Cache[Store-scoped associate identity]
+    Session[Authenticated session] --> Check[Decision authorization]
+    Cache --> Check
+    Service[API token with approvals or admin scope] --> Check
+    Check -->|same store and not requester| Decide[Grant or deny as authenticated actor]
+    Check -->|missing privilege or self approval| Reject[401 or 403 and rejection metric]
+```
+
+**Notes:** Signed external identity tokens may supply a roles array containing manager, supervisor, or admin; absent roles grant no decision privilege. Request creation records the authenticated requester, and decision bodies cannot replace the actor. Administrative session routes use the same role gate so an associate cannot mint a privileged API token to bypass decisions. Existing sessions with no cached privileged role must sign in again with an appropriately issued token. API token authorization uses the stored scopes. Decision authorization emits count/error outcomes and latency through existing approval metrics.
