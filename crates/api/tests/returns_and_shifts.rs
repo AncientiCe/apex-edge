@@ -40,6 +40,15 @@ fn env<T>(store_id: Uuid, register_id: Uuid, payload: T) -> PosRequestEnvelope<T
     }
 }
 
+async fn original_sale(state: &AppState, quantity: i64, tax: i64) -> Uuid {
+    let order = Uuid::new_v4();
+    sqlx::query("INSERT INTO orders (id,cart_id,store_id,register_id,total_cents,subtotal_cents,discount_cents,tax_cents,created_at,finalized_at) VALUES (?,?,?,?,?,?,0,?,'2026-01-01','2026-01-01')")
+        .bind(order.to_string()).bind(Uuid::new_v4().to_string()).bind(Uuid::nil().to_string()).bind(Uuid::nil().to_string()).bind(quantity*1000+tax).bind(quantity*1000).bind(tax).execute(&state.pool).await.unwrap();
+    sqlx::query("INSERT INTO order_lines (id,order_id,item_id,sku,name,quantity,unit_price_cents,line_total_cents,discount_cents,tax_cents,created_at) VALUES (?,?,?,'SKU-1','Widget',?,1000,?,0,?,'2026-01-01')")
+        .bind(Uuid::new_v4().to_string()).bind(order.to_string()).bind(Uuid::new_v4().to_string()).bind(quantity).bind(quantity*1000).bind(tax).execute(&state.pool).await.unwrap();
+    order
+}
+
 #[tokio::test]
 async fn blind_return_requires_approval_and_succeeds_when_granted() {
     let state = setup().await;
@@ -106,6 +115,7 @@ async fn full_return_flow_updates_outbox_and_audit() {
     let store = Uuid::nil();
     let register = Uuid::new_v4();
 
+    let original_order = original_sale(&state, 2, 200).await;
     let start = execute_pos_command(
         &state,
         env(
@@ -113,7 +123,7 @@ async fn full_return_flow_updates_outbox_and_audit() {
             register,
             PosCommand::StartReturn(StartReturnPayload {
                 return_id: None,
-                original_order_id: Some(Uuid::new_v4()),
+                original_order_id: Some(original_order),
                 reason_code: Some("damaged".into()),
                 approval_id: None,
                 shift_id: None,
@@ -213,6 +223,7 @@ async fn over_refund_is_rejected() {
     let store = Uuid::nil();
     let register = Uuid::new_v4();
 
+    let original_order = original_sale(&state, 1, 0).await;
     let start = execute_pos_command(
         &state,
         env(
@@ -220,7 +231,7 @@ async fn over_refund_is_rejected() {
             register,
             PosCommand::StartReturn(StartReturnPayload {
                 return_id: None,
-                original_order_id: Some(Uuid::new_v4()),
+                original_order_id: Some(original_order),
                 reason_code: None,
                 approval_id: None,
                 shift_id: None,

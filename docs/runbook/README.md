@@ -389,3 +389,9 @@ Before deploying a new release, verify each item:
 - [ ] Log output is captured (stdout/stderr to a persistent sink or journal).
 - [ ] A process supervisor (systemd, Docker, etc.) will restart apex-edge on crash.
 - [ ] Stakeholders have been briefed on the release scope, any migrations, and rollback plan.
+
+## Approval privileges and uncertain refunds
+
+Configure the external identity provider to issue a signed roles array for privileged associates (manager, supervisor, or admin). Sign in again to refresh the cached trusted roles. Ordinary associate sessions cannot grant/deny approvals or create administrative API tokens. Machine integrations may use an API token with approvals or admin scope; keep those credentials outside POS clients.
+
+A failed or uncertain refund retains a durable reservation against its return balance. Retry the exact original envelope key after connectivity or storage recovery. Never replace it with a fresh key merely to bypass the reservation. Reconcile the provider's refund state before abandoning an unresolved operation. Return documents with refunded funds or pending refund intents cannot be voided. Historical return values that exceed the original sale fail closed and require reconciliation.

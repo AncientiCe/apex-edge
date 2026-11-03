@@ -35,6 +35,13 @@ use crate::payments::{provider_idempotency_key, ProviderChoice};
 use crate::stream::{stream_broadcast, StreamKind};
 use crate::AppState;
 
+struct ReturnDuration(Instant);
+impl Drop for ReturnDuration {
+    fn drop(&mut self) {
+        metrics::histogram!(RETURN_DURATION_SECONDS).record(self.0.elapsed().as_secs_f64());
+    }
+}
+
 fn err(code: &str, message: impl Into<String>) -> Vec<PosError> {
     vec![PosError {
         code: code.into(),
@@ -195,11 +202,53 @@ pub async fn return_line_item(
     idempotency_key: Uuid,
     payload: &ReturnLineItemPayload,
 ) -> PosResponseEnvelope<serde_json::Value> {
-    let started = Instant::now();
+    let _duration = ReturnDuration(Instant::now());
     let mut snapshot = match load_snapshot(app, payload.return_id).await {
         Ok(s) => s,
         Err(errors) => return fail(idempotency_key, errors),
     };
+    if snapshot.store_id != store_id {
+        return fail(
+            idempotency_key,
+            err("STORE_MISMATCH", "return belongs to another store"),
+        );
+    }
+    if snapshot.original_order_id.is_some() {
+        let input = ReturnLineRow {
+            id: Uuid::new_v4(),
+            return_id: payload.return_id,
+            original_line_id: payload.original_line_id,
+            sku: payload.sku.clone(),
+            name: String::new(),
+            quantity: payload.quantity,
+            unit_price_cents: 0,
+            line_total_cents: 0,
+            tax_cents: 0,
+            tax_inclusive: false,
+        };
+        if let Err(e) = apex_edge_storage::add_receipted_return_line(&app.pool, &input).await {
+            return fail(idempotency_key, err("RETURN_LINE_REJECTED", e.to_string()));
+        }
+        let snapshot = match load_snapshot(app, payload.return_id).await {
+            Ok(s) => s,
+            Err(errors) => return fail(idempotency_key, errors),
+        };
+        metrics::counter!(RETURNS_TOTAL,"outcome"=>"line_added").increment(1);
+        stream_broadcast(
+            app,
+            store_id,
+            StreamKind::ReturnUpdated,
+            serde_json::to_value(&snapshot).unwrap_or_default(),
+        )
+        .await;
+        return PosResponseEnvelope {
+            version: ContractVersion::V1_0_0,
+            success: true,
+            idempotency_key,
+            payload: Some(serde_json::to_value(snapshot).unwrap_or_default()),
+            errors: vec![],
+        };
+    }
     let line = ReturnLineSnapshot {
         line_id: Uuid::new_v4(),
         original_line_id: payload.original_line_id,
@@ -213,9 +262,7 @@ pub async fn return_line_item(
         tax_cents: payload.tax_cents,
         tax_inclusive: payload.tax_inclusive,
     };
-    // Receipted returns will ideally look up the original order's per-line max quantity.
-    // For v0.6.0 we trust the POS to pass accurate `quantity`; a future PR will wire in
-    // the order-line cross-reference.
+    // Approved blind returns have no original sale to value against.
     if let Err(e) = snapshot.add_line(line.clone(), None) {
         return fail(idempotency_key, err("RETURN_LINE_REJECTED", e.to_string()));
     }
@@ -257,7 +304,6 @@ pub async fn return_line_item(
     )
     .await;
     metrics::counter!(RETURNS_TOTAL, "outcome" => "line_added").increment(1);
-    metrics::histogram!(RETURN_DURATION_SECONDS).record(started.elapsed().as_secs_f64());
     PosResponseEnvelope {
         version: ContractVersion::V1_0_0,
         success: true,
@@ -360,7 +406,7 @@ pub async fn refund_tender(
     idempotency_key: Uuid,
     payload: &RefundTenderPayload,
 ) -> PosResponseEnvelope<serde_json::Value> {
-    let started = Instant::now();
+    let _duration = ReturnDuration(Instant::now());
     let snapshot = match load_snapshot(app, payload.return_id).await {
         Ok(s) if s.store_id == store_id => s,
         Ok(_) => {
@@ -419,7 +465,6 @@ pub async fn refund_tender(
         serde_json::to_value(&snapshot).unwrap_or_default(),
     )
     .await;
-    metrics::histogram!(RETURN_DURATION_SECONDS).record(started.elapsed().as_secs_f64());
     PosResponseEnvelope {
         version: ContractVersion::V1_0_0,
         success: true,

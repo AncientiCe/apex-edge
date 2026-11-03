@@ -279,11 +279,13 @@ async fn a_manual_discount_on_an_inclusive_line_extracts_tax_from_the_discounted
 #[tokio::test]
 async fn returning_an_inclusive_line_refunds_the_shelf_price_not_price_plus_tax() {
     let hub = hub().await;
+    let (cart_id, _) = cart_with(&hub, hub.inclusive_item).await;
+    let original_order = pay_exactly_and_finalize(&hub, cart_id, 1100).await;
     let started = send(
         &hub,
         PosCommand::StartReturn(apex_edge_contracts::StartReturnPayload {
             return_id: None,
-            original_order_id: Some(Uuid::new_v4()),
+            original_order_id: Some(original_order),
             reason_code: Some("damaged".into()),
             approval_id: None,
             shift_id: None,

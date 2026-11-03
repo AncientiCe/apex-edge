@@ -1785,3 +1785,20 @@ flowchart LR
 ```
 
 **Notes:** Signed external identity tokens may supply a roles array containing manager, supervisor, or admin; absent roles grant no decision privilege. Request creation records the authenticated requester, and decision bodies cannot replace the actor. Administrative session routes use the same role gate so an associate cannot mint a privileged API token to bypass decisions. Existing sessions with no cached privileged role must sign in again with an appropriately issued token. API token authorization uses the stored scopes. Decision authorization emits count/error outcomes and latency through existing approval metrics.
+
+### 49. Original-Sale Return Entitlements
+
+**Purpose:** Keep receipted refunds within the original paid quantity and value, regardless of values supplied by a POS.
+
+```mermaid
+flowchart LR
+    POS[Return item and quantity] --> Lock[Acquire SQLite writer lock]
+    Lock --> Sale[Resolve original line in same-store original order]
+    Sale --> Limit[Subtract quantities reserved by other active or completed returns]
+    Limit --> Value[Allocate original discounts and tax with cumulative cent rounding]
+    Value --> Commit[Insert line and update totals atomically]
+    Limit -->|insufficient quantity| Reject[Reject before money moves]
+    Refund[Refund started or completed] -->|blocks| Void[Void return]
+```
+
+**Notes:** A supplied original line id must belong to the referenced sale and match its SKU. For existing clients omitting that id, only an unambiguous SKU match is accepted. Client prices, taxes, names and tax-inclusion flags do not determine receipted refund amounts. Open return lines reserve entitlement; voiding an unpaid, refund-free return releases it. Pre-upgrade voided returns with refunded funds still consume entitlement; overvalued historical lines fail closed for reconciliation. Paid or refund-pending returns cannot be voided. Line and basket discounts are allocated from ledger values; final partial returns receive the exact remaining cents. Approved blind returns retain their separate policy. Existing return metrics plus storage operation count/error/latency metrics cover these paths.

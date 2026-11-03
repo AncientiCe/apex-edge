@@ -45,3 +45,9 @@ Related: [README](../../README.md) · [Architecture](../architecture/README.md) 
 
 - Catalog, PriceBook, TaxRule, Promotion, CouponDefinition, StoreConfig, RegisterConfig, TenderType, PrintTemplateConfig.
 - Each entity has `version` for conflict policy (HQWins / EdgeWins / MergeRules).
+
+## Financial safety and approval authorization
+
+- Concurrent copies of one envelope key are serialized in the active hub. Retrying an uncertain refund must reuse the original key: its durable reservation binds the return, tender and amount, and the provider receives the same refund identity. Do not issue a replacement command to work around an uncertain outcome.
+- Receipted return lines identify the original line (or an unambiguous original SKU) and quantity. The hub derives paid value, discounts, tax and tax inclusion from the original ledger; client monetary fields do not override it. Quantities are reserved across return documents. Refunded or refund-pending returns cannot be voided.
+- Approval requester and decision actor come from authentication. Legacy requested_by and approver_id fields do not override the authenticated identity. Decisions require a manager, supervisor or admin in the verified external token's roles array, or a stored API token scope permitting approvals. Missing authentication returns 401; insufficient privilege, wrong-store access and self-approval return 403. The path approval id must match the body id.
